@@ -121,7 +121,7 @@ The bundle is distributed via HACS (`hacs.json`) and consumed by users following
 - **Not the backend.** The FastAPI optimizer, APScheduler jobs, and Supabase migrations live in a separate repo (`hungry-machines-api/`). When this code needs the API contract, treat `https://api.hungrymachines.io` as an external dependency. Do not edit endpoint shapes here -- mirror them in the typed wrappers in `src/api/`.
 - **Not the marketing site.** `hungrymachines.io` is a separate Astro project.
 - **Not the docs site.** `docs.hungrymachines.io` is a separate Starlight project.
-- **Not a monorepo root.** This will eventually be extracted to its own GitHub repo (`hungry-machines-hacs`) for HACS publication; the `hacs.json` + `README.md` are already shaped for that move. Do not add cross-package tooling that assumes siblings.
+- **Not a monorepo root.** This directory is published as its own GitHub repo at `hungrymachines/energy-dashboard` for HACS distribution. Do not add cross-package tooling that assumes siblings (the API, marketing site, and docs site live in separate repos).
 
 ## Project Layout
 
@@ -174,7 +174,7 @@ hungry-machines_base-frontend/
                        │ Home Assistant frontend       │
                        │ (user's browser, served by HA)│
                        └─────────────┬─────────────────┘
-                                     │ loads /hacsfiles/hungry-machines-hacs/hungry-machines.js
+                                     │ loads /hacsfiles/energy-dashboard/hungry-machines.js
                                      ▼
                        ┌───────────────────────────────┐
                        │ dist/hungry-machines.js       │
@@ -274,7 +274,7 @@ The artifact is `dist/hungry-machines.js`, configured by `hacs.json`:
 { "name": "Hungry Machines", "content_in_root": false, "filename": "hungry-machines.js", "render_readme": true }
 ```
 
-When this repo is extracted to `hungry-machines-hacs`, HACS users add it as a custom Frontend repository, install, and reference the file at `/hacsfiles/hungry-machines-hacs/hungry-machines.js`. Releases are tagged on `master`; the file in the release tarball must be the built `dist/hungry-machines.js`. Do not check `dist/` into the working tree under normal commits -- it is built and attached by the release flow.
+Published at `hungrymachines/energy-dashboard`. HACS users add `https://github.com/hungrymachines/energy-dashboard` as a custom Frontend repository, install, and reference the file at `/hacsfiles/energy-dashboard/hungry-machines.js`. Releases are tagged on `master`; the file in the release tarball must be the built `dist/hungry-machines.js`. Do not check `dist/` into the working tree under normal commits -- it is built and attached by the release flow.
 
 ---
 

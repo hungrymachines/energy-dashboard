@@ -19,7 +19,7 @@ Learn more at [hungrymachines.io](https://hungrymachines.io).
 ### HACS (Custom Repository)
 
 1. In Home Assistant, open **HACS → Frontend → ⋮ (top right) → Custom repositories**.
-2. Add the repository URL for this package with **Category: Lovelace**.
+2. Add `https://github.com/hungrymachines/energy-dashboard` with **Category: Lovelace**.
 3. Search for "Hungry Machines" in HACS and install it.
 4. Restart Home Assistant (or reload resources under **Settings → Dashboards → Resources**).
 
@@ -42,7 +42,7 @@ panel_custom:
     sidebar_title: Hungry Machines
     sidebar_icon: mdi:lightning-bolt
     url_path: hungry-machines
-    module_url: /hacsfiles/hungry-machines-hacs/hungry-machines.js
+    module_url: /hacsfiles/energy-dashboard/hungry-machines.js
     embed_iframe: false
     trust_external_script: false
 ```

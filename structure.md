@@ -26,7 +26,7 @@ The two cards also self-register with `window.customCards` so they show up in HA
 { "name": "Hungry Machines", "content_in_root": false, "filename": "hungry-machines.js", "render_readme": true }
 ```
 
-End users install via HACS (custom Frontend repository) and reference `/hacsfiles/hungry-machines-hacs/hungry-machines.js`. Manual install drops the file in `/config/www/` and references `/local/hungry-machines.js`. See `README.md` for the install runbook.
+End users install via HACS (custom Frontend repository pointing at `https://github.com/hungrymachines/energy-dashboard`) and reference `/hacsfiles/energy-dashboard/hungry-machines.js`. Manual install drops the file in `/config/www/` and references `/local/hungry-machines.js`. See `README.md` for the install runbook.
 
 ---
 
@@ -192,7 +192,7 @@ panel_custom:
     sidebar_title: Hungry Machines
     sidebar_icon: mdi:lightning-bolt
     url_path: hungry-machines
-    module_url: /hacsfiles/hungry-machines-hacs/hungry-machines.js
+    module_url: /hacsfiles/energy-dashboard/hungry-machines.js
     embed_iframe: false
     trust_external_script: false
 ```
@@ -327,7 +327,7 @@ The artifact is `dist/hungry-machines.js`. Release flow:
 
 `hacs.json` controls how HACS finds the file: `content_in_root: false` means HACS expects it inside `dist/` rather than at the repo root, and `filename: hungry-machines.js` is the exact name HACS will copy into `/hacsfiles/<repo-name>/`.
 
-When this directory is split off into its own GitHub repo (`hungry-machines-hacs`), the install URL in `README.md` and the `module_url` in HA's `panel_custom` block stay valid because they are already shaped around the future repo name (`/hacsfiles/hungry-machines-hacs/...`). No manifest changes needed at the split.
+The published GitHub repo is `hungrymachines/energy-dashboard`. HACS derives the on-disk path from the repo name, so installs land at `/hacsfiles/energy-dashboard/`; the `module_url` in `README.md` and the deploy snippets here all match that path.
 
 `dist/` is gitignored in normal development. Only release commits / release tarballs include the built bundle.
 
