@@ -1,40 +1,53 @@
 # Hungry Machines — Home Assistant Frontend
 
-Home Assistant custom panel + two Lovelace cards that talk to the [Hungry Machines](https://hungrymachines.io) API. Sign in inside HA, see today's optimized schedules for your HVAC, EV charger, home battery, and water heater, and edit the constraints the nightly optimizer uses — without leaving your dashboard.
+Hungry Machines optimizes when your home runs its biggest energy users — HVAC, EV charger, home battery, water heater — to shift load into the cheapest hours of your time-of-use rate plan, while keeping the comfort and charge constraints you set.
 
-## Overview
+This package adds the Hungry Machines control surface to Home Assistant: a sidebar panel for managing schedules and constraints, plus two Lovelace cards for at-a-glance status. Sign in with the same account you create at [hungrymachines.io](https://hungrymachines.io), and your dashboard mirrors the schedules our backend generates each night.
 
-Hungry Machines is a home energy optimization service. A backend at `api.hungrymachines.io` generates nightly operating schedules that shift your flexible loads into cheaper time-of-use hours. This package ships the client half:
+Learn more at **[hungrymachines.io](https://hungrymachines.io)**. Questions: [info@hungrymachines.io](mailto:info@hungrymachines.io).
 
-- **`hungry-machines-panel`** — full-page custom panel with a login gate, a dashboard showing per-appliance schedules (rate-colored 48-interval timeline), a per-appliance constraint editor, and a settings view (entity mapping, pricing zone, account).
-- **`hm-thermostat-card`** — standalone Lovelace card with current indoor/outdoor temp, today's optimized HVAC schedule chart, and a savings-level slider.
-- **`hm-savings-card`** — standalone Lovelace card showing today's average savings percentage, current home power draw, and the next scheduled device run.
+---
 
-All three are packaged as a single JavaScript bundle (`hungry-machines.js`) suitable for HACS distribution.
+## What you get
 
-Learn more at [hungrymachines.io](https://hungrymachines.io).
+- **`hungry-machines-panel`** — full-page sidebar entry. Sign in, see today's optimized schedule for every appliance you've registered, edit the comfort and charge constraints the optimizer respects, and choose your time-of-use pricing zone.
+- **`hm-thermostat-card`** — Lovelace card with current indoor/outdoor temperature, today's HVAC schedule, and a savings-level slider.
+- **`hm-savings-card`** — Lovelace card with today's average savings, current home power draw, and the next scheduled appliance run.
 
-## Installation
+All three share one sign-in. Sign in once via the panel and the cards activate everywhere on your dashboard — your token persists in your browser's localStorage.
 
-### HACS (Custom Repository)
+## How it works
+
+1. You connect your appliances and preferences via the panel inside Home Assistant.
+2. Each night, the Hungry Machines backend at `api.hungrymachines.io` fetches a 24-hour weather forecast and your time-of-use rates, then runs an optimization that picks operating intervals to minimize cost while staying inside your comfort and charge constraints.
+3. Your Home Assistant pulls the resulting schedule the next morning and applies the setpoints. The panel and cards in this package show what's running, what's coming next, and what you'll pay.
+
+The optimization itself (per-home thermal models, HVAC scheduling, EV/battery load-shifting, water-heater control) lives entirely in the backend. This package is the user-facing window into it.
+
+## Requirements
+
+- Home Assistant with [HACS](https://hacs.xyz/docs/setup/download) installed.
+- A Hungry Machines account — sign up at [hungrymachines.io](https://hungrymachines.io).
+- At least an indoor temperature sensor and a home power sensor in HA. You'll map them in the panel's **Settings** tab.
+
+---
+
+## Install
+
+### Step 1 — Create your Hungry Machines account
+
+Go to **[hungrymachines.io](https://hungrymachines.io)** and sign up. Confirm your email when the verification message arrives. The email and password you set there are what you'll use to sign in inside Home Assistant.
+
+### Step 2 — Add the package to HACS
 
 1. In Home Assistant, open **HACS → Frontend → ⋮ (top right) → Custom repositories**.
 2. Add `https://github.com/hungrymachines/energy-dashboard` with **Category: Lovelace**.
-3. Search for "Hungry Machines" in HACS and install it.
-4. Restart Home Assistant (or reload resources under **Settings → Dashboards → Resources**).
+3. Search for **Hungry Machines** in HACS and click **Download**.
+4. Restart Home Assistant (or reload Lovelace resources under **Settings → Dashboards → Resources**).
 
-### Manual install (fallback)
+### Step 3 — Add the panel
 
-1. Build the bundle locally (see Developer notes) or download `hungry-machines.js` from a release.
-2. Copy `dist/hungry-machines.js` into your HA config directory at `/config/www/hungry-machines.js`.
-3. Under **Settings → Dashboards → Resources**, add:
-   - URL: `/local/hungry-machines.js`
-   - Resource type: **JavaScript module**
-4. Hard-reload the browser tab.
-
-## Panel setup
-
-Add the panel to `configuration.yaml`:
+Edit `configuration.yaml` and add:
 
 ```yaml
 panel_custom:
@@ -47,15 +60,15 @@ panel_custom:
     trust_external_script: false
 ```
 
-If you installed manually, use `module_url: /local/hungry-machines.js` instead.
+Restart Home Assistant. A **Hungry Machines** entry appears in your sidebar.
 
-Restart Home Assistant. A new **Hungry Machines** entry appears in the sidebar.
+### Step 4 — Sign in
 
-## Card examples
+Click the new sidebar entry. Enter the email and password you created at [hungrymachines.io](https://hungrymachines.io). That's it — the dashboard now shows today's optimized schedules for whatever appliances you've registered.
 
-Both cards auto-register with the Lovelace card picker (search "Hungry Machines") once the resource is loaded. YAML examples:
+### Step 5 — Add the cards (optional)
 
-### Thermostat card
+The panel is the primary surface; the cards are extras for your existing dashboards. In any Lovelace dashboard, click **Add card → Search "Hungry Machines"**, then fill in the entity IDs that match your home:
 
 ```yaml
 type: custom:hm-thermostat-card
@@ -65,55 +78,56 @@ entities:
   hvac_action: sensor.hvac_action
 ```
 
-### Savings card
-
 ```yaml
 type: custom:hm-savings-card
 entities:
   power: sensor.home_power
 ```
 
-Both cards fall back to a "Sign in from the Hungry Machines panel" stub until you authenticate once via the panel — tokens persist in `localStorage` and are shared across the panel and cards.
+The cards stay in a "Sign in from the Hungry Machines panel" stub state until you've signed in once via the panel — the token is shared, so signing in once activates everything.
+
+---
 
 ## Configuration
 
-All configuration is handled in-panel under the **Settings** tab:
+Everything you'd expect to tune lives inside the panel's **Settings** tab:
 
-- **Home Assistant entities** — pick which HA entities feed the panel's temp/power/weather readings.
-- **Pricing zone** — choose your time-of-use pricing zone (1–8). Saves directly to the API.
-- **Account** — sign out, or email `info@hungrymachines.io` to delete your account.
+- **Home Assistant entities** — pick which `sensor.*` entities feed indoor/outdoor temperature and home power. The panel and the cards both read this map.
+- **Pricing zone** — choose your time-of-use rate plan (1–8 preset zones covering common US utilities, including SDG&E, ConEd, and Xcel). Hourly rate overrides are supported if your utility doesn't fit a preset.
+- **Account** — sign out, or email [info@hungrymachines.io](mailto:info@hungrymachines.io) if you want your account deleted.
 
-The cards' `entities:` keys are separate from the panel's entity map — the panel map is used by the dashboard view; the cards read the entities you pass in their YAML config.
+Comfort and charge constraints (HVAC high/low temperature ranges, EV target state-of-charge, battery reserve, water-heater setpoint, etc.) are edited per-appliance in the panel's **Constraints** tab.
 
-## Developer notes
+## Manual install (without HACS)
 
-Requirements: Node 20+ (22 recommended).
+If you don't use HACS:
+
+1. Download `hungry-machines.js` from the [latest GitHub release](https://github.com/hungrymachines/energy-dashboard/releases).
+2. Copy it into your Home Assistant config directory at `/config/www/hungry-machines.js`.
+3. Under **Settings → Dashboards → Resources**, add `/local/hungry-machines.js` with **Resource type: JavaScript module**.
+4. Use `module_url: /local/hungry-machines.js` in the `panel_custom` block above (instead of the `/hacsfiles/...` path).
+5. Restart Home Assistant and hard-reload your browser tab.
+
+---
+
+## Support
+
+- **Account, billing, product questions:** [info@hungrymachines.io](mailto:info@hungrymachines.io)
+- **Learn more:** [hungrymachines.io](https://hungrymachines.io)
+- **Bug reports for this package:** [GitHub issues](https://github.com/hungrymachines/energy-dashboard/issues)
+
+## For developers
+
+This package is open-source — patches and forks welcome. Build from source (Node 20+):
 
 ```bash
 npm install
-npm run build      # produce dist/hungry-machines.js
-npm test           # run vitest suite
-npm run dev        # rollup watch mode
+npm run build      # → dist/hungry-machines.js
+npm test           # vitest suite
 ```
 
-Project layout:
-
-- `src/api/*.ts` — typed API client (`apiFetch` + wrappers for auth/appliances/schedules/preferences/rates).
-- `src/store.ts` — auth store (tokens in `localStorage`, subscribable).
-- `src/panel/hungry-machines-panel.ts` — the full-page panel element.
-- `src/cards/thermostat-card.ts`, `src/cards/savings-card.ts` — the two Lovelace cards.
-- `src/ui/*.ts` — shared Lit components (login form, schedule chart, constraint editor).
-- `src/styles/tokens.css` + `src/styles/tokens.ts` — brand palette + Lora/Lato font tokens.
-- `tests/*.test.ts` — vitest + happy-dom.
-
-One-shot release helper:
-
-```bash
-./scripts/release.sh
-```
-
-This runs `npm ci && npm run build` and prints the size of the emitted bundle.
+Architecture reference: [`structure.md`](structure.md). The bundle is a single ESM file built with Rollup; every custom element ships in `dist/hungry-machines.js`.
 
 ## License
 
-Same as the parent Hungry Machines repository.
+MIT — see [`LICENSE`](LICENSE).
