@@ -5,7 +5,7 @@ import terser from '@rollup/plugin-terser';
 export default {
   input: 'src/main.ts',
   output: {
-    file: 'dist/hungry-machines.js',
+    file: 'custom_components/hungry_machines/frontend/hungry-machines.js',
     format: 'esm',
     inlineDynamicImports: true,
     sourcemap: false,

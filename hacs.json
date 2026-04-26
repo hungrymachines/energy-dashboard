@@ -1,6 +1,6 @@
 {
   "name": "Hungry Machines",
-  "content_in_root": false,
-  "filename": "hungry-machines.js",
-  "render_readme": true
+  "render_readme": true,
+  "zip_release": true,
+  "filename": "hungry_machines.zip"
 }
