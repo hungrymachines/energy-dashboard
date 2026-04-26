@@ -19,7 +19,7 @@ All three share one sign-in. Sign in once via the panel and the cards activate e
 ## How it works
 
 1. You connect your appliances and preferences via the panel inside Home Assistant.
-2. Each night, the Hungry Machines backend at `api.hungrymachines.io` fetches a 24-hour weather forecast and your time-of-use rates, then runs an optimization that picks operating intervals to minimize cost while staying inside your comfort and charge constraints.
+2. Each night, the Hungry Machines API fetches a 24-hour weather forecast and your time-of-use rates, then runs an optimization that picks operating intervals to minimize cost while staying inside your comfort and charge constraints.
 3. Your Home Assistant pulls the resulting schedule the next morning and applies the setpoints. The panel and cards in this package show what's running, what's coming next, and what you'll pay.
 
 The optimization itself (per-home thermal models, HVAC scheduling, EV/battery load-shifting, water-heater control) lives entirely in the backend. This package is the user-facing window into it.
@@ -41,7 +41,7 @@ Go to **[hungrymachines.io](https://hungrymachines.io)** and sign up. Confirm yo
 ### Step 2 — Add the package to HACS
 
 1. In Home Assistant, open **HACS → Frontend → ⋮ (top right) → Custom repositories**.
-2. Add `https://github.com/hungrymachines/energy-dashboard` with **Category: Lovelace**.
+2. Add `https://github.com/hungrymachines/energy-dashboard` with **Category: Dashboard**.
 3. Search for **Hungry Machines** in HACS and click **Download**.
 4. Restart Home Assistant (or reload Lovelace resources under **Settings → Dashboards → Resources**).
 
