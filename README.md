@@ -41,7 +41,7 @@ Go to **[hungrymachines.io](https://hungrymachines.io)** and sign up. Confirm yo
 ### Step 2 — Add the package to HACS
 
 1. In Home Assistant, open **HACS → Frontend → ⋮ (top right) → Custom repositories**.
-2. Add `https://github.com/hungrymachines/energy-dashboard` with **Category: Dashboard**.
+2. Add `https://github.com/hungrymachines/energy-dashboard` with **Type: Dashboard**.
 3. Search for **Hungry Machines** in HACS and click **Download**.
 4. Restart Home Assistant (or reload Lovelace resources under **Settings → Dashboards → Resources**).
 
