@@ -10,16 +10,16 @@ npm ci
 echo "==> npm run build"
 npm run build
 
-DIST="dist/hungry-machines.js"
+BUNDLE="custom_components/hungry_machines/frontend/hungry-machines.js"
 
-if [[ ! -f "$DIST" ]]; then
-  echo "error: expected $DIST to exist after build" >&2
+if [[ ! -f "$BUNDLE" ]]; then
+  echo "error: expected $BUNDLE to exist after build" >&2
   exit 1
 fi
 
-SIZE_BYTES=$(wc -c < "$DIST" | tr -d ' ')
+SIZE_BYTES=$(wc -c < "$BUNDLE" | tr -d ' ')
 SIZE_KB=$(awk "BEGIN { printf \"%.1f\", $SIZE_BYTES / 1024 }")
 
 echo ""
-echo "Bundle: $(pwd)/$DIST"
+echo "Bundle: $(pwd)/$BUNDLE"
 echo "Size:   ${SIZE_KB} KB (${SIZE_BYTES} bytes)"

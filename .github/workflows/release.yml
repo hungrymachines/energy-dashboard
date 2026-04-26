@@ -25,12 +25,21 @@ jobs:
 
       - run: npm run build
 
-      - name: Verify bundle exists
-        run: ls -lh dist/hungry-machines.js
+      - name: Verify built bundle exists
+        run: ls -lh custom_components/hungry_machines/frontend/hungry-machines.js
 
-      - name: Create release and attach bundle
+      - name: Zip integration for HACS
+        run: |
+          cd custom_components/hungry_machines
+          zip -r ../../hungry_machines.zip .
+          cd ../..
+          ls -lh hungry_machines.zip
+
+      - name: Create release and attach assets
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/hungry-machines.js
+          files: |
+            hungry_machines.zip
+            custom_components/hungry_machines/frontend/hungry-machines.js
           fail_on_unmatched_files: true
           generate_release_notes: true

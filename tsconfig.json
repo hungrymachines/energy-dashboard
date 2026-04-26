@@ -7,7 +7,7 @@
     "experimentalDecorators": true,
     "useDefineForClassFields": false,
     "declaration": false,
-    "outDir": "dist",
+    "outDir": "custom_components/hungry_machines/frontend",
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
@@ -16,5 +16,5 @@
     "lib": ["ES2020", "DOM", "DOM.Iterable"]
   },
   "include": ["src/**/*.ts", "tests/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "dist", "custom_components/hungry_machines/frontend"]
 }

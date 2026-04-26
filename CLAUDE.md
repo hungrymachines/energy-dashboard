@@ -96,7 +96,7 @@ This package has **no build-time secrets** -- the bundle is shipped to end users
 - **Never require a live API.** Tests use vitest + happy-dom and stub `fetch` (or import the `apiFetch` client and mock it). No story Verify step should hit `api.hungrymachines.io`.
 - **Tolerate missing tokens.** Components and the auth store must render a "signed out" state without throwing when `localStorage` is empty. The login form is the entry point; everything else short-circuits to a stub when `authStore.token` is null.
 - **Verify with static checks.** `npm run build`, `npm test`, `tsc --noEmit`, file-existence greps, and bundle-size checks via `./scripts/release.sh` are the right Verify primitives. If a story needs a "real" API response, mock it.
-- **Live integration is post-merge.** Loading the built `dist/hungry-machines.js` into a real Home Assistant instance and exercising the panel is a manual step the user does after the bundle ships -- not part of any RALPH Verify.
+- **Live integration is post-merge.** Loading the built integration into a real Home Assistant instance, adding it via Settings → Devices & Services, and exercising the panel is a manual step the user does after the package ships -- not part of any RALPH Verify.
 
 If a story's Verify step appears to need network access, the implementation is wrong -- mock the API call, don't relax the Verify.
 
@@ -106,13 +106,15 @@ If a story's Verify step appears to need network access, the implementation is w
 
 ## What This Project Is
 
-This repository is **only** the v1 Home Assistant frontend for [Hungry Machines](https://hungrymachines.io). It ships a single ESM bundle, `dist/hungry-machines.js`, that registers three custom elements in HA:
+This repository is **only** the v1 Home Assistant integration for [Hungry Machines](https://hungrymachines.io). It ships a HACS **Integration** (not a Dashboard plugin) consisting of two parts:
 
-- **`hungry-machines-panel`** -- full-page HA custom panel: Supabase login gate, dashboard with per-appliance optimized schedules (rate-colored 48-interval timeline), per-appliance constraint editor, settings (entity mapping, pricing zone, account).
-- **`hm-thermostat-card`** -- standalone Lovelace card: indoor/outdoor temp, today's HVAC schedule chart, savings-level slider.
-- **`hm-savings-card`** -- standalone Lovelace card: today's average savings %, current home power draw, next scheduled device run.
+1. **A small Python integration** at `custom_components/hungry_machines/` that registers a sidebar panel and serves a bundled JS file as an HTTP resource. This is what the user adds via **Settings → Devices & Services → Add Integration**, eliminating any `configuration.yaml` editing.
+2. **The TypeScript / Lit frontend bundle** at `custom_components/hungry_machines/frontend/hungry-machines.js` that registers three custom elements:
+   - **`hungry-machines-panel`** -- full-page HA custom panel: Supabase login gate, dashboard with per-appliance optimized schedules, per-appliance constraint editor, settings (entity mapping, pricing zone, account).
+   - **`hm-thermostat-card`** -- standalone Lovelace card: indoor/outdoor temp, today's HVAC schedule chart, savings-level slider.
+   - **`hm-savings-card`** -- standalone Lovelace card: today's average savings %, current home power draw, next scheduled device run.
 
-The bundle is distributed via HACS (`hacs.json`) and consumed by users following the install instructions in `README.md`.
+All product logic lives in the TypeScript bundle. The Python is a thin shim — its only jobs are static-path registration, `add_extra_js_url`, and `async_register_built_in_panel`. Releases are tagged on `master` and the GitHub release workflow zips `custom_components/hungry_machines/` for HACS to consume.
 
 **Note:** Previously called "Curve Control." A few historical names may linger in comments; all new code uses "Hungry Machines."
 
@@ -127,17 +129,25 @@ The bundle is distributed via HACS (`hacs.json`) and consumed by users following
 
 ```
 hungry-machines_base-frontend/
-├── src/
-│   ├── main.ts                        # entry — imports tokens + registers all custom elements
-│   ├── api/                           # typed API client (per-endpoint wrappers)
-│   │   ├── client.ts                  # apiFetch — auth header injection + 401 retry
-│   │   ├── auth.ts                    # /auth/me + Supabase session bridge
-│   │   ├── appliances.ts              # CRUD + readings + constraints
-│   │   ├── preferences.ts             # GET/PUT /api/v1/preferences
-│   │   ├── schedules.ts               # GET /api/v1/schedules
-│   │   └── rates.ts                   # hourly TOU rates
-│   ├── store.ts                       # singleton authStore (subscribe/hydrate/login/logout)
-│   ├── panel/hungry-machines-panel.ts # full-page HA custom panel
+├── custom_components/hungry_machines/  # Python integration (what HACS installs)
+│   ├── __init__.py                     # async_setup_entry: static path + extra_js_url + panel registration
+│   ├── manifest.json                   # HA integration manifest (domain, version, config_flow: true)
+│   ├── config_flow.py                  # single-step "Add Integration" UI flow
+│   ├── const.py                        # DOMAIN, panel constants, SCRIPT_URL
+│   ├── strings.json                    # source UI strings
+│   ├── translations/en.json            # localized UI strings
+│   └── frontend/hungry-machines.js     # built JS bundle (gitignored; rebuilt by npm run build)
+├── src/                                # TypeScript / Lit sources for the frontend bundle
+│   ├── main.ts                         # entry — imports tokens + registers all custom elements
+│   ├── api/                            # typed API client (per-endpoint wrappers)
+│   │   ├── client.ts                   # apiFetch — auth header injection + 401 retry
+│   │   ├── auth.ts                     # /auth/me + Supabase session bridge
+│   │   ├── appliances.ts               # CRUD + readings + constraints
+│   │   ├── preferences.ts              # GET/PUT /api/v1/preferences
+│   │   ├── schedules.ts                # GET /api/v1/schedules
+│   │   └── rates.ts                    # hourly TOU rates
+│   ├── store.ts                        # singleton authStore (subscribe/hydrate/login/logout)
+│   ├── panel/hungry-machines-panel.ts  # full-page HA custom panel
 │   ├── cards/
 │   │   ├── thermostat-card.ts
 │   │   └── savings-card.ts
@@ -145,22 +155,22 @@ hungry-machines_base-frontend/
 │   │   ├── login-form.ts
 │   │   ├── schedule-chart.ts
 │   │   └── constraint-editor.ts
-│   ├── utils/hourly.ts                # 24h <-> 48-slot helpers
-│   └── styles/tokens.{css,ts}         # brand palette + Lora/Lato tokens
-├── tests/                             # vitest + happy-dom (one file per component / module)
-├── scripts/release.sh                 # npm ci + npm run build + bundle size
-├── dist/hungry-machines.js            # built bundle (generated; what HACS ships)
-├── hacs.json                          # HACS metadata
-├── README.md                          # install + configuration for end users
-├── base-frontend-description.md       # original product brief
-├── rollup.config.mjs                  # single-ESM bundle, terser max_line_len: 120
+│   ├── utils/hourly.ts                 # 24h <-> 48-slot helpers
+│   └── styles/tokens.{css,ts}          # brand palette + Lora/Lato tokens
+├── tests/                              # vitest + happy-dom (one file per component / module)
+├── scripts/release.sh                  # npm ci + npm run build + bundle size
+├── .github/workflows/release.yml       # builds + zips integration + creates GitHub Release on tag push
+├── hacs.json                           # HACS metadata (zip_release: true, filename: hungry_machines.zip)
+├── README.md                           # install + configuration for end users
+├── base-frontend-description.md        # original product brief
+├── rollup.config.mjs                   # single-ESM bundle, terser max_line_len: 120
 ├── tsconfig.json
 ├── vitest.config.ts
 ├── package.json
-├── prd.json                           # RALPH story tracker (created per-feature)
-├── ralph.sh                           # RALPH autonomous loop driver
-├── structure.md                       # FULL architecture reference -- read for depth
-└── CLAUDE.md                          # this file
+├── prd.json                            # RALPH story tracker (created per-feature)
+├── ralph.sh                            # RALPH autonomous loop driver
+├── structure.md                        # FULL architecture reference -- read for depth
+└── CLAUDE.md                           # this file
 ```
 
 ## Stack
@@ -170,38 +180,40 @@ hungry-machines_base-frontend/
 ## Architecture at a Glance
 
 ```
-                       ┌───────────────────────────────┐
-                       │ Home Assistant frontend       │
-                       │ (user's browser, served by HA)│
-                       └─────────────┬─────────────────┘
-                                     │ loads /hacsfiles/energy-dashboard/hungry-machines.js
-                                     ▼
-                       ┌───────────────────────────────┐
-                       │ dist/hungry-machines.js       │
-                       │ ┌──────────────────────────┐  │
-                       │ │ <hungry-machines-panel>  │  │
-                       │ │ <hm-thermostat-card>     │  │
-                       │ │ <hm-savings-card>        │  │
-                       │ └──────────────────────────┘  │
-                       │       ▲              ▲        │
-                       │       │ subscribe    │        │
-                       │       ▼              │        │
-                       │  ┌──────────┐        │        │
-                       │  │authStore │  Lit components│
-                       │  │(localSt.)│  share auth via│
-                       │  └────┬─────┘  this singleton│
-                       │       │                       │
-                       │       ▼                       │
-                       │  src/api/* — typed apiFetch  │
-                       └─────────────┬─────────────────┘
-                                     │ HTTPS, Bearer <Supabase JWT>
-                                     ▼
-                       ┌───────────────────────────────┐
-                       │ api.hungrymachines.io         │
-                       │ (external — see API_CONTRACT  │
-                       │  in the hungry-machines-api   │
-                       │  repo)                        │
-                       └───────────────────────────────┘
+        ┌────────────────────────────────────────────────────────────┐
+        │ Home Assistant (Python)                                    │
+        │  ┌──────────────────────────────────────────────────────┐  │
+        │  │ custom_components/hungry_machines/__init__.py        │  │
+        │  │ async_setup_entry:                                   │  │
+        │  │   1. register_static_paths(/hungry_machines/*.js)    │  │
+        │  │   2. add_extra_js_url(...)  ← cards work everywhere  │  │
+        │  │   3. async_register_built_in_panel(...)  ← sidebar   │  │
+        │  └──────────────────────────────────────────────────────┘  │
+        └─────────────────────────────┬──────────────────────────────┘
+                                      │ serves
+                                      ▼
+        ┌────────────────────────────────────────────────────────────┐
+        │ Browser — frontend/hungry-machines.js                      │
+        │  ┌────────────────────────────────────────────────────┐    │
+        │  │ <hungry-machines-panel> <hm-thermostat-card>       │    │
+        │  │ <hm-savings-card>                                  │    │
+        │  └────────────────────────────────────────────────────┘    │
+        │       ▲              ▲                                     │
+        │       │ subscribe    │  Lit components share auth via      │
+        │       ▼              │  the authStore singleton            │
+        │  ┌──────────┐        │                                     │
+        │  │authStore │        │                                     │
+        │  │(localSt.)│        │                                     │
+        │  └────┬─────┘        │                                     │
+        │       ▼                                                    │
+        │  src/api/* — typed apiFetch                                │
+        └─────────────┬──────────────────────────────────────────────┘
+                      │ HTTPS, Bearer <Supabase JWT>
+                      ▼
+        ┌────────────────────────────────────────────────────────────┐
+        │ api.hungrymachines.io                                      │
+        │ (external — see API_CONTRACT in hungry-machines-api repo)  │
+        └────────────────────────────────────────────────────────────┘
 ```
 
 **Key invariant:** the panel and the two cards share **one** `authStore` singleton. Sign in once via the panel and the cards immediately switch from their "Sign in from the Hungry Machines panel" stub to live data. Tokens live in `localStorage` and survive HA restarts; `apiFetch` automatically attaches them and surfaces 401s for the store to clear.
@@ -222,12 +234,16 @@ See `structure.md` for the full component contract, store API, and build pipelin
 - **Cards degrade gracefully when signed out.** Both cards render a stub instead of a request when `authStore.token` is null. Do not call API wrappers from `connectedCallback` unconditionally.
 - **Tests use happy-dom + stubbed fetch.** No test should require a network. Set `globalThis.fetch = vi.fn(...)` and assert request shape. See `tests/client.test.ts` for the canonical pattern.
 - **Bundle size is a feature.** The single-file ESM ships to every user's HA instance. `./scripts/release.sh` prints the size after build; if a change adds more than a few KB of minified output, justify it in the PRD notes.
+- **Python integration is a thin shim.** `custom_components/hungry_machines/__init__.py` does three things and only three things: `async_register_static_paths`, `add_extra_js_url`, and `async_register_built_in_panel`. No HTTP calls, no business logic, no authentication state — those all live in the TypeScript bundle. If you find yourself adding more than a few lines of Python, stop and reconsider; the answer is almost certainly "do it in TS instead."
+- **No `panel_custom:` YAML.** The integration registers the panel programmatically via `async_register_built_in_panel`. Do not regress to a `panel_custom` install path; it would force every user back to editing `configuration.yaml`.
+- **Single instance only.** The config flow calls `_abort_if_unique_id_configured()` with `unique_id = DOMAIN`. There is no scenario where two Hungry Machines integrations make sense; do not allow it.
+- **Frontend bundle is gitignored.** `custom_components/hungry_machines/frontend/hungry-machines.js` is built by `npm run build` and committed only inside the release zip. The release workflow rebuilds it on every tag push.
 
 ## Build & Run
 
 ```bash
 npm install
-npm run build      # rollup -c → dist/hungry-machines.js
+npm run build      # rollup -c → custom_components/hungry_machines/frontend/hungry-machines.js
 npm test           # vitest run
 npm run dev        # rollup watch
 npx tsc --noEmit   # type-check without emitting
@@ -235,13 +251,14 @@ npx tsc --noEmit   # type-check without emitting
 ./scripts/release.sh   # npm ci + build + print bundle size (the canonical "ready to ship" check)
 ```
 
-There is no docker build, no `.env`, no migrations, and no server to start. The output is one file.
+There is no docker build, no `.env`, no migrations, and no server to start. The output is the integration package directory.
 
 ### Local end-to-end with Home Assistant
-1. `npm run build`.
-2. Copy `dist/hungry-machines.js` into a running HA's `/config/www/hungry-machines.js` (or symlink it).
-3. Add it as a Lovelace resource (`/local/hungry-machines.js`, JavaScript module).
-4. Add the `panel_custom` block from `README.md` to `configuration.yaml` and restart HA.
+1. `npm run build` → produces `custom_components/hungry_machines/frontend/hungry-machines.js`.
+2. Copy (or symlink) the entire `custom_components/hungry_machines/` directory into your running HA's `<config>/custom_components/hungry_machines/`.
+3. Restart Home Assistant.
+4. **Settings → Devices & Services → Add Integration → "Hungry Machines" → Submit.**
+5. Click the new **Hungry Machines** sidebar entry and sign in.
 
 This is the manual smoke test for any UI-shaped change. RALPH stories must not require it -- they verify with vitest -- but the user does it before tagging a release.
 
@@ -269,12 +286,16 @@ The full brand source-of-truth (`Brand Guidelines.md`, `Brand Website UI UX.md`)
 
 ## Distribution
 
-The artifact is `dist/hungry-machines.js`, configured by `hacs.json`:
+Published at `hungrymachines/energy-dashboard` as a HACS **Integration** (not a Dashboard plugin). `hacs.json`:
 ```json
-{ "name": "Hungry Machines", "content_in_root": false, "filename": "hungry-machines.js", "render_readme": true }
+{ "name": "Hungry Machines", "render_readme": true, "zip_release": true, "filename": "hungry_machines.zip" }
 ```
 
-Published at `hungrymachines/energy-dashboard`. HACS users add `https://github.com/hungrymachines/energy-dashboard` as a custom Frontend repository, install, and reference the file at `/hacsfiles/energy-dashboard/hungry-machines.js`. Releases are tagged on `master`; the file in the release tarball must be the built `dist/hungry-machines.js`. Do not check `dist/` into the working tree under normal commits -- it is built and attached by the release flow.
+`zip_release: true` tells HACS to look for a release asset matching `filename` and extract it into the user's `<config>/custom_components/hungry_machines/`. The release workflow builds the JS bundle, zips the contents of `custom_components/hungry_machines/` (including the just-built bundle), and attaches the zip plus the bare `hungry-machines.js` to the GitHub release.
+
+Users install by adding `https://github.com/hungrymachines/energy-dashboard` to HACS with **Type: Integration**, then **Settings → Devices & Services → Add Integration → "Hungry Machines"**. No `configuration.yaml` editing.
+
+Do not commit `custom_components/hungry_machines/frontend/hungry-machines.js` — it is gitignored and rebuilt by CI on every tag push.
 
 ---
 
@@ -283,6 +304,9 @@ Published at `hungrymachines/energy-dashboard`. HACS users add `https://github.c
 | Question | Go to |
 |---|---|
 | What's the architecture / how do the pieces fit? | `structure.md` |
+| How does the integration register the panel and serve the JS? | `custom_components/hungry_machines/__init__.py` |
+| What's the integration's HA manifest (domain, version, config_flow)? | `custom_components/hungry_machines/manifest.json` |
+| How does the "Add Integration" flow work? | `custom_components/hungry_machines/config_flow.py` |
 | What's the shape of endpoint `/api/v1/X`? | `src/api/<group>.ts` (this repo's mirror) → `hungry-machines-api/API_CONTRACT.md` (source of truth, in the API repo) |
 | What custom elements does the bundle export? | `src/main.ts` |
 | Where do tokens / colors / fonts come from? | `src/styles/tokens.ts` |

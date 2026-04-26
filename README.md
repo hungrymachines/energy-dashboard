@@ -1,4 +1,4 @@
-# Hungry Machines — Home Assistant Frontend
+# Hungry Machines — Home Assistant Integration
 
 Hungry Machines optimizes when your home runs its biggest energy users — HVAC, EV charger, home battery, water heater — to shift load into the cheapest hours of your time-of-use rate plan, while keeping the comfort and charge constraints you set.
 
@@ -28,43 +28,36 @@ The optimization itself (per-home thermal models, HVAC scheduling, EV/battery lo
 
 - Home Assistant with [HACS](https://hacs.xyz/docs/setup/download) installed.
 - A Hungry Machines account — sign up at [hungrymachines.io](https://hungrymachines.io).
-- At least an indoor temperature sensor and a home power sensor in HA. You'll map them in the panel's **Settings** tab.
+- At least an indoor temperature sensor and a home power sensor in HA. You'll map them in the panel's **Settings** tab after sign-in.
 
 ---
 
 ## Install
 
+No `configuration.yaml` editing required. Five steps, all from the Home Assistant UI.
+
 ### Step 1 — Create your Hungry Machines account
 
 Go to **[hungrymachines.io](https://hungrymachines.io)** and sign up. Confirm your email when the verification message arrives. The email and password you set there are what you'll use to sign in inside Home Assistant.
 
-### Step 2 — Add the package to HACS
+### Step 2 — Add the integration to HACS
 
-1. In Home Assistant, open **HACS → Frontend → ⋮ (top right) → Custom repositories**.
-2. Add `https://github.com/hungrymachines/energy-dashboard` with **Type: Dashboard**.
+1. In Home Assistant, open **HACS → ⋮ (top right) → Custom repositories**.
+2. Add `https://github.com/hungrymachines/energy-dashboard` with **Type: Integration**.
 3. Search for **Hungry Machines** in HACS and click **Download**.
-4. Restart Home Assistant (or reload Lovelace resources under **Settings → Dashboards → Resources**).
+4. Restart Home Assistant when HACS prompts you.
 
-### Step 3 — Add the panel
+### Step 3 — Add the integration
 
-Edit `configuration.yaml` and add:
+1. Open **Settings → Devices & Services → Add Integration**.
+2. Search for **Hungry Machines** and click it.
+3. Click **Submit** on the confirmation screen.
 
-```yaml
-panel_custom:
-  - name: hungry-machines-panel
-    sidebar_title: Hungry Machines
-    sidebar_icon: mdi:lightning-bolt
-    url_path: hungry-machines
-    module_url: /hacsfiles/energy-dashboard/hungry-machines.js
-    embed_iframe: false
-    trust_external_script: false
-```
-
-Restart Home Assistant. A **Hungry Machines** entry appears in your sidebar.
+A **Hungry Machines** entry now appears in your sidebar, and the two Lovelace cards become available in the dashboard card picker.
 
 ### Step 4 — Sign in
 
-Click the new sidebar entry. Enter the email and password you created at [hungrymachines.io](https://hungrymachines.io). That's it — the dashboard now shows today's optimized schedules for whatever appliances you've registered.
+Click the **Hungry Machines** entry in the sidebar. Enter the email and password you created at [hungrymachines.io](https://hungrymachines.io). The dashboard now shows today's optimized schedules for whatever appliances you've registered.
 
 ### Step 5 — Add the cards (optional)
 
@@ -84,7 +77,7 @@ entities:
   power: sensor.home_power
 ```
 
-The cards stay in a "Sign in from the Hungry Machines panel" stub state until you've signed in once via the panel — the token is shared, so signing in once activates everything.
+Sign-in is shared with the panel — once you've signed in, the cards light up immediately.
 
 ---
 
@@ -92,7 +85,7 @@ The cards stay in a "Sign in from the Hungry Machines panel" stub state until yo
 
 Everything you'd expect to tune lives inside the panel's **Settings** tab:
 
-- **Home Assistant entities** — pick which `sensor.*` entities feed indoor/outdoor temperature and home power. The panel and the cards both read this map.
+- **Home Assistant entities** — pick which `sensor.*` entities feed indoor/outdoor temperature and home power. The panel and cards both read this map.
 - **Pricing zone** — choose your time-of-use rate plan (1–8 preset zones covering common US utilities, including SDG&E, ConEd, and Xcel). Hourly rate overrides are supported if your utility doesn't fit a preset.
 - **Account** — sign out, or email [info@hungrymachines.io](mailto:info@hungrymachines.io) if you want your account deleted.
 
@@ -102,13 +95,15 @@ Comfort and charge constraints (HVAC high/low temperature ranges, EV target stat
 
 If you don't use HACS:
 
-1. Download `hungry-machines.js` from the [latest GitHub release](https://github.com/hungrymachines/energy-dashboard/releases).
-2. Copy it into your Home Assistant config directory at `/config/www/hungry-machines.js`.
-3. Under **Settings → Dashboards → Resources**, add `/local/hungry-machines.js` with **Resource type: JavaScript module**.
-4. Use `module_url: /local/hungry-machines.js` in the `panel_custom` block above (instead of the `/hacsfiles/...` path).
-5. Restart Home Assistant and hard-reload your browser tab.
+1. Download `hungry_machines.zip` from the [latest GitHub release](https://github.com/hungrymachines/energy-dashboard/releases).
+2. Unzip into your Home Assistant config at `custom_components/hungry_machines/` (the zip contains the integration's files; create the directory if it doesn't exist).
+3. Restart Home Assistant.
+4. Continue from **Step 3** above (Settings → Devices & Services → Add Integration).
 
----
+## Uninstall
+
+1. **Settings → Devices & Services**, click **Hungry Machines**, then the ⋮ menu, then **Delete**. The sidebar entry and Lovelace cards disappear.
+2. To remove the package entirely, also remove it from HACS.
 
 ## Support
 
@@ -122,11 +117,11 @@ This package is open-source — patches and forks welcome. Build from source (No
 
 ```bash
 npm install
-npm run build      # → dist/hungry-machines.js
+npm run build      # → custom_components/hungry_machines/frontend/hungry-machines.js
 npm test           # vitest suite
 ```
 
-Architecture reference: [`structure.md`](structure.md). The bundle is a single ESM file built with Rollup; every custom element ships in `dist/hungry-machines.js`.
+The Python integration is a thin shim that registers the bundled JS file as a Lovelace resource and registers the sidebar panel. All product logic lives in the TypeScript bundle. Architecture reference: [`structure.md`](structure.md).
 
 ## License
 
