@@ -318,18 +318,24 @@ Patterns:
 
 ## 9. Distribution & Release
 
-The artifact is `dist/hungry-machines.js`. Release flow:
+The artifact is `dist/hungry-machines.js`. Release flow is automated by `.github/workflows/release.yml` — pushing a `v*` tag runs `npm ci && npm test && npm run build`, creates a GitHub Release for the tag, and attaches `dist/hungry-machines.js` as a release asset.
 
-1. On `master`, `./scripts/release.sh` builds and prints bundle size.
-2. Tag a release (`vX.Y.Z`).
-3. Attach `dist/hungry-machines.js` to the GitHub release.
-4. HACS users either auto-update (custom repository configured) or re-add the repo and reinstall.
+```bash
+# Cut a release:
+# 1. Bump "version" in package.json on master and commit.
+# 2. Tag and push.
+git tag v0.1.1
+git push --tags
+# CI runs the workflow; the release appears on github.com with the bundle attached.
+```
 
-`hacs.json` controls how HACS finds the file: `content_in_root: false` means HACS expects it inside `dist/` rather than at the repo root, and `filename: hungry-machines.js` is the exact name HACS will copy into `/hacsfiles/<repo-name>/`.
+A failing test or build aborts the workflow before the release is created, so a broken commit can't ship by accident. If you ever need to release manually (CI down, debugging), `./scripts/release.sh` builds + prints bundle size locally and you can drag the file into the release UI on github.com.
+
+`hacs.json` controls how HACS finds the file: `content_in_root: false` + `filename: hungry-machines.js` means HACS pulls `hungry-machines.js` from the latest release's assets and copies it to `/hacsfiles/<repo-name>/`.
 
 The published GitHub repo is `hungrymachines/energy-dashboard`. HACS derives the on-disk path from the repo name, so installs land at `/hacsfiles/energy-dashboard/`; the `module_url` in `README.md` and the deploy snippets here all match that path.
 
-`dist/` is gitignored in normal development. Only release commits / release tarballs include the built bundle.
+`dist/` is gitignored in normal development — never committed. The release workflow rebuilds it from source on every tag push.
 
 ---
 
