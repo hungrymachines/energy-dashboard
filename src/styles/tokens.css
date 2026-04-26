@@ -1,0 +1,11 @@
+:root {
+  --hm-primary: #1E3A8A;
+  --hm-secondary: #0F766E;
+  --hm-accent: #F59E0B;
+  --hm-bg: #F8FAFC;
+  --hm-text: #0F172A;
+  --hm-muted: #64748B;
+  --hm-error: #DC2626;
+  --hm-font-heading: 'Lora', serif;
+  --hm-font-body: 'Lato', sans-serif;
+}
