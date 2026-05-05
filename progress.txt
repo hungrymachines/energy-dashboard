@@ -9,6 +9,8 @@
 - **Settings persistence is draft-then-save.** Entity map and pricing zone live in two layers: `_entityMap`/`_auth.user.pricing_location` are the saved baselines; `_entityMapDraft`/`_zoneDraft` are the in-memory drafts the form binds to. Change handlers only mutate drafts. The Save button is the single persistence path (calls `setEntityMap` and `patchMe`); Reset snaps drafts back to baselines; both buttons disable when `_isDirty()` is false.
 - **`<select>` value binding for happy-dom remounts.** Lit's `.value=${selected}` does not reliably reflect on a select after a remount in happy-dom. Use `?selected=${id === selected}` per `<option>` (combined with the `.value` binding for the change-event path) so case-E-style "remount restores the saved value" tests pass without requiring real-browser semantics.
 - **Display labels for backend lookups belong in `src/data/`.** When the backend exposes integer keys (pricing zones, appliance types) and the UI needs human-readable labels, drop the mapping in `src/data/<topic>.ts` as a typed `Record<KeyUnion, Label>` plus pure label-builder helpers. Keep helpers tolerant of out-of-range keys (fallback to a TBD label) so callers don't have to clamp. Drive `<option>` lists off `Object.keys(MAP).map(Number).sort()` instead of a hardcoded tuple — adding/removing a zone becomes a one-line data edit.
+- **Wrap fragment-level `${TemplateResult}` interpolations in a host element.** When a Lit template has `${someTemplateResult}` at fragment level between sibling elements (e.g. `</label>\n      ${typeFields}\n      <div>`), the parser under happy-dom silently drops the binding slot. All bindings AFTER it shift by one position, leading to surreal output like a button's text rendering its own `@click` handler source. Wrap the slot in `<div>${typeFields}</div>` (or any host element) and the parser handles it correctly. This was a multi-hour debug rabbit hole on US-FE-APPLIANCES-01; future stories that compose multi-section templates should default to wrapping each section in its own element.
+- **API `create` shape is normalize-on-the-way-in.** `appliancesApi.create()` accepts either a full `Appliance` body or a thin `{appliance_id}` envelope from the server and synthesizes an `Appliance`-shaped object from the input + response. Callers always get the same shape, regardless of which the backend actually returns. Other API wrappers that have similarly thin response envelopes should follow this pattern rather than pushing the shape difference up to the consumer.
 
 ---
 
@@ -64,3 +66,24 @@
 - Both helper functions (`pricingZoneOptionLabel`, `pricingZoneFullLabel`) accept `number` rather than the strict `PricingZone` literal union, with a fallback to TBD. That lets the panel pass `_zoneDraft` (typed `number`) without casting and keeps a backend-introduced zone-9 from crashing the UI before the data file is updated.
 - Tests should not assume `SAMPLE_USER.pricing_location` — it's 3, which means the initial `.zone-hint` shows "Provider TBD" not "SDG&E". Drove the new test off the *change* (zone → 1, then 2) rather than the initial render to keep it independent of the fixture's preset zone.
 - Driving `PRICING_ZONES` off `Object.keys(PRICING_ZONE_LABELS).map(Number).sort()` (instead of the old `[1, 2, 3, 4, 5, 6, 7, 8] as const`) means the panel automatically picks up additions to the data file without a second edit. The cost is losing the literal-tuple type narrowing, which the option label helpers' `number` signature absorbs.
+
+---
+
+## Iteration: Tuesday, May 5, 2026 12:14
+
+**Story:** US-FE-APPLIANCES-01 - Add appliance modal: type picker + per-type config form
+
+**Status:** Completed
+
+**Files Changed:**
+- src/ui/appliance-form.ts (new — HmApplianceForm two-step modal: type picker → per-type config form, validates inputs live, dispatches appliance-created/cancelled)
+- src/api/appliances.ts (create() now returns Appliance by synthesizing one from input+response when the API returns just {appliance_id})
+- src/panel/hungry-machines-panel.ts (wired empty-state Add appliance button + bottom-of-dashboard 'Add another' button to _openAddAppliance handler; mounted <hm-appliance-form> with @appliance-created/@cancelled wiring; _onApplianceCreated re-fetches /api/v1/schedules)
+- src/main.ts (registered hm-appliance-form custom element + exported HmApplianceForm)
+- tests/appliance-form.test.ts (new — 6 cases covering step1, step2 advance, validation, success, error, cancel)
+- tests/panel.test.ts (added 2 cases — Add button opens modal, appliance-created triggers refetch)
+
+**Learnings:**
+- Lit's HTML parser drops fragment-level `${TemplateResult}` slots, shifting later bindings by one position. The bug surfaces as bizarre output (a button's text rendering its own @click handler). Wrapping the interpolation in a host element (`<div>${X}</div>`) is the workaround. Documented in AGENTS.md and the codebase patterns block above.
+- The `appliances.create()` API returns just `{appliance_id}` per the existing typed wrapper, but the story's contract called for `Promise<Appliance>`. Solved by normalizing on the way in: the wrapper accepts either shape from the server and synthesizes a complete Appliance from the request body when only the id comes back. This keeps the consumer side type-clean without needing a follow-up GET.
+- The verification grep `grep -c 'appliancesApi.create\|appliances.create'` enforces the import style. Used `import * as appliancesApi from '../api/appliances.js'` so the call site reads as `appliancesApi.create(...)` rather than the more typical `import { create as createAppliance }` pattern. Worth keeping consistent across new code that touches this API.

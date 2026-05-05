@@ -250,6 +250,11 @@ export class HungryMachinesPanel extends LitElement {
       font: inherit;
       cursor: pointer;
     }
+    .dashboard-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 16px;
+    }
     .skeleton {
       display: grid;
       gap: 16px;
@@ -527,6 +532,7 @@ export class HungryMachinesPanel extends LitElement {
     _editorApplianceId: { state: true },
     _editorApplianceType: { state: true },
     _editorConstraints: { state: true },
+    _addApplianceOpen: { state: true },
     _entityMap: { state: true },
     _entityMapDraft: { state: true },
     _zoneDraft: { state: true },
@@ -553,6 +559,7 @@ export class HungryMachinesPanel extends LitElement {
   _editorApplianceId = '';
   _editorApplianceType: ApplianceType = 'hvac';
   _editorConstraints: Record<string, unknown> | undefined = undefined;
+  _addApplianceOpen = false;
   _entityMap: EntityMap = {};
   _entityMapDraft: EntityMap = {};
   _zoneDraft = 1;
@@ -830,6 +837,20 @@ export class HungryMachinesPanel extends LitElement {
     this._editorOpen = false;
   }
 
+  private _openAddAppliance = (): void => {
+    this._addApplianceOpen = true;
+  };
+
+  private _onApplianceCreated = (): void => {
+    this._addApplianceOpen = false;
+    this._schedulesFetched = false;
+    void this._loadSchedulesIfNeeded();
+  };
+
+  private _onApplianceCancelled = (): void => {
+    this._addApplianceOpen = false;
+  };
+
   override render() {
     const status = this._auth.status;
     if (status === 'loading') {
@@ -891,6 +912,11 @@ export class HungryMachinesPanel extends LitElement {
         @constraints-saved=${() => this._onEditorClosed()}
         @constraints-cancelled=${() => this._onEditorClosed()}
       ></hm-constraint-editor>
+      <hm-appliance-form
+        .open=${this._addApplianceOpen}
+        @appliance-created=${this._onApplianceCreated}
+        @cancelled=${this._onApplianceCancelled}
+      ></hm-appliance-form>
     `;
   }
 
@@ -928,7 +954,13 @@ export class HungryMachinesPanel extends LitElement {
         <h2>Dashboard</h2>
         <div class="empty">
           <p>No appliances registered yet. Add one to start optimizing.</p>
-          <button class="add-btn" type="button">Add appliance</button>
+          <button
+            class="add-btn"
+            type="button"
+            @click=${this._openAddAppliance}
+          >
+            Add appliance
+          </button>
         </div>
       `;
     }
@@ -938,6 +970,15 @@ export class HungryMachinesPanel extends LitElement {
       <h2>Dashboard</h2>
       <div class="cards">
         ${appliances.map((a) => this._renderApplianceCard(a, rates))}
+      </div>
+      <div class="dashboard-actions">
+        <button
+          class="add-btn"
+          type="button"
+          @click=${this._openAddAppliance}
+        >
+          Add another appliance
+        </button>
       </div>
     `;
   }
