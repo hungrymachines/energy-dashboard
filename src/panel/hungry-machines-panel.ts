@@ -20,20 +20,26 @@ import { list as listAppliances, type Appliance, type ApplianceType } from '../a
 import { patchMe } from '../api/auth.js';
 import { get as getPreferences, type Preferences } from '../api/preferences.js';
 import { expandHourlyTo48, hasCustomRates, hasHourlyComfortBands } from '../utils/hourly.js';
+import {
+  PRICING_ZONE_LABELS,
+  pricingZoneFullLabel,
+  pricingZoneOptionLabel,
+  type PricingZone,
+} from '../data/pricing-zones.js';
 
-type EntityField = 'indoor_temp' | 'outdoor_temp' | 'power' | 'weather';
+type EntityField = 'climate' | 'weather';
 
 type HassStateLike = { entity_id?: string; state?: unknown; attributes?: Record<string, unknown> };
 type HassLike = { states?: Record<string, HassStateLike> };
 
-const ENTITY_FIELDS: Array<{ key: EntityField; label: string; domain: 'sensor' | 'weather' }> = [
-  { key: 'indoor_temp', label: 'Indoor temperature', domain: 'sensor' },
-  { key: 'outdoor_temp', label: 'Outdoor temperature', domain: 'sensor' },
-  { key: 'power', label: 'Power', domain: 'sensor' },
+const ENTITY_FIELDS: Array<{ key: EntityField; label: string; domain: 'climate' | 'weather' }> = [
+  { key: 'climate', label: 'HVAC climate entity', domain: 'climate' },
   { key: 'weather', label: 'Weather', domain: 'weather' },
 ];
 
-const PRICING_ZONES = [1, 2, 3, 4, 5, 6, 7, 8] as const;
+const PRICING_ZONES = Object.keys(PRICING_ZONE_LABELS)
+  .map((k) => Number(k) as PricingZone)
+  .sort((a, b) => a - b);
 
 type View = 'dashboard' | 'settings';
 
@@ -52,6 +58,10 @@ function asNumberArray(value: unknown): number[] | undefined {
 function asBooleanArray(value: unknown): boolean[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.every((v) => typeof v === 'boolean') ? (value as boolean[]) : undefined;
+}
+
+function entityMapsEqual(a: EntityMap, b: EntityMap): boolean {
+  return (a.climate ?? null) === (b.climate ?? null) && (a.weather ?? null) === (b.weather ?? null);
 }
 
 export class HungryMachinesPanel extends LitElement {
@@ -240,6 +250,11 @@ export class HungryMachinesPanel extends LitElement {
       font: inherit;
       cursor: pointer;
     }
+    .dashboard-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 16px;
+    }
     .skeleton {
       display: grid;
       gap: 16px;
@@ -336,6 +351,11 @@ export class HungryMachinesPanel extends LitElement {
     }
     .settings-section .zone-error {
       color: var(--hm-error, #DC2626);
+      font-size: 13px;
+      margin: 0;
+    }
+    .settings-section .zone-hint {
+      color: var(--hm-muted, #64748B);
       font-size: 13px;
       margin: 0;
     }
@@ -457,6 +477,46 @@ export class HungryMachinesPanel extends LitElement {
       font-size: 13px;
       margin: 0;
     }
+    .settings-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .settings-actions .save-btn {
+      background: var(--hm-primary, #1E3A8A);
+      color: #ffffff;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font: inherit;
+      cursor: pointer;
+    }
+    .settings-actions .save-btn:hover:not(:disabled) {
+      opacity: 0.9;
+    }
+    .settings-actions .reset-btn {
+      background: transparent;
+      border: 1px solid var(--hm-primary, #1E3A8A);
+      color: var(--hm-primary, #1E3A8A);
+      padding: 8px 16px;
+      border-radius: 6px;
+      font: inherit;
+      cursor: pointer;
+    }
+    .settings-actions .reset-btn:hover:not(:disabled) {
+      background: var(--hm-primary, #1E3A8A);
+      color: #ffffff;
+    }
+    .settings-actions button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .settings-actions .saved-flash {
+      color: var(--hm-secondary, #0F766E);
+      font-weight: 600;
+      font-size: 14px;
+    }
   `;
 
   static override properties = {
@@ -472,7 +532,11 @@ export class HungryMachinesPanel extends LitElement {
     _editorApplianceId: { state: true },
     _editorApplianceType: { state: true },
     _editorConstraints: { state: true },
+    _addApplianceOpen: { state: true },
     _entityMap: { state: true },
+    _entityMapDraft: { state: true },
+    _zoneDraft: { state: true },
+    _savedFlash: { state: true },
     _zoneSaving: { state: true },
     _zoneError: { state: true },
     _ratesLoading: { state: true },
@@ -495,7 +559,11 @@ export class HungryMachinesPanel extends LitElement {
   _editorApplianceId = '';
   _editorApplianceType: ApplianceType = 'hvac';
   _editorConstraints: Record<string, unknown> | undefined = undefined;
+  _addApplianceOpen = false;
   _entityMap: EntityMap = {};
+  _entityMapDraft: EntityMap = {};
+  _zoneDraft = 1;
+  _savedFlash = false;
   _zoneSaving = false;
   _zoneError: string | null = null;
   _ratesLoading = false;
@@ -509,15 +577,19 @@ export class HungryMachinesPanel extends LitElement {
   private _schedulesFetched = false;
   private _ratesInflight = false;
   private _appliancesById: Record<string, Appliance> = {};
+  private _savedFlashTimer: ReturnType<typeof setTimeout> | null = null;
 
   override connectedCallback(): void {
     super.connectedCallback();
     this._auth = authStore.state;
     this._entityMap = getEntityMap();
+    this._entityMapDraft = { ...this._entityMap };
+    this._zoneDraft = this._auth.user?.pricing_location ?? 1;
     this._unsubscribe = authStore.subscribe((s) => {
       const prevStatus = this._auth.status;
       this._auth = s;
       if (prevStatus !== 'authed' && s.status === 'authed') {
+        this._zoneDraft = s.user?.pricing_location ?? 1;
         void this._loadSchedulesIfNeeded();
       }
       if (s.status !== 'authed') {
@@ -533,6 +605,10 @@ export class HungryMachinesPanel extends LitElement {
     if (this._unsubscribe) {
       this._unsubscribe();
       this._unsubscribe = null;
+    }
+    if (this._savedFlashTimer !== null) {
+      clearTimeout(this._savedFlashTimer);
+      this._savedFlashTimer = null;
     }
   }
 
@@ -589,30 +665,57 @@ export class HungryMachinesPanel extends LitElement {
   };
 
   private _onEntityChange(field: EntityField, entityId: string): void {
-    const next: EntityMap = { ...this._entityMap };
+    const next: EntityMap = { ...this._entityMapDraft };
     if (entityId) {
       next[field] = entityId;
     } else {
       delete next[field];
     }
-    this._entityMap = next;
-    setEntityMap(next);
+    this._entityMapDraft = next;
   }
 
-  private async _onZoneChange(zone: number): Promise<void> {
-    const user = this._auth.user;
-    if (!user || user.pricing_location === zone) return;
-    this._zoneSaving = true;
-    this._zoneError = null;
-    try {
-      const updated = await patchMe({ pricing_location: zone });
-      authStore.patchUser({ pricing_location: updated.pricing_location });
-    } catch (err) {
-      this._zoneError =
-        err instanceof Error && err.message ? err.message : 'Could not update pricing zone';
-    } finally {
+  private _onZoneChange(zone: number): void {
+    this._zoneDraft = zone;
+  }
+
+  private _isDirty(): boolean {
+    if (!entityMapsEqual(this._entityMap, this._entityMapDraft)) return true;
+    const currentZone = this._auth.user?.pricing_location ?? 1;
+    return this._zoneDraft !== currentZone;
+  }
+
+  private async _onSave(): Promise<void> {
+    if (!this._isDirty()) return;
+    if (!entityMapsEqual(this._entityMap, this._entityMapDraft)) {
+      setEntityMap(this._entityMapDraft);
+      this._entityMap = { ...this._entityMapDraft };
+    }
+    const currentZone = this._auth.user?.pricing_location ?? 1;
+    if (this._zoneDraft !== currentZone) {
+      this._zoneSaving = true;
+      this._zoneError = null;
+      try {
+        const updated = await patchMe({ pricing_location: this._zoneDraft });
+        authStore.patchUser({ pricing_location: updated.pricing_location });
+      } catch (err) {
+        this._zoneError =
+          err instanceof Error && err.message ? err.message : 'Could not update pricing zone';
+        this._zoneSaving = false;
+        return;
+      }
       this._zoneSaving = false;
     }
+    this._savedFlash = true;
+    if (this._savedFlashTimer !== null) clearTimeout(this._savedFlashTimer);
+    this._savedFlashTimer = setTimeout(() => {
+      this._savedFlash = false;
+      this._savedFlashTimer = null;
+    }, 2000);
+  }
+
+  private _onReset(): void {
+    this._entityMapDraft = { ...this._entityMap };
+    this._zoneDraft = this._auth.user?.pricing_location ?? 1;
   }
 
   private async _loadRatesIfNeeded(): Promise<void> {
@@ -734,6 +837,20 @@ export class HungryMachinesPanel extends LitElement {
     this._editorOpen = false;
   }
 
+  private _openAddAppliance = (): void => {
+    this._addApplianceOpen = true;
+  };
+
+  private _onApplianceCreated = (): void => {
+    this._addApplianceOpen = false;
+    this._schedulesFetched = false;
+    void this._loadSchedulesIfNeeded();
+  };
+
+  private _onApplianceCancelled = (): void => {
+    this._addApplianceOpen = false;
+  };
+
   override render() {
     const status = this._auth.status;
     if (status === 'loading') {
@@ -795,6 +912,11 @@ export class HungryMachinesPanel extends LitElement {
         @constraints-saved=${() => this._onEditorClosed()}
         @constraints-cancelled=${() => this._onEditorClosed()}
       ></hm-constraint-editor>
+      <hm-appliance-form
+        .open=${this._addApplianceOpen}
+        @appliance-created=${this._onApplianceCreated}
+        @cancelled=${this._onApplianceCancelled}
+      ></hm-appliance-form>
     `;
   }
 
@@ -832,7 +954,13 @@ export class HungryMachinesPanel extends LitElement {
         <h2>Dashboard</h2>
         <div class="empty">
           <p>No appliances registered yet. Add one to start optimizing.</p>
-          <button class="add-btn" type="button">Add appliance</button>
+          <button
+            class="add-btn"
+            type="button"
+            @click=${this._openAddAppliance}
+          >
+            Add appliance
+          </button>
         </div>
       `;
     }
@@ -842,6 +970,15 @@ export class HungryMachinesPanel extends LitElement {
       <h2>Dashboard</h2>
       <div class="cards">
         ${appliances.map((a) => this._renderApplianceCard(a, rates))}
+      </div>
+      <div class="dashboard-actions">
+        <button
+          class="add-btn"
+          type="button"
+          @click=${this._openAddAppliance}
+        >
+          Add another appliance
+        </button>
       </div>
     `;
   }
@@ -932,12 +1069,14 @@ export class HungryMachinesPanel extends LitElement {
     const states = hass && typeof hass === 'object' ? hass.states : undefined;
     const hasHass = !!states;
     const allEntities = states ? Object.keys(states).sort() : [];
-    const sensorEntities = allEntities.filter((id) => id.startsWith('sensor.'));
+    const climateEntities = allEntities.filter((id) => id.startsWith('climate.'));
     const weatherEntities = allEntities.filter((id) => id.startsWith('weather.'));
-    const map = this._entityMap;
+    const draftMap = this._entityMapDraft;
     const user = this._auth.user;
     const email = user?.email ?? '';
-    const pricing = user?.pricing_location ?? 1;
+    const pricing = this._zoneDraft;
+    const isDirty = this._isDirty();
+    const settingsSaving = this._zoneSaving;
 
     const rates = this._rates;
     const ratesLoading = this._ratesLoading;
@@ -973,8 +1112,8 @@ export class HungryMachinesPanel extends LitElement {
                 Entity mapping is only available inside Home Assistant.
               </p>`}
           ${ENTITY_FIELDS.map((f) => {
-            const options = f.domain === 'sensor' ? sensorEntities : weatherEntities;
-            const selected = map[f.key] ?? '';
+            const options = f.domain === 'climate' ? climateEntities : weatherEntities;
+            const selected = draftMap[f.key] ?? '';
             return html`
               <label>
                 <span class="label-text">${f.label}</span>
@@ -989,9 +1128,10 @@ export class HungryMachinesPanel extends LitElement {
                       (e.target as HTMLSelectElement).value,
                     )}
                 >
-                  <option value="">— not set —</option>
+                  <option value="" ?selected=${selected === ''}>— not set —</option>
                   ${options.map(
-                    (id) => html`<option value=${id}>${id}</option>`,
+                    (id) =>
+                      html`<option value=${id} ?selected=${id === selected}>${id}</option>`,
                   )}
                 </select>
               </label>
@@ -1012,12 +1152,37 @@ export class HungryMachinesPanel extends LitElement {
                 this._onZoneChange(Number((e.target as HTMLSelectElement).value))}
             >
               ${PRICING_ZONES.map(
-                (z) => html`<option value=${String(z)}>Zone ${z}</option>`,
+                (z) => html`<option value=${String(z)} ?selected=${z === pricing}>
+                  ${pricingZoneOptionLabel(z)}
+                </option>`,
               )}
             </select>
           </label>
+          <p class="zone-hint">${pricingZoneFullLabel(pricing)}</p>
           ${this._zoneError
             ? html`<p class="zone-error" role="alert">${this._zoneError}</p>`
+            : null}
+        </div>
+
+        <div class="settings-actions">
+          <button
+            type="button"
+            class="save-btn"
+            ?disabled=${!isDirty || settingsSaving}
+            @click=${() => void this._onSave()}
+          >
+            Save
+          </button>
+          <button
+            type="button"
+            class="reset-btn"
+            ?disabled=${!isDirty || settingsSaving}
+            @click=${() => this._onReset()}
+          >
+            Reset
+          </button>
+          ${this._savedFlash
+            ? html`<span class="saved-flash" role="status">Saved</span>`
             : null}
         </div>
 

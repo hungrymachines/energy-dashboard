@@ -5,6 +5,7 @@ import { HmSavingsCard } from './cards/savings-card.js';
 import { HmLoginForm } from './ui/login-form.js';
 import { HmScheduleChart } from './ui/schedule-chart.js';
 import { HmConstraintEditor } from './ui/constraint-editor.js';
+import { HmApplianceForm } from './ui/appliance-form.js';
 
 declare global {
   interface Window {
@@ -34,6 +35,9 @@ if (!customElements.get('hm-schedule-chart')) {
 if (!customElements.get('hm-constraint-editor')) {
   customElements.define('hm-constraint-editor', HmConstraintEditor);
 }
+if (!customElements.get('hm-appliance-form')) {
+  customElements.define('hm-appliance-form', HmApplianceForm);
+}
 
 window.customCards = window.customCards || [];
 const existing = new Set(window.customCards.map((c) => c.type));
@@ -59,4 +63,5 @@ export {
   HmLoginForm,
   HmScheduleChart,
   HmConstraintEditor,
+  HmApplianceForm,
 };

@@ -1,11 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { HungryMachinesPanel } from '../src/panel/hungry-machines-panel.js';
 import { HmLoginForm } from '../src/ui/login-form.js';
+import { HmApplianceForm } from '../src/ui/appliance-form.js';
 import { authStore, type AuthState } from '../src/store.js';
-import { clearTokens, setApiBase } from '../src/api/client.js';
+import { clearTokens, setApiBase, setTokens } from '../src/api/client.js';
 
 if (!customElements.get('hm-login-form')) {
   customElements.define('hm-login-form', HmLoginForm);
+}
+if (!customElements.get('hm-appliance-form')) {
+  customElements.define('hm-appliance-form', HmApplianceForm);
 }
 if (!customElements.get('hungry-machines-panel')) {
   customElements.define('hungry-machines-panel', HungryMachinesPanel);
@@ -161,6 +165,107 @@ describe('hungry-machines-panel', () => {
 
     const updated = root.querySelector('section.content')!;
     expect(updated.textContent).toContain('Settings');
+  });
+
+  it("clicking 'Add appliance' on the empty dashboard opens the appliance form", async () => {
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+    setTokens({ access: 'ACCESS', refresh: 'REFRESH' });
+    // Schedules / rates / appliances / preferences all return empty.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ date: 'today', appliances: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    );
+
+    const el = mountPanel();
+    for (let i = 0; i < 5; i++) {
+      await el.updateComplete;
+      await Promise.resolve();
+    }
+
+    const root = el.shadowRoot!;
+    const addBtn = findButtonByText(root, 'Add appliance');
+    expect(addBtn).toBeDefined();
+    addBtn!.click();
+    await el.updateComplete;
+    await Promise.resolve();
+
+    const form = root.querySelector('hm-appliance-form') as HmApplianceForm | null;
+    expect(form).not.toBeNull();
+    expect(form!.open).toBe(true);
+  });
+
+  it('appliance-created event causes the panel to re-fetch /api/v1/schedules', async () => {
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+    setTokens({ access: 'ACCESS', refresh: 'REFRESH' });
+
+    const calls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        calls.push(url);
+        return new Response(JSON.stringify({ date: 'today', appliances: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }),
+    );
+
+    const el = mountPanel();
+    for (let i = 0; i < 5; i++) {
+      await el.updateComplete;
+      await Promise.resolve();
+    }
+
+    const initialScheduleCalls = calls.filter((u) => u.endsWith('/api/v1/schedules')).length;
+    expect(initialScheduleCalls).toBeGreaterThanOrEqual(1);
+
+    const form = el.shadowRoot!.querySelector('hm-appliance-form') as HmApplianceForm;
+    expect(form).not.toBeNull();
+    form.dispatchEvent(
+      new CustomEvent('appliance-created', {
+        detail: {
+          appliance: {
+            id: 'a-1',
+            user_id: 'user-123',
+            appliance_type: 'hvac',
+            name: 'My HVAC',
+            config: {},
+            is_active: true,
+            created_at: new Date().toISOString(),
+          },
+        },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+    for (let i = 0; i < 5; i++) {
+      await el.updateComplete;
+      await Promise.resolve();
+    }
+
+    const finalScheduleCalls = calls.filter((u) => u.endsWith('/api/v1/schedules')).length;
+    expect(finalScheduleCalls).toBeGreaterThan(initialScheduleCalls);
   });
 
   it('shows a loading spinner when the auth store reports loading', async () => {
