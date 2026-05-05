@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from typing import Any
+
 from homeassistant.components.frontend import (
     add_extra_js_url,
     async_register_built_in_panel,
@@ -32,11 +34,22 @@ from .scheduler import apply_current_slot, fetch_today_schedule
 
 _LOGGER = logging.getLogger(__name__)
 
+_FRONTEND_REGISTERED = "_frontend_registered"
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Hungry Machines from a config entry."""
+
+async def _ensure_frontend_registered(hass: HomeAssistant) -> bool:
+    """Idempotently serve the bundled JS at SCRIPT_URL.
+
+    HA's static-path and extra_js_url APIs are process-lifetime, not
+    per-entry. Registering them in async_setup_entry triggers
+    'route already registered' errors on entry reload / re-add, so we
+    guard with a flag in hass.data and only register once per HA process.
+    """
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    if domain_data.get(_FRONTEND_REGISTERED):
+        return True
+
     frontend_file = Path(__file__).parent / "frontend" / SCRIPT_FILENAME
-
     if not frontend_file.is_file():
         _LOGGER.error(
             "Hungry Machines frontend bundle missing at %s. "
@@ -49,8 +62,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.http.async_register_static_paths(
         [StaticPathConfig(SCRIPT_URL, str(frontend_file), False)]
     )
-
     add_extra_js_url(hass, SCRIPT_URL)
+    domain_data[_FRONTEND_REGISTERED] = True
+    return True
+
+
+async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
+    """Component-level setup — register the JS bundle once per HA process."""
+    return await _ensure_frontend_registered(hass)
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up Hungry Machines from a config entry."""
+    if not await _ensure_frontend_registered(hass):
+        return False
 
     async_register_built_in_panel(
         hass,
@@ -69,7 +94,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         require_admin=False,
     )
 
-    domain_data = hass.data.setdefault(DOMAIN, {})
+    domain_data = hass.data[DOMAIN]
     entry_data = domain_data.setdefault(entry.entry_id, {})
     unsubs: list = entry_data.setdefault("unsub", [])
 
