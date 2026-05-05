@@ -52,6 +52,10 @@ function asBooleanArray(value: unknown): boolean[] | undefined {
   return value.every((v) => typeof v === 'boolean') ? (value as boolean[]) : undefined;
 }
 
+function entityMapsEqual(a: EntityMap, b: EntityMap): boolean {
+  return (a.climate ?? null) === (b.climate ?? null) && (a.weather ?? null) === (b.weather ?? null);
+}
+
 export class HungryMachinesPanel extends LitElement {
   static override styles = css`
     :host {
@@ -455,6 +459,46 @@ export class HungryMachinesPanel extends LitElement {
       font-size: 13px;
       margin: 0;
     }
+    .settings-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .settings-actions .save-btn {
+      background: var(--hm-primary, #1E3A8A);
+      color: #ffffff;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font: inherit;
+      cursor: pointer;
+    }
+    .settings-actions .save-btn:hover:not(:disabled) {
+      opacity: 0.9;
+    }
+    .settings-actions .reset-btn {
+      background: transparent;
+      border: 1px solid var(--hm-primary, #1E3A8A);
+      color: var(--hm-primary, #1E3A8A);
+      padding: 8px 16px;
+      border-radius: 6px;
+      font: inherit;
+      cursor: pointer;
+    }
+    .settings-actions .reset-btn:hover:not(:disabled) {
+      background: var(--hm-primary, #1E3A8A);
+      color: #ffffff;
+    }
+    .settings-actions button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .settings-actions .saved-flash {
+      color: var(--hm-secondary, #0F766E);
+      font-weight: 600;
+      font-size: 14px;
+    }
   `;
 
   static override properties = {
@@ -471,6 +515,9 @@ export class HungryMachinesPanel extends LitElement {
     _editorApplianceType: { state: true },
     _editorConstraints: { state: true },
     _entityMap: { state: true },
+    _entityMapDraft: { state: true },
+    _zoneDraft: { state: true },
+    _savedFlash: { state: true },
     _zoneSaving: { state: true },
     _zoneError: { state: true },
     _ratesLoading: { state: true },
@@ -494,6 +541,9 @@ export class HungryMachinesPanel extends LitElement {
   _editorApplianceType: ApplianceType = 'hvac';
   _editorConstraints: Record<string, unknown> | undefined = undefined;
   _entityMap: EntityMap = {};
+  _entityMapDraft: EntityMap = {};
+  _zoneDraft = 1;
+  _savedFlash = false;
   _zoneSaving = false;
   _zoneError: string | null = null;
   _ratesLoading = false;
@@ -507,15 +557,19 @@ export class HungryMachinesPanel extends LitElement {
   private _schedulesFetched = false;
   private _ratesInflight = false;
   private _appliancesById: Record<string, Appliance> = {};
+  private _savedFlashTimer: ReturnType<typeof setTimeout> | null = null;
 
   override connectedCallback(): void {
     super.connectedCallback();
     this._auth = authStore.state;
     this._entityMap = getEntityMap();
+    this._entityMapDraft = { ...this._entityMap };
+    this._zoneDraft = this._auth.user?.pricing_location ?? 1;
     this._unsubscribe = authStore.subscribe((s) => {
       const prevStatus = this._auth.status;
       this._auth = s;
       if (prevStatus !== 'authed' && s.status === 'authed') {
+        this._zoneDraft = s.user?.pricing_location ?? 1;
         void this._loadSchedulesIfNeeded();
       }
       if (s.status !== 'authed') {
@@ -531,6 +585,10 @@ export class HungryMachinesPanel extends LitElement {
     if (this._unsubscribe) {
       this._unsubscribe();
       this._unsubscribe = null;
+    }
+    if (this._savedFlashTimer !== null) {
+      clearTimeout(this._savedFlashTimer);
+      this._savedFlashTimer = null;
     }
   }
 
@@ -587,30 +645,57 @@ export class HungryMachinesPanel extends LitElement {
   };
 
   private _onEntityChange(field: EntityField, entityId: string): void {
-    const next: EntityMap = { ...this._entityMap };
+    const next: EntityMap = { ...this._entityMapDraft };
     if (entityId) {
       next[field] = entityId;
     } else {
       delete next[field];
     }
-    this._entityMap = next;
-    setEntityMap(next);
+    this._entityMapDraft = next;
   }
 
-  private async _onZoneChange(zone: number): Promise<void> {
-    const user = this._auth.user;
-    if (!user || user.pricing_location === zone) return;
-    this._zoneSaving = true;
-    this._zoneError = null;
-    try {
-      const updated = await patchMe({ pricing_location: zone });
-      authStore.patchUser({ pricing_location: updated.pricing_location });
-    } catch (err) {
-      this._zoneError =
-        err instanceof Error && err.message ? err.message : 'Could not update pricing zone';
-    } finally {
+  private _onZoneChange(zone: number): void {
+    this._zoneDraft = zone;
+  }
+
+  private _isDirty(): boolean {
+    if (!entityMapsEqual(this._entityMap, this._entityMapDraft)) return true;
+    const currentZone = this._auth.user?.pricing_location ?? 1;
+    return this._zoneDraft !== currentZone;
+  }
+
+  private async _onSave(): Promise<void> {
+    if (!this._isDirty()) return;
+    if (!entityMapsEqual(this._entityMap, this._entityMapDraft)) {
+      setEntityMap(this._entityMapDraft);
+      this._entityMap = { ...this._entityMapDraft };
+    }
+    const currentZone = this._auth.user?.pricing_location ?? 1;
+    if (this._zoneDraft !== currentZone) {
+      this._zoneSaving = true;
+      this._zoneError = null;
+      try {
+        const updated = await patchMe({ pricing_location: this._zoneDraft });
+        authStore.patchUser({ pricing_location: updated.pricing_location });
+      } catch (err) {
+        this._zoneError =
+          err instanceof Error && err.message ? err.message : 'Could not update pricing zone';
+        this._zoneSaving = false;
+        return;
+      }
       this._zoneSaving = false;
     }
+    this._savedFlash = true;
+    if (this._savedFlashTimer !== null) clearTimeout(this._savedFlashTimer);
+    this._savedFlashTimer = setTimeout(() => {
+      this._savedFlash = false;
+      this._savedFlashTimer = null;
+    }, 2000);
+  }
+
+  private _onReset(): void {
+    this._entityMapDraft = { ...this._entityMap };
+    this._zoneDraft = this._auth.user?.pricing_location ?? 1;
   }
 
   private async _loadRatesIfNeeded(): Promise<void> {
@@ -932,10 +1017,12 @@ export class HungryMachinesPanel extends LitElement {
     const allEntities = states ? Object.keys(states).sort() : [];
     const climateEntities = allEntities.filter((id) => id.startsWith('climate.'));
     const weatherEntities = allEntities.filter((id) => id.startsWith('weather.'));
-    const map = this._entityMap;
+    const draftMap = this._entityMapDraft;
     const user = this._auth.user;
     const email = user?.email ?? '';
-    const pricing = user?.pricing_location ?? 1;
+    const pricing = this._zoneDraft;
+    const isDirty = this._isDirty();
+    const settingsSaving = this._zoneSaving;
 
     const rates = this._rates;
     const ratesLoading = this._ratesLoading;
@@ -972,7 +1059,7 @@ export class HungryMachinesPanel extends LitElement {
               </p>`}
           ${ENTITY_FIELDS.map((f) => {
             const options = f.domain === 'climate' ? climateEntities : weatherEntities;
-            const selected = map[f.key] ?? '';
+            const selected = draftMap[f.key] ?? '';
             return html`
               <label>
                 <span class="label-text">${f.label}</span>
@@ -987,9 +1074,10 @@ export class HungryMachinesPanel extends LitElement {
                       (e.target as HTMLSelectElement).value,
                     )}
                 >
-                  <option value="">— not set —</option>
+                  <option value="" ?selected=${selected === ''}>— not set —</option>
                   ${options.map(
-                    (id) => html`<option value=${id}>${id}</option>`,
+                    (id) =>
+                      html`<option value=${id} ?selected=${id === selected}>${id}</option>`,
                   )}
                 </select>
               </label>
@@ -1016,6 +1104,28 @@ export class HungryMachinesPanel extends LitElement {
           </label>
           ${this._zoneError
             ? html`<p class="zone-error" role="alert">${this._zoneError}</p>`
+            : null}
+        </div>
+
+        <div class="settings-actions">
+          <button
+            type="button"
+            class="save-btn"
+            ?disabled=${!isDirty || settingsSaving}
+            @click=${() => void this._onSave()}
+          >
+            Save
+          </button>
+          <button
+            type="button"
+            class="reset-btn"
+            ?disabled=${!isDirty || settingsSaving}
+            @click=${() => this._onReset()}
+          >
+            Reset
+          </button>
+          ${this._savedFlash
+            ? html`<span class="saved-flash" role="status">Saved</span>`
             : null}
         </div>
 

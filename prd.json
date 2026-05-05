@@ -34,8 +34,8 @@
         "Verify: `npm test` passes (all settings tests green, panel tests still green); `npm run build` succeeds; `npx tsc --noEmit` clean; `grep -cE 'class=\"save-btn\"|class=\"reset-btn\"' src/panel/hungry-machines-panel.ts` returns at least 2; `grep -c 'Saved' src/panel/hungry-machines-panel.ts` returns at least 1; `grep -c '_entityMapDraft' src/panel/hungry-machines-panel.ts` returns at least 4 (declared + read + written by handlers + reset)."
       ],
       "priority": 2,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Added _entityMapDraft, _zoneDraft, _savedFlash reactive state. _onEntityChange/_onZoneChange now update drafts only — no persistence. Added _onSave (writes setEntityMap if entity-map dirty, calls patchMe for zone if zone dirty, then sets _savedFlash for 2s via setTimeout that's cleared in disconnectedCallback) and _onReset (snaps drafts back to baselines: _entityMap and _auth.user.pricing_location). _isDirty drives the disabled state on both buttons. Settings render block now reads from drafts and shows a new .settings-actions bar between the pricing-zone section and the custom-rates section with Save (class='save-btn') + Reset (class='reset-btn') + an inline 'Saved' status when _savedFlash is true. Switched the entity selects from `.value=${selected}` to `?selected=` per option so happy-dom reflects the picked entity after a remount (case E). Replaced the legacy 'change writes to localStorage' and 'change triggers PATCH' tests with five new cases (A: no setItem on change, B: Save persists entity-map + zone PATCH and renders 'Saved', C: Reset after a post-save edit reverts to saved baseline, D: post-save buttons disabled, E: re-mount hydrates from saved values). All 79 frontend tests pass; tsc --noEmit clean; npm run build green; grep checks: save-btn|reset-btn=2, Saved=1, _entityMapDraft=11."
     },
     {
       "id": "US-FE-SETTINGS-ZONES-01",

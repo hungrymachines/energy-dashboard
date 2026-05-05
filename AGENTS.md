@@ -30,6 +30,8 @@ If you add another entity field:
 - `window.customCards` registration (only the two cards, not the panel) — must dedupe before pushing.
 - Test fetch mocking: stub `globalThis.fetch` per-test with `vi.stubGlobal('fetch', vi.fn(...))`. Never call out to a real network.
 - 48 × 30-min schedule shape is load-bearing across panel/cards; use `expandHourlyTo48` / `collapse48ToHourly` from `src/utils/hourly.ts` rather than reimplementing.
+- Settings tab uses a draft-then-save pattern: change handlers mutate `_entityMapDraft` / `_zoneDraft` only; the `.settings-actions` bar's Save button is the single persistence path. `_isDirty()` drives the Save/Reset disabled state, and `_savedFlash` (cleared in `disconnectedCallback`) flashes the confirmation. New settings fields should follow the same draft → Save flow rather than auto-persisting on change.
+- `<select>` options use `?selected=${id === selected}` alongside the parent's `.value` binding so the form reflects the saved value on remount under happy-dom — required for tests that simulate page reload.
 
 ## Build / verify primitives
 

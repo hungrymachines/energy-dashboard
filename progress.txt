@@ -6,6 +6,8 @@
 - **Legacy entity-map migration runs on read.** `getEntityMap()` filters out legacy keys (`indoor_temp`, `outdoor_temp`, `power`) and rewrites the localStorage entry when any legacy key is present. Future shape changes should follow the same one-shot read-side migration pattern rather than versioning.
 - **Settings entity selects are domain-filtered.** Panel filters `Object.keys(hass.states)` by `id.startsWith('climate.')` for the climate field and `'weather.'` for the weather field. Tests must include at least one entity in each target domain plus a non-matching one (e.g. `light.kitchen`) to exercise filter behavior.
 - **Test fixtures need attributes for new shape.** `climate.*` entities expose `current_temperature` and `temperature` (target) under `attributes`; `weather.*` exposes `temperature` (current outdoor) under `attributes`. Tests that simulate hass states should include those attributes so future card UI changes can read them without test churn.
+- **Settings persistence is draft-then-save.** Entity map and pricing zone live in two layers: `_entityMap`/`_auth.user.pricing_location` are the saved baselines; `_entityMapDraft`/`_zoneDraft` are the in-memory drafts the form binds to. Change handlers only mutate drafts. The Save button is the single persistence path (calls `setEntityMap` and `patchMe`); Reset snaps drafts back to baselines; both buttons disable when `_isDirty()` is false.
+- **`<select>` value binding for happy-dom remounts.** Lit's `.value=${selected}` does not reliably reflect on a select after a remount in happy-dom. Use `?selected=${id === selected}` per `<option>` (combined with the `.value` binding for the change-event path) so case-E-style "remount restores the saved value" tests pass without requiring real-browser semantics.
 
 ---
 
@@ -24,3 +26,21 @@
 - Cards do not read the panel EntityMap; their entity wiring is Lovelace card config. The story's "update consumers" criterion was a no-op once that distinction was confirmed via `grep getEntityMap|EntityMap` across `src/`.
 - The legacy-key grep guard in the AC permits string literals inside migration code; storing them in a typed `LEGACY_ENTITY_KEYS` const is cleaner than inline `delete` calls and still satisfies the rule.
 - Lit `select .value=${selected}` only honors the bound value if at least one `<option>` has that value, so the migration must run *before* render or the previously-selected legacy entity would silently render as "— not set —" — which is the desired UX here.
+
+---
+
+## Iteration: Tuesday, May 5, 2026 11:50
+
+**Story:** US-FE-SETTINGS-SAVE-01 - Settings tab: explicit Save / Reset buttons with visible confirmation
+
+**Status:** Completed
+
+**Files Changed:**
+- src/panel/hungry-machines-panel.ts (added _entityMapDraft/_zoneDraft/_savedFlash state, _onSave/_onReset/_isDirty methods, .settings-actions bar with save-btn/reset-btn + Saved flash, switched entity options to ?selected= for remount fidelity)
+- tests/settings.test.ts (replaced two stale tests with five new cases A–E and a "no fetch until Save" zone-draft test)
+
+**Learnings:**
+- `<select>` `.value` Lit binding doesn't reliably reflect after a remount in happy-dom. Adding `?selected=${id === selected}` on each option keeps the form correct after re-mount without changing real-browser behavior.
+- Re-seeding `_zoneDraft` only on the unauthed→authed transition (in the existing `authStore.subscribe` callback) keeps user edits intact when other auth-state changes fire (e.g. after `patchUser` updates `_auth.user.pricing_location` post-save).
+- `_zoneSaving` is reused (only mutated inside `_onSave`) so the Settings disabled-while-saving UX falls out of the existing field — no new "saving" state was needed.
+- Avoid duplicate `saving` locals in `_renderSettings()` — the custom-rates section already declared one. Used `settingsSaving` for the new Save/Reset bar.
