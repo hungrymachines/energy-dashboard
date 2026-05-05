@@ -399,8 +399,8 @@ export class HmConstraintEditor extends LitElement {
         const base = Number(values['base_temperature'] ?? '');
         if (!Number.isFinite(base)) errors['base_temperature'] = 'Required';
         const sv = Number(values['savings_level'] ?? '');
-        if (!Number.isFinite(sv) || sv < 1 || sv > 5) {
-          errors['savings_level'] = 'Must be 1–5';
+        if (!Number.isFinite(sv) || sv < 1 || sv > 3) {
+          errors['savings_level'] = 'Must be 1–3';
         }
         const mode = values['optimization_mode'] ?? '';
         if (!(OPTIMIZATION_MODES as ReadonlyArray<string>).includes(mode)) {
@@ -723,13 +723,13 @@ export class HmConstraintEditor extends LitElement {
                     : null}
                 </label>
                 <label>
-                  <span class="label-text">Savings level (1–5)</span>
+                  <span class="label-text">Savings level (1–3)</span>
                   <div class="slider-row">
                     <input
                       name="savings_level"
                       type="range"
                       min="1"
-                      max="5"
+                      max="3"
                       step="1"
                       .value=${v['savings_level'] ?? '3'}
                       @input=${onNum('savings_level')}
