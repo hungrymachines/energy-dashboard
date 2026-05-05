@@ -1,3 +1,6 @@
 node_modules/
 dist/
 custom_components/hungry_machines/frontend/hungry-machines.js
+__pycache__/
+*.py[cod]
+.pytest_cache/

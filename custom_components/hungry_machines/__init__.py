@@ -1,8 +1,8 @@
 """Hungry Machines — Home Assistant integration.
 
-Registers the bundled JavaScript frontend so the panel and Lovelace cards
-load automatically once the integration is configured. The user never has
-to edit configuration.yaml.
+Registers the bundled JavaScript frontend, then keeps the user's optimized
+HVAC schedule fresh and applies it to their climate entity on each
+30-minute boundary throughout the day.
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from homeassistant.components.frontend import (
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_track_time_change
 
 from .const import (
     DOMAIN,
@@ -27,6 +28,7 @@ from .const import (
     SCRIPT_FILENAME,
     SCRIPT_URL,
 )
+from .scheduler import apply_current_slot, fetch_today_schedule
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -67,10 +69,44 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         require_admin=False,
     )
 
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    entry_data = domain_data.setdefault(entry.entry_id, {})
+    unsubs: list = entry_data.setdefault("unsub", [])
+
+    await fetch_today_schedule(hass, entry)
+
+    async def _refresh_schedule(_now) -> None:
+        await fetch_today_schedule(hass, entry)
+
+    async def _apply_slot(_now) -> None:
+        await apply_current_slot(hass, entry)
+
+    unsubs.append(
+        async_track_time_change(
+            hass, _refresh_schedule, hour=5, minute=5, second=0
+        )
+    )
+    unsubs.append(
+        async_track_time_change(
+            hass, _apply_slot, minute=[0, 30], second=0
+        )
+    )
+
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Remove the panel registration when the integration is removed."""
+    domain_data = hass.data.get(DOMAIN, {})
+    entry_data = domain_data.get(entry.entry_id, {})
+    for unsub in entry_data.get("unsub", []):
+        try:
+            unsub()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "Hungry Machines unsubscribe failed: %s", err
+            )
+    domain_data.pop(entry.entry_id, None)
+
     async_remove_panel(hass, PANEL_URL_PATH)
     return True

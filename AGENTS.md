@@ -10,6 +10,10 @@ Quick reference for hot spots and gotchas. See `CLAUDE.md` for the canonical pro
 - `src/api/client.ts` — `apiFetch` with auto-attached Bearer + 401 → `clearTokens` chain.
 - `src/data/pricing-zones.ts` — `PRICING_ZONE_LABELS` (1..8 → `{ provider, region }`) + `pricingZoneOptionLabel` / `pricingZoneFullLabel` helpers. Drives the Settings → Pricing zone dropdown text and zone-hint span. Update zones 3–8 here when the API repo's `app/services/pricing.py` is reconciled.
 - `src/ui/appliance-form.ts` — `HmApplianceForm` modal. Two-step flow: type picker (4 types) → per-type config form. Emits `appliance-created` (with `{detail: {appliance}}`) and `cancelled`. The panel listens to both and re-fetches `/api/v1/schedules` on creation by flipping `_schedulesFetched=false`. `appliancesApi.create()` synthesizes a full `Appliance` from the API's thin `{appliance_id}` response when needed.
+- `custom_components/hungry_machines/auth.py` — `login(hass, email, password)`, `refresh(hass, refresh_token)`, `current_token(hass, entry)`. All async; all use `aiohttp_client.async_get_clientsession`. Token cache lives in `entry.data` (`access_token`, `refresh_token`, `expires_at`); `current_token` returns the cached token if `expires_at > time.time() + 30`, otherwise refreshes and persists via `hass.config_entries.async_update_entry`.
+- `custom_components/hungry_machines/scheduler.py` — `fetch_today_schedule(hass, entry)` caches the HVAC schedule on `hass.data[DOMAIN]['schedule']`; `apply_current_slot(hass, entry)` writes that slot's targets to the configured climate entity via `hass.services.async_call('climate', 'set_temperature', ...)`. Both gracefully no-op on missing token/cache/entity rather than throwing.
+- `custom_components/hungry_machines/config_flow.py` — three flows on one class: user (collects email/password/climate_entity, exchanges for tokens, stores ONLY tokens + email + climate in `entry.data`), reauth (re-prompts for password only when refresh fails), options (lets user change `climate_entity` post-setup without rotating tokens).
+- `conftest.py` (project root) — installs minimal sys.modules stubs for `homeassistant.*`, `aiohttp`, `voluptuous` so the Python integration code can be imported during pytest runs without a real HA install. Tests under `custom_components/hungry_machines/tests/` rely on this — never try to `pip install homeassistant` for the test loop.
 
 ## EntityMap shape
 
@@ -36,12 +40,22 @@ If you add another entity field:
 - `<select>` options use `?selected=${id === selected}` alongside the parent's `.value` binding so the form reflects the saved value on remount under happy-dom — required for tests that simulate page reload.
 - **Wrap fragment-level `${TemplateResult}` slots in an element.** Lit's HTML parser (under happy-dom) silently drops a child-content binding when `${someTemplateResult}` appears at fragment level between two sibling elements (e.g. `</label>\n      ${typeFields}\n      <div>`). The slot disappears from the compiled template, all later bindings shift by one, and you'll see things like a button's text rendering its own `@click` handler source. Workaround: always wrap such inserts in a host element — `<div>${typeFields}</div>` — so the slot lives inside an element start/end tag pair rather than at fragment level.
 
+## Python integration patterns
+
+- **Tests run with sys.modules stubs, not real HA.** Project-root `conftest.py` pre-installs lightweight stubs for `homeassistant.*` + `aiohttp.ClientError` + `voluptuous.{Schema, Required, Optional, In}`. This means pytest can import `custom_components/hungry_machines/__init__.py` (which has top-level HA imports) without `pip install homeassistant`. Tests use `MagicMock` / `AsyncMock` for hass, ConfigEntry, sessions, etc., and `patch.object(auth.aiohttp_client, "async_get_clientsession", ...)` to drive responses.
+- **Async-context-manager mock pattern.** `aiohttp` calls look like `async with session.post(...) as resp: data = await resp.json()`. Mock with: `response = MagicMock(status=200, json=AsyncMock(return_value=body))`, `cm = MagicMock(__aenter__=AsyncMock(return_value=response), __aexit__=AsyncMock(return_value=False))`, `session.post = MagicMock(return_value=cm)`. Helpers `_mock_response` + `_session_with_post`/`_session_with_get` live in the test files and should be reused.
+- **Password is never persisted.** `entry.data` writes go through `config_flow.py`'s `async_create_entry(data=...)` and `async_update_entry(data=...)` — those builders only spread {email, access_token, refresh_token, expires_at, climate_entity}. Never add a `CONF_PASSWORD` to those dicts. The grep guard `grep -c 'password' custom_components/hungry_machines/__init__.py custom_components/hungry_machines/scheduler.py` must stay at 0; `auth.py` has password mentions only as a function param + JSON body of the POST.
+- **`hass.data[DOMAIN]` shape.** Two keys: `schedule` (the cached HVAC schedule across all entries — there's only one entry by single-instance rule) and `<entry.entry_id>` -> `{'unsub': [callbacks]}` (so `async_unload_entry` can tear down `async_track_time_change` subscriptions).
+- **Test import style.** `from hungry_machines import auth` (not `from custom_components.hungry_machines import auth`). Pytest's __init__.py walk-up makes `custom_components/` the sys.path root since it has no `__init__.py`.
+
 ## Build / verify primitives
 
 ```bash
-npm test            # vitest (currently 75 cases across 13 files)
+npm test            # vitest (currently 92 frontend cases across 15 files)
 npm run build       # rollup -> custom_components/hungry_machines/frontend/hungry-machines.js
 npx tsc --noEmit    # type check
+python3 -m pytest custom_components/hungry_machines/tests/ -v   # 20 Python cases (auth + scheduler + config_flow)
+python3 -m py_compile custom_components/hungry_machines/{__init__,auth,scheduler,config_flow,const}.py
 ./scripts/release.sh
 ```
 

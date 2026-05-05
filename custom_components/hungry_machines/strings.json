@@ -3,11 +3,38 @@
     "step": {
       "user": {
         "title": "Hungry Machines",
-        "description": "Add the Hungry Machines panel and Lovelace cards to Home Assistant.\n\nClick **Submit** to register the sidebar entry. After Home Assistant reloads, click the new **Hungry Machines** entry in the sidebar and sign in with your hungrymachines.io account."
+        "description": "Enter your hungrymachines.io credentials. We use these to fetch your optimized schedules and apply them to your thermostat. Your password is sent once to api.hungrymachines.io to obtain access tokens; only the tokens are stored locally in Home Assistant.",
+        "data": {
+          "email": "Email",
+          "password": "Password",
+          "climate_entity": "HVAC climate entity"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Hungry Machines",
+        "description": "Your saved credentials for {email} are no longer valid. Re-enter your password so the integration can keep applying your optimized schedule.",
+        "data": {
+          "password": "Password"
+        }
       }
     },
+    "error": {
+      "invalid_auth": "Invalid email or password — please try again."
+    },
     "abort": {
-      "single_instance_allowed": "Hungry Machines is already configured."
+      "single_instance_allowed": "Hungry Machines is already configured.",
+      "reauth_successful": "Hungry Machines credentials updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Hungry Machines settings",
+        "description": "Change which climate entity receives the optimized schedule.",
+        "data": {
+          "climate_entity": "HVAC climate entity"
+        }
+      }
     }
   }
 }

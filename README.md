@@ -51,13 +51,15 @@ Go to **[hungrymachines.io](https://hungrymachines.io)** and sign up. Confirm yo
 
 1. Open **Settings → Devices & Services → Add Integration**.
 2. Search for **Hungry Machines** and click it.
-3. Click **Submit** on the confirmation screen.
+3. Enter your **hungrymachines.io email and password** (the same credentials you use on the website and inside the panel) and pick the **HVAC climate entity** that should follow the optimized schedule. Click **Submit**.
 
-A **Hungry Machines** entry now appears in your sidebar, and the two Lovelace cards become available in the dashboard card picker.
+   Your password is sent once to `api.hungrymachines.io` so the integration can obtain access + refresh tokens. **Only the tokens** are persisted in Home Assistant — your password is never stored locally. If your tokens ever stop working, Home Assistant will prompt you to re-enter your password to refresh them.
 
-### Step 4 — Sign in
+A **Hungry Machines** entry now appears in your sidebar, and the two Lovelace cards become available in the dashboard card picker. The integration also begins fetching your optimized HVAC schedule each morning and writing the targets to the climate entity you chose on every 30-minute boundary throughout the day.
 
-Click the **Hungry Machines** entry in the sidebar. Enter the email and password you created at [hungrymachines.io](https://hungrymachines.io). The dashboard now shows today's optimized schedules for whatever appliances you've registered.
+### Step 4 — Sign in to the panel
+
+Click the **Hungry Machines** entry in the sidebar. Enter the same hungrymachines.io email and password to load your dashboard — today's optimized schedules for whatever appliances you've registered, plus the constraint editor and Settings tab.
 
 ### Step 5 — Add the cards (optional)
 

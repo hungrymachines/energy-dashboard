@@ -11,6 +11,8 @@
 - **Display labels for backend lookups belong in `src/data/`.** When the backend exposes integer keys (pricing zones, appliance types) and the UI needs human-readable labels, drop the mapping in `src/data/<topic>.ts` as a typed `Record<KeyUnion, Label>` plus pure label-builder helpers. Keep helpers tolerant of out-of-range keys (fallback to a TBD label) so callers don't have to clamp. Drive `<option>` lists off `Object.keys(MAP).map(Number).sort()` instead of a hardcoded tuple — adding/removing a zone becomes a one-line data edit.
 - **Wrap fragment-level `${TemplateResult}` interpolations in a host element.** When a Lit template has `${someTemplateResult}` at fragment level between sibling elements (e.g. `</label>\n      ${typeFields}\n      <div>`), the parser under happy-dom silently drops the binding slot. All bindings AFTER it shift by one position, leading to surreal output like a button's text rendering its own `@click` handler source. Wrap the slot in `<div>${typeFields}</div>` (or any host element) and the parser handles it correctly. This was a multi-hour debug rabbit hole on US-FE-APPLIANCES-01; future stories that compose multi-section templates should default to wrapping each section in its own element.
 - **API `create` shape is normalize-on-the-way-in.** `appliancesApi.create()` accepts either a full `Appliance` body or a thin `{appliance_id}` envelope from the server and synthesizes an `Appliance`-shaped object from the input + response. Callers always get the same shape, regardless of which the backend actually returns. Other API wrappers that have similarly thin response envelopes should follow this pattern rather than pushing the shape difference up to the consumer.
+- **Python tests use sys.modules stubs, not a real HA install.** RALPH iterations run without `homeassistant` / `aiohttp` / `voluptuous` available on PATH. `conftest.py` at the project root pre-installs minimal stubs for those modules (and the helper subpackages we use — `homeassistant.helpers.aiohttp_client`, `helpers.event`, `helpers.selector`, `components.frontend`, `components.http`) into `sys.modules` so `custom_components/hungry_machines/__init__.py` can be imported during test collection. Tests then `patch.object` the relevant pieces — typically `auth.aiohttp_client.async_get_clientsession` and `auth.refresh` / `auth.login` — to drive specific scenarios. Don't try to install real HA in the test loop; the stubs are sufficient and far faster.
+- **Credentials live in entry.data; password is never persisted.** `config_flow.async_step_user` calls `auth.login(hass, email, password)`, then stores ONLY `{email, access_token, refresh_token, expires_at, climate_entity}` in entry.data. Reauth re-prompts for password only and replaces tokens via `hass.config_entries.async_update_entry`. The grep guard for password in `__init__.py / scheduler.py` (count == 0) plus `auth.py` (count > 0 only as a function param + JSON body, never an entry.data write) is the load-bearing invariant. Future config-flow steps must follow the same shape — no PASSWORD in any `data=` kwarg passed to `async_create_entry` / `async_update_entry`.
 
 ---
 
@@ -87,3 +89,33 @@
 - Lit's HTML parser drops fragment-level `${TemplateResult}` slots, shifting later bindings by one position. The bug surfaces as bizarre output (a button's text rendering its own @click handler). Wrapping the interpolation in a host element (`<div>${X}</div>`) is the workaround. Documented in AGENTS.md and the codebase patterns block above.
 - The `appliances.create()` API returns just `{appliance_id}` per the existing typed wrapper, but the story's contract called for `Promise<Appliance>`. Solved by normalizing on the way in: the wrapper accepts either shape from the server and synthesizes a complete Appliance from the request body when only the id comes back. This keeps the consumer side type-clean without needing a follow-up GET.
 - The verification grep `grep -c 'appliancesApi.create\|appliances.create'` enforces the import style. Used `import * as appliancesApi from '../api/appliances.js'` so the call site reads as `appliancesApi.create(...)` rather than the more typical `import { create as createAppliance }` pattern. Worth keeping consistent across new code that touches this API.
+
+---
+
+## Iteration: Tuesday, May 5, 2026 12:35
+
+**Story:** US-PY-APPLY-01 - Python schedule applier with email/password auth: fetch nightly, apply on each 30-min boundary
+
+**Status:** Completed
+
+**Files Changed:**
+- custom_components/hungry_machines/const.py (API_BASE_URL + CONF_* keys)
+- custom_components/hungry_machines/auth.py (new — login/refresh/current_token with aiohttp + token caching + persisted refresh)
+- custom_components/hungry_machines/scheduler.py (new — fetch_today_schedule + apply_current_slot, with reauth-trigger on no-token / 401)
+- custom_components/hungry_machines/config_flow.py (rewrote — user step asks for email + password + climate_entity, reauth step, options flow for climate entity)
+- custom_components/hungry_machines/__init__.py (wired scheduler: initial fetch + async_track_time_change for 5:05 morning refresh + minute=[0,30] slot apply, with unsub cleanup in async_unload_entry)
+- custom_components/hungry_machines/manifest.json + package.json (0.2.0 -> 0.3.0)
+- custom_components/hungry_machines/strings.json + translations/en.json (new step descriptions, data labels, errors.invalid_auth, abort.reauth_successful, options step)
+- README.md (Step 3 explains credentials + climate entity prompt and that password is sent once + only tokens are persisted)
+- conftest.py (new at project root — sys.modules stubs for homeassistant.* + aiohttp + voluptuous so tests run without real HA installed)
+- custom_components/hungry_machines/tests/__init__.py (new — empty package marker)
+- custom_components/hungry_machines/tests/test_auth.py (new — 7 cases)
+- custom_components/hungry_machines/tests/test_scheduler.py (new — 6 cases)
+- custom_components/hungry_machines/tests/test_config_flow.py (new — 7 cases)
+
+**Learnings:**
+- The integration's __init__.py executes `from homeassistant... import ...` at module load, so any pytest run of `custom_components/hungry_machines/tests/` triggers those imports during package machinery (because `tests/__init__.py` exists per the criterion, making it a sub-package). The fix is a project-root `conftest.py` whose top-level body installs sys.modules stubs — pytest loads the rootdir conftest.py BEFORE collecting test modules, so stubs land before the integration package init is triggered. Local `tests/conftest.py` would be too late since pytest would resolve the test module's parent package first.
+- pytest uses `__init__.py` walk-up to determine package root: with `tests/__init__.py` and `hungry_machines/__init__.py` but NO `custom_components/__init__.py`, pytest treats `custom_components/` as the sys.path root and imports tests as `hungry_machines.tests.test_auth`. So tests use `from hungry_machines import auth` rather than `from custom_components.hungry_machines import auth` — keep that import style consistent.
+- `aiohttp` async-context-manager mocking is tedious. The pattern that works: response = MagicMock with .status + .json=AsyncMock; cm = MagicMock with __aenter__=AsyncMock(return_value=response) and __aexit__=AsyncMock(return_value=False); session.post = MagicMock(return_value=cm). Wrapped in two helpers (`_mock_response`, `_session_with_post`) and reused across auth + scheduler tests.
+- ConfigFlow stub had to handle `class HungryMachinesConfigFlow(ConfigFlow, domain=DOMAIN):` — the keyword arg goes to `__init_subclass__`. The stub's `__init_subclass__(cls, *, domain=None, **kw)` accepts and ignores it (real HA uses it for handler registration; tests don't care).
+- Reauth flow's existing-email lookup via `self.hass.config_entries.async_get_entry(self.context["entry_id"])` would explode in tests if I did it before checking for `_reauth_entry`. Restructured `async_step_reauth` to set `self._reauth_entry` from the lookup, then `async_step_reauth_confirm` reads it directly — tests bypass the lookup by setting `flow._reauth_entry = entry` manually.
