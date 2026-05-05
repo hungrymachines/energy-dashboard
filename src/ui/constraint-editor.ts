@@ -4,7 +4,9 @@ import { update as updatePreferences } from '../api/preferences.js';
 import type { ApplianceType } from '../api/appliances.js';
 import { hasHourlyComfortBands } from '../utils/hourly.js';
 
-type OptimizationMode = 'balanced' | 'savings' | 'comfort';
+type OptimizationMode = 'cool' | 'heat' | 'auto' | 'off';
+
+const OPTIMIZATION_MODES: ReadonlyArray<OptimizationMode> = ['cool', 'heat', 'auto', 'off'];
 
 type ErrorMap = Record<string, string>;
 
@@ -312,7 +314,9 @@ export class HmConstraintEditor extends LitElement {
         return {
           base_temperature: base === null ? '72' : String(base),
           savings_level: savings === null ? '3' : String(savings),
-          optimization_mode: mode || 'balanced',
+          optimization_mode: (OPTIMIZATION_MODES as ReadonlyArray<string>).includes(mode)
+            ? mode
+            : 'auto',
         };
       }
     }
@@ -399,7 +403,7 @@ export class HmConstraintEditor extends LitElement {
           errors['savings_level'] = 'Must be 1–5';
         }
         const mode = values['optimization_mode'] ?? '';
-        if (!['balanced', 'savings', 'comfort'].includes(mode)) {
+        if (!(OPTIMIZATION_MODES as ReadonlyArray<string>).includes(mode)) {
           errors['optimization_mode'] = 'Pick an option';
         }
         if (this._hourlyEnabled) {
@@ -449,7 +453,7 @@ export class HmConstraintEditor extends LitElement {
         const payload: Record<string, unknown> = {
           base_temperature: Number(v['base_temperature']),
           savings_level: Number(v['savings_level']),
-          optimization_mode: (v['optimization_mode'] ?? 'balanced') as OptimizationMode,
+          optimization_mode: (v['optimization_mode'] ?? 'auto') as OptimizationMode,
         };
         if (this._hourlyEnabled) {
           payload['hourly_low_temps_f'] = this._hourlyLow.map((s) => Number(s));
@@ -737,15 +741,16 @@ export class HmConstraintEditor extends LitElement {
                     : null}
                 </label>
                 <label>
-                  <span class="label-text">Optimization mode</span>
+                  <span class="label-text">HVAC mode</span>
                   <select
                     name="optimization_mode"
-                    .value=${v['optimization_mode'] ?? 'balanced'}
+                    .value=${v['optimization_mode'] ?? 'auto'}
                     @change=${onSel('optimization_mode')}
                   >
-                    <option value="balanced">Balanced</option>
-                    <option value="savings">Savings</option>
-                    <option value="comfort">Comfort</option>
+                    <option value="auto">Auto (heat or cool as needed)</option>
+                    <option value="cool">Cooling only</option>
+                    <option value="heat">Heating only</option>
+                    <option value="off">Off</option>
                   </select>
                   ${errs['optimization_mode']
                     ? html`<div class="field-error">${errs['optimization_mode']}</div>`

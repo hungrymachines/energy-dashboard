@@ -140,7 +140,7 @@ describe('hm-constraint-editor', () => {
         savings_level: 4,
         time_away: '08:00',
         time_home: '18:00',
-        optimization_mode: 'savings',
+        optimization_mode: 'cool',
       }),
     );
 
@@ -150,7 +150,7 @@ describe('hm-constraint-editor', () => {
       currentConstraints: {
         base_temperature: 72,
         savings_level: 3,
-        optimization_mode: 'balanced',
+        optimization_mode: 'auto',
       },
       open: true,
     });
@@ -158,7 +158,7 @@ describe('hm-constraint-editor', () => {
 
     const root = el.shadowRoot!;
     setInputValue(root, 'savings_level', '4');
-    setInputValue(root, 'optimization_mode', 'savings');
+    setInputValue(root, 'optimization_mode', 'cool');
     await flush(el);
 
     clickSave(root);
@@ -172,7 +172,7 @@ describe('hm-constraint-editor', () => {
     expect(body).toEqual({
       base_temperature: 72,
       savings_level: 4,
-      optimization_mode: 'savings',
+      optimization_mode: 'cool',
       hourly_low_temps_f: null,
       hourly_high_temps_f: null,
     });
