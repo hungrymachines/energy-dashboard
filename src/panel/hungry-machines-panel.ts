@@ -20,6 +20,12 @@ import { list as listAppliances, type Appliance, type ApplianceType } from '../a
 import { patchMe } from '../api/auth.js';
 import { get as getPreferences, type Preferences } from '../api/preferences.js';
 import { expandHourlyTo48, hasCustomRates, hasHourlyComfortBands } from '../utils/hourly.js';
+import {
+  PRICING_ZONE_LABELS,
+  pricingZoneFullLabel,
+  pricingZoneOptionLabel,
+  type PricingZone,
+} from '../data/pricing-zones.js';
 
 type EntityField = 'climate' | 'weather';
 
@@ -31,7 +37,9 @@ const ENTITY_FIELDS: Array<{ key: EntityField; label: string; domain: 'climate' 
   { key: 'weather', label: 'Weather', domain: 'weather' },
 ];
 
-const PRICING_ZONES = [1, 2, 3, 4, 5, 6, 7, 8] as const;
+const PRICING_ZONES = Object.keys(PRICING_ZONE_LABELS)
+  .map((k) => Number(k) as PricingZone)
+  .sort((a, b) => a - b);
 
 type View = 'dashboard' | 'settings';
 
@@ -338,6 +346,11 @@ export class HungryMachinesPanel extends LitElement {
     }
     .settings-section .zone-error {
       color: var(--hm-error, #DC2626);
+      font-size: 13px;
+      margin: 0;
+    }
+    .settings-section .zone-hint {
+      color: var(--hm-muted, #64748B);
       font-size: 13px;
       margin: 0;
     }
@@ -1098,10 +1111,13 @@ export class HungryMachinesPanel extends LitElement {
                 this._onZoneChange(Number((e.target as HTMLSelectElement).value))}
             >
               ${PRICING_ZONES.map(
-                (z) => html`<option value=${String(z)}>Zone ${z}</option>`,
+                (z) => html`<option value=${String(z)} ?selected=${z === pricing}>
+                  ${pricingZoneOptionLabel(z)}
+                </option>`,
               )}
             </select>
           </label>
+          <p class="zone-hint">${pricingZoneFullLabel(pricing)}</p>
           ${this._zoneError
             ? html`<p class="zone-error" role="alert">${this._zoneError}</p>`
             : null}

@@ -8,6 +8,7 @@
 - **Test fixtures need attributes for new shape.** `climate.*` entities expose `current_temperature` and `temperature` (target) under `attributes`; `weather.*` exposes `temperature` (current outdoor) under `attributes`. Tests that simulate hass states should include those attributes so future card UI changes can read them without test churn.
 - **Settings persistence is draft-then-save.** Entity map and pricing zone live in two layers: `_entityMap`/`_auth.user.pricing_location` are the saved baselines; `_entityMapDraft`/`_zoneDraft` are the in-memory drafts the form binds to. Change handlers only mutate drafts. The Save button is the single persistence path (calls `setEntityMap` and `patchMe`); Reset snaps drafts back to baselines; both buttons disable when `_isDirty()` is false.
 - **`<select>` value binding for happy-dom remounts.** Lit's `.value=${selected}` does not reliably reflect on a select after a remount in happy-dom. Use `?selected=${id === selected}` per `<option>` (combined with the `.value` binding for the change-event path) so case-E-style "remount restores the saved value" tests pass without requiring real-browser semantics.
+- **Display labels for backend lookups belong in `src/data/`.** When the backend exposes integer keys (pricing zones, appliance types) and the UI needs human-readable labels, drop the mapping in `src/data/<topic>.ts` as a typed `Record<KeyUnion, Label>` plus pure label-builder helpers. Keep helpers tolerant of out-of-range keys (fallback to a TBD label) so callers don't have to clamp. Drive `<option>` lists off `Object.keys(MAP).map(Number).sort()` instead of a hardcoded tuple — adding/removing a zone becomes a one-line data edit.
 
 ---
 
@@ -44,3 +45,22 @@
 - Re-seeding `_zoneDraft` only on the unauthed→authed transition (in the existing `authStore.subscribe` callback) keeps user edits intact when other auth-state changes fire (e.g. after `patchUser` updates `_auth.user.pricing_location` post-save).
 - `_zoneSaving` is reused (only mutated inside `_onSave`) so the Settings disabled-while-saving UX falls out of the existing field — no new "saving" state was needed.
 - Avoid duplicate `saving` locals in `_renderSettings()` — the custom-rates section already declared one. Used `settingsSaving` for the new Save/Reset bar.
+
+---
+
+## Iteration: Tuesday, May 5, 2026 11:55
+
+**Story:** US-FE-SETTINGS-ZONES-01 - Pricing zone dropdown shows utility + region labels
+
+**Status:** Completed
+
+**Files Changed:**
+- src/data/pricing-zones.ts (new — PRICING_ZONE_LABELS map + pricingZoneOptionLabel/pricingZoneFullLabel helpers; zones 1=SDG&E/San Diego, 2=ConEd/NYC, 3–8=TBD with TODO pointer to API repo's pricing.py)
+- src/panel/hungry-machines-panel.ts (PRICING_ZONES now data-driven from PRICING_ZONE_LABELS; zone <option> rendered via pricingZoneOptionLabel with ?selected= per option; new <p class="zone-hint"> below the select reactively shows pricingZoneFullLabel(_zoneDraft); .zone-hint CSS rule)
+- tests/pricing-zones.test.ts (new — four cases: zone-1 SDG&E regex, length === 8 with shape assertion, option-label format, full-label omits zone number)
+- tests/settings.test.ts (new case asserting 8 options, zone-1 text matches /SDG.?E.*San Diego/, and .zone-hint reactively switches when the select changes)
+
+**Learnings:**
+- Both helper functions (`pricingZoneOptionLabel`, `pricingZoneFullLabel`) accept `number` rather than the strict `PricingZone` literal union, with a fallback to TBD. That lets the panel pass `_zoneDraft` (typed `number`) without casting and keeps a backend-introduced zone-9 from crashing the UI before the data file is updated.
+- Tests should not assume `SAMPLE_USER.pricing_location` — it's 3, which means the initial `.zone-hint` shows "Provider TBD" not "SDG&E". Drove the new test off the *change* (zone → 1, then 2) rather than the initial render to keep it independent of the fixture's preset zone.
+- Driving `PRICING_ZONES` off `Object.keys(PRICING_ZONE_LABELS).map(Number).sort()` (instead of the old `[1, 2, 3, 4, 5, 6, 7, 8] as const`) means the panel automatically picks up additions to the data file without a second edit. The cost is losing the literal-tuple type narrowing, which the option label helpers' `number` signature absorbs.

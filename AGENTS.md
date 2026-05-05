@@ -8,6 +8,7 @@ Quick reference for hot spots and gotchas. See `CLAUDE.md` for the canonical pro
 - `src/panel/hungry-machines-panel.ts` — full-page panel; tabs (Dashboard / Settings); appliance cards; rates editor; entity / pricing-zone selects.
 - `src/cards/thermostat-card.ts` and `src/cards/savings-card.ts` — Lovelace cards. They take their HA-entity wiring from **Lovelace card config**, not from `getEntityMap()`.
 - `src/api/client.ts` — `apiFetch` with auto-attached Bearer + 401 → `clearTokens` chain.
+- `src/data/pricing-zones.ts` — `PRICING_ZONE_LABELS` (1..8 → `{ provider, region }`) + `pricingZoneOptionLabel` / `pricingZoneFullLabel` helpers. Drives the Settings → Pricing zone dropdown text and zone-hint span. Update zones 3–8 here when the API repo's `app/services/pricing.py` is reconciled.
 
 ## EntityMap shape
 

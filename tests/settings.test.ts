@@ -411,6 +411,44 @@ describe('hungry-machines-panel settings', () => {
     expect(authStore.state.user?.pricing_location).toBe(5);
   });
 
+  it('pricing zone select shows utility/region labels and the zone-hint reflects the current selection', async () => {
+    const el = mountPanel({ hass: HASS });
+    await flush(el);
+    clickSettings(el.shadowRoot!);
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const zone = selectByName(root, 'pricing_zone');
+    expect(zone.options.length).toBe(8);
+
+    const zone1 = Array.from(zone.options).find((o) => o.value === '1');
+    expect(zone1).toBeDefined();
+    expect(zone1!.textContent ?? '').toMatch(/SDG.?E.*San Diego/);
+
+    const zoneSection = Array.from(root.querySelectorAll('.settings-section')).find((s) =>
+      s.querySelector('h3')?.textContent?.includes('Pricing zone'),
+    );
+    expect(zoneSection).toBeDefined();
+    const hint = zoneSection!.querySelector('.zone-hint');
+    expect(hint).not.toBeNull();
+    // SAMPLE_USER.pricing_location === 3 (Provider TBD baseline).
+    expect(hint!.textContent ?? '').toContain('Provider TBD');
+
+    zone.value = '1';
+    zone.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+    expect(zoneSection!.querySelector('.zone-hint')!.textContent ?? '').toMatch(
+      /SDG.?E.*San Diego/,
+    );
+
+    zone.value = '2';
+    zone.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+    expect(zoneSection!.querySelector('.zone-hint')!.textContent ?? '').toContain(
+      'New York City',
+    );
+  });
+
   it('disables the entity dropdowns with a helper message when hass is not set', async () => {
     const el = mountPanel();
     await flush(el);
