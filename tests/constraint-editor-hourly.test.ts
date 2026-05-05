@@ -137,7 +137,7 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
         savings_level: 3,
         time_away: '08:00',
         time_home: '18:00',
-        optimization_mode: 'balanced',
+        optimization_mode: 'auto',
       }),
     );
 
@@ -147,7 +147,7 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
       currentConstraints: {
         base_temperature: 72,
         savings_level: 3,
-        optimization_mode: 'balanced',
+        optimization_mode: 'auto',
       },
       open: true,
     });
@@ -200,7 +200,7 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
     // Legacy fields still submitted.
     expect(body.base_temperature).toBe(72);
     expect(body.savings_level).toBe(3);
-    expect(body.optimization_mode).toBe('balanced');
+    expect(body.optimization_mode).toBe('auto');
   });
 
   it('(c) leaving the box unchecked and clicking Save fires PUT with both fields explicitly null', async () => {
@@ -210,7 +210,7 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
         savings_level: 3,
         time_away: '08:00',
         time_home: '18:00',
-        optimization_mode: 'balanced',
+        optimization_mode: 'auto',
       }),
     );
 
@@ -220,7 +220,7 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
       currentConstraints: {
         base_temperature: 72,
         savings_level: 3,
-        optimization_mode: 'balanced',
+        optimization_mode: 'auto',
       },
       open: true,
     });
@@ -254,7 +254,7 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
       currentConstraints: {
         base_temperature: 72,
         savings_level: 3,
-        optimization_mode: 'balanced',
+        optimization_mode: 'auto',
       },
       open: true,
     });
@@ -297,7 +297,7 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
       currentConstraints: {
         base_temperature: 72,
         savings_level: 3,
-        optimization_mode: 'balanced',
+        optimization_mode: 'auto',
         hourly_low_temps_f: lows,
         hourly_high_temps_f: highs,
       },
