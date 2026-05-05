@@ -18,8 +18,8 @@
         "Verify: `npm test` passes (settings + store tests green, no regression elsewhere); `npm run build` succeeds; `npx tsc --noEmit` is clean; `grep -nE \"'indoor_temp'|'outdoor_temp'|'power'\" src/panel/hungry-machines-panel.ts src/store.ts` returns no matches inside the field-list / type definitions (legacy-key migration code may mention them as string literals in `delete` statements — that's expected); `grep -cE \"'climate'|'weather'\" src/panel/hungry-machines-panel.ts` returns at least 2."
       ],
       "priority": 1,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Replaced EntityField union with 'climate' | 'weather' and ENTITY_FIELDS with two entries (HVAC climate entity + Weather). Updated src/store.ts EntityMap to { climate?, weather? } and added migrateEntityMap that silently drops legacy indoor_temp/outdoor_temp/power keys; getEntityMap also rewrites the persisted shape on read when legacy keys are present so the migration is one-shot. Panel render swaps sensorEntities for climateEntities (filter id.startsWith('climate.')) and threads f.domain === 'climate' for option lookup. Cards do not consume the panel-level EntityMap (they use their own Lovelace card config), so no card changes were needed. Tests: settings.test.ts updated HASS to include climate.living_room/climate.bedroom (with current_temperature + temperature attrs) and weather.home (with temperature attr); rewrote the dropdown-population test to assert exactly two entity selects with correct domain filtering and the absence of any select named entity_indoor_temp/outdoor_temp/power; rewrote the persistence test against entity_climate + entity_weather; added a new case asserting getEntityMap filters legacy { indoor_temp, outdoor_temp, power, weather } down to { weather } (and { indoor_temp, power } down to {}). store.test.ts gained a case asserting the migration on read also rewrites the persisted JSON and that a follow-up setEntityMap persists only the new shape. All 75 frontend tests pass; tsc --noEmit clean; npm run build green; bundle 95.9 KB."
     },
     {
       "id": "US-FE-SETTINGS-SAVE-01",

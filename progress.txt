@@ -1,0 +1,26 @@
+# RALPH Progress Log
+
+## Codebase Patterns
+
+- **EntityMap is panel-only.** `src/store.ts` exposes `getEntityMap` / `setEntityMap` for the panel's Settings tab. The two cards (`hm-thermostat-card`, `hm-savings-card`) take their entity wiring from Lovelace card config (`HmThermostatCardConfig.entities` / `HmSavingsCardConfig.entities`), NOT from the panel-level EntityMap. Don't conflate them when refactoring entity selection.
+- **Legacy entity-map migration runs on read.** `getEntityMap()` filters out legacy keys (`indoor_temp`, `outdoor_temp`, `power`) and rewrites the localStorage entry when any legacy key is present. Future shape changes should follow the same one-shot read-side migration pattern rather than versioning.
+- **Settings entity selects are domain-filtered.** Panel filters `Object.keys(hass.states)` by `id.startsWith('climate.')` for the climate field and `'weather.'` for the weather field. Tests must include at least one entity in each target domain plus a non-matching one (e.g. `light.kitchen`) to exercise filter behavior.
+- **Test fixtures need attributes for new shape.** `climate.*` entities expose `current_temperature` and `temperature` (target) under `attributes`; `weather.*` exposes `temperature` (current outdoor) under `attributes`. Tests that simulate hass states should include those attributes so future card UI changes can read them without test churn.
+
+---
+
+## Iteration: Tuesday, May 5, 2026 11:42
+
+**Story:** US-FE-SETTINGS-FIELDS-01 - Replace entity fields: drop indoor/outdoor/power, add climate + weather
+**Status:** Completed
+
+**Files Changed:**
+- src/store.ts (EntityMap shape -> { climate?, weather? }; getEntityMap migrates + rewrites legacy four-key entries)
+- src/panel/hungry-machines-panel.ts (EntityField/ENTITY_FIELDS replaced; climateEntities filter; domain === 'climate' branch)
+- tests/settings.test.ts (HASS fixture rebuilt with climate + weather; dropdown population, persistence, hass-missing tests rewritten; legacy-migration assertion added)
+- tests/store.test.ts (legacy four-key migration test asserting read-side rewrite + setEntityMap persists clean shape)
+
+**Learnings:**
+- Cards do not read the panel EntityMap; their entity wiring is Lovelace card config. The story's "update consumers" criterion was a no-op once that distinction was confirmed via `grep getEntityMap|EntityMap` across `src/`.
+- The legacy-key grep guard in the AC permits string literals inside migration code; storing them in a typed `LEGACY_ENTITY_KEYS` const is cleaner than inline `delete` calls and still satisfies the rule.
+- Lit `select .value=${selected}` only honors the bound value if at least one `<option>` has that value, so the migration must run *before* render or the previously-selected legacy entity would silently render as "— not set —" — which is the desired UX here.

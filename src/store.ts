@@ -20,24 +20,38 @@ export interface AuthState {
 export type AuthListener = (state: AuthState) => void;
 
 export interface EntityMap {
-  indoor_temp?: string;
-  outdoor_temp?: string;
-  power?: string;
+  climate?: string;
   weather?: string;
+}
+
+const LEGACY_ENTITY_KEYS = ['indoor_temp', 'outdoor_temp', 'power'] as const;
+
+function migrateEntityMap(raw: Record<string, unknown>): EntityMap {
+  const next: EntityMap = {};
+  if (typeof raw['climate'] === 'string') next.climate = raw['climate'];
+  if (typeof raw['weather'] === 'string') next.weather = raw['weather'];
+  return next;
 }
 
 export function getEntityMap(): EntityMap {
   const raw = safeGet('hm_entity_map');
   if (!raw) return {};
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as EntityMap;
-    }
+    parsed = JSON.parse(raw);
   } catch {
-    /* fall through to empty */
+    return {};
   }
-  return {};
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {};
+  }
+  const obj = parsed as Record<string, unknown>;
+  const cleaned = migrateEntityMap(obj);
+  const hadLegacy = LEGACY_ENTITY_KEYS.some((k) => k in obj);
+  if (hadLegacy) {
+    safeSet('hm_entity_map', JSON.stringify(cleaned));
+  }
+  return cleaned;
 }
 
 export function setEntityMap(map: EntityMap): void {

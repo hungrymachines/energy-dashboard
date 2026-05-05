@@ -21,15 +21,13 @@ import { patchMe } from '../api/auth.js';
 import { get as getPreferences, type Preferences } from '../api/preferences.js';
 import { expandHourlyTo48, hasCustomRates, hasHourlyComfortBands } from '../utils/hourly.js';
 
-type EntityField = 'indoor_temp' | 'outdoor_temp' | 'power' | 'weather';
+type EntityField = 'climate' | 'weather';
 
 type HassStateLike = { entity_id?: string; state?: unknown; attributes?: Record<string, unknown> };
 type HassLike = { states?: Record<string, HassStateLike> };
 
-const ENTITY_FIELDS: Array<{ key: EntityField; label: string; domain: 'sensor' | 'weather' }> = [
-  { key: 'indoor_temp', label: 'Indoor temperature', domain: 'sensor' },
-  { key: 'outdoor_temp', label: 'Outdoor temperature', domain: 'sensor' },
-  { key: 'power', label: 'Power', domain: 'sensor' },
+const ENTITY_FIELDS: Array<{ key: EntityField; label: string; domain: 'climate' | 'weather' }> = [
+  { key: 'climate', label: 'HVAC climate entity', domain: 'climate' },
   { key: 'weather', label: 'Weather', domain: 'weather' },
 ];
 
@@ -932,7 +930,7 @@ export class HungryMachinesPanel extends LitElement {
     const states = hass && typeof hass === 'object' ? hass.states : undefined;
     const hasHass = !!states;
     const allEntities = states ? Object.keys(states).sort() : [];
-    const sensorEntities = allEntities.filter((id) => id.startsWith('sensor.'));
+    const climateEntities = allEntities.filter((id) => id.startsWith('climate.'));
     const weatherEntities = allEntities.filter((id) => id.startsWith('weather.'));
     const map = this._entityMap;
     const user = this._auth.user;
@@ -973,7 +971,7 @@ export class HungryMachinesPanel extends LitElement {
                 Entity mapping is only available inside Home Assistant.
               </p>`}
           ${ENTITY_FIELDS.map((f) => {
-            const options = f.domain === 'sensor' ? sensorEntities : weatherEntities;
+            const options = f.domain === 'climate' ? climateEntities : weatherEntities;
             const selected = map[f.key] ?? '';
             return html`
               <label>

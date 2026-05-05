@@ -79,23 +79,26 @@ function clickSettings(root: ShadowRoot): void {
 
 const HASS = {
   states: {
-    'sensor.living_room_temp': {
-      entity_id: 'sensor.living_room_temp',
-      state: '72',
+    'climate.living_room': {
+      entity_id: 'climate.living_room',
+      state: 'cool',
+      attributes: { current_temperature: 72, temperature: 70 },
     },
-    'sensor.outside_temp': {
-      entity_id: 'sensor.outside_temp',
-      state: '58',
-    },
-    'sensor.home_power': {
-      entity_id: 'sensor.home_power',
-      state: '1200',
+    'climate.bedroom': {
+      entity_id: 'climate.bedroom',
+      state: 'heat',
+      attributes: { current_temperature: 68, temperature: 72 },
     },
     'weather.home': {
       entity_id: 'weather.home',
       state: 'sunny',
+      attributes: { temperature: 58 },
     },
-    // Non-matching entity to ensure filtering works.
+    // Non-matching entities to ensure filtering works.
+    'sensor.living_room_temp': {
+      entity_id: 'sensor.living_room_temp',
+      state: '72',
+    },
     'light.kitchen': {
       entity_id: 'light.kitchen',
       state: 'off',
@@ -137,34 +140,38 @@ describe('hungry-machines-panel settings', () => {
     setAuthState({});
   });
 
-  it('populates sensor dropdowns with sensor entities and the weather dropdown with weather entities', async () => {
+  it('renders exactly two entity selects (climate and weather) populated with their respective domains', async () => {
     const el = mountPanel({ hass: HASS });
     await flush(el);
     const root = el.shadowRoot!;
     clickSettings(root);
     await flush(el);
 
-    const expectedSensors = [
-      'sensor.home_power',
-      'sensor.living_room_temp',
-      'sensor.outside_temp',
-    ];
-    const expectedWeather = ['weather.home'];
+    const settingsSection = Array.from(root.querySelectorAll('.settings-section')).find(
+      (s) => s.querySelector('h3')?.textContent?.includes('Home Assistant entities'),
+    );
+    expect(settingsSection).toBeDefined();
+    const entitySelects = Array.from(
+      settingsSection!.querySelectorAll<HTMLSelectElement>('select'),
+    );
+    expect(entitySelects).toHaveLength(2);
 
-    for (const field of ['indoor_temp', 'outdoor_temp', 'power']) {
-      const sel = selectByName(root, `entity_${field}`);
-      const values = Array.from(sel.options)
-        .map((o) => o.value)
-        .filter((v) => v !== '');
-      expect(values.sort()).toEqual([...expectedSensors].sort());
-      expect(sel.disabled).toBe(false);
+    for (const legacy of ['indoor_temp', 'outdoor_temp', 'power']) {
+      expect(root.querySelector(`select[name="entity_${legacy}"]`)).toBeNull();
     }
+
+    const climateSel = selectByName(root, 'entity_climate');
+    const climateValues = Array.from(climateSel.options)
+      .map((o) => o.value)
+      .filter((v) => v !== '');
+    expect(climateValues.sort()).toEqual(['climate.bedroom', 'climate.living_room']);
+    expect(climateSel.disabled).toBe(false);
 
     const weatherSel = selectByName(root, 'entity_weather');
     const weatherValues = Array.from(weatherSel.options)
       .map((o) => o.value)
       .filter((v) => v !== '');
-    expect(weatherValues).toEqual(expectedWeather);
+    expect(weatherValues).toEqual(['weather.home']);
   });
 
   it('changing an entity dropdown writes to localStorage under hm_entity_map', async () => {
@@ -174,28 +181,49 @@ describe('hungry-machines-panel settings', () => {
     await flush(el);
 
     const root = el.shadowRoot!;
-    const indoor = selectByName(root, 'entity_indoor_temp');
-    indoor.value = 'sensor.living_room_temp';
-    indoor.dispatchEvent(new Event('change', { bubbles: true }));
+    const climate = selectByName(root, 'entity_climate');
+    climate.value = 'climate.living_room';
+    climate.dispatchEvent(new Event('change', { bubbles: true }));
     await flush(el);
 
     const raw = localStorage.getItem('hm_entity_map');
     expect(raw).not.toBeNull();
     const parsed = JSON.parse(raw!);
-    expect(parsed).toEqual({ indoor_temp: 'sensor.living_room_temp' });
+    expect(parsed).toEqual({ climate: 'climate.living_room' });
 
     // Changing a second field merges into the stored map.
-    const power = selectByName(root, 'entity_power');
-    power.value = 'sensor.home_power';
-    power.dispatchEvent(new Event('change', { bubbles: true }));
+    const weather = selectByName(root, 'entity_weather');
+    weather.value = 'weather.home';
+    weather.dispatchEvent(new Event('change', { bubbles: true }));
     await flush(el);
 
     const raw2 = localStorage.getItem('hm_entity_map');
     const parsed2 = JSON.parse(raw2!);
     expect(parsed2).toEqual({
-      indoor_temp: 'sensor.living_room_temp',
-      power: 'sensor.home_power',
+      climate: 'climate.living_room',
+      weather: 'weather.home',
     });
+  });
+
+  it('legacy four-key entity map is filtered to a clean shape on read', async () => {
+    localStorage.setItem(
+      'hm_entity_map',
+      JSON.stringify({
+        indoor_temp: 'sensor.foo',
+        outdoor_temp: 'sensor.bar',
+        power: 'sensor.baz',
+        weather: 'weather.home',
+      }),
+    );
+    const { getEntityMap } = await import('../src/store.js');
+    expect(getEntityMap()).toEqual({ weather: 'weather.home' });
+
+    // Legacy-only stored map filters down to {} on read.
+    localStorage.setItem(
+      'hm_entity_map',
+      JSON.stringify({ indoor_temp: 'sensor.foo', power: 'sensor.bar' }),
+    );
+    expect(getEntityMap()).toEqual({});
   });
 
   it('changing the pricing zone triggers a PATCH /auth/me fetch and updates the store', async () => {
@@ -242,7 +270,7 @@ describe('hungry-machines-panel settings', () => {
     await flush(el);
 
     const root = el.shadowRoot!;
-    for (const field of ['indoor_temp', 'outdoor_temp', 'power', 'weather']) {
+    for (const field of ['climate', 'weather']) {
       const sel = selectByName(root, `entity_${field}`);
       expect(sel.disabled).toBe(true);
     }
