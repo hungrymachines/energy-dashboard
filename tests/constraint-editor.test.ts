@@ -137,7 +137,7 @@ describe('hm-constraint-editor', () => {
     const { calls } = captureFetch(
       jsonResponse({
         base_temperature: 72,
-        savings_level: 4,
+        savings_level: 2,
         time_away: '08:00',
         time_home: '18:00',
         optimization_mode: 'cool',
@@ -157,7 +157,7 @@ describe('hm-constraint-editor', () => {
     await flush(el);
 
     const root = el.shadowRoot!;
-    setInputValue(root, 'savings_level', '4');
+    setInputValue(root, 'savings_level', '2');
     setInputValue(root, 'optimization_mode', 'cool');
     await flush(el);
 
@@ -171,7 +171,7 @@ describe('hm-constraint-editor', () => {
     const body = JSON.parse(String(init?.body));
     expect(body).toEqual({
       base_temperature: 72,
-      savings_level: 4,
+      savings_level: 2,
       optimization_mode: 'cool',
       hourly_low_temps_f: null,
       hourly_high_temps_f: null,
