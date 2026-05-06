@@ -188,6 +188,11 @@ def _install_stubs() -> None:
             name="async_track_time_change",
             return_value=MagicMock(name="unsub"),
         )
+    if not hasattr(event_helper, "async_track_time_interval"):
+        event_helper.async_track_time_interval = MagicMock(
+            name="async_track_time_interval",
+            return_value=MagicMock(name="unsub"),
+        )
 
     selector_helper = _ensure_module("homeassistant.helpers.selector")
     if not hasattr(selector_helper, "TextSelector"):

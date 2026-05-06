@@ -127,6 +127,7 @@ The Python integration is a thin shim that registers the bundled JS file as a Lo
 
 ## Changelog
 
+- **v0.4.0** — feat: poll the configured climate entity every 5 minutes and push readings to the API; the optimizer now has data to learn from.
 - **v0.3.4** — Fix: schedule applier was caching empty arrays, no setpoints were ever applied (regression from v0.3.0). The applier now correctly reads `appliance.schedule.high_temps` / `appliance.schedule.low_temps` from `/api/v1/schedules` instead of looking one level too high on the appliance entry itself.
 
 ## License

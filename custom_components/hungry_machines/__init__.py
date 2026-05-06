@@ -7,6 +7,7 @@ HVAC schedule fresh and applies it to their climate entity on each
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from pathlib import Path
 
 from typing import Any
@@ -19,8 +20,12 @@ from homeassistant.components.frontend import (
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.event import (
+    async_track_time_change,
+    async_track_time_interval,
+)
 
+from . import readings
 from .const import (
     DOMAIN,
     PANEL_ICON,
@@ -117,6 +122,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     )
 
+    def _push_reading(_now) -> None:
+        hass.async_create_task(readings.push_current_reading(hass, entry))
+
+    domain_data["readings_unsub"] = async_track_time_interval(
+        hass, _push_reading, timedelta(minutes=5)
+    )
+
     return True
 
 
@@ -132,6 +144,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "Hungry Machines unsubscribe failed: %s", err
             )
     domain_data.pop(entry.entry_id, None)
+
+    readings_unsub = domain_data.pop("readings_unsub", None)
+    if readings_unsub is not None:
+        try:
+            readings_unsub()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "Hungry Machines readings unsubscribe failed: %s", err
+            )
 
     async_remove_panel(hass, PANEL_URL_PATH)
     return True

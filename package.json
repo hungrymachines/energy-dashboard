@@ -1,6 +1,6 @@
 {
   "name": "hungry-machines-frontend",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Hungry Machines Home Assistant custom panel + Lovelace cards.",
