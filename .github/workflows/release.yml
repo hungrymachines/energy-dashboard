@@ -21,6 +21,8 @@ jobs:
 
       - run: npm ci
 
+      - run: npm run check:contract
+
       - run: npm test
 
       - run: npm run build

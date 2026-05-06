@@ -8,7 +8,8 @@
     "build": "rollup -c",
     "test": "vitest run",
     "dev": "rollup -c -w",
-    "codegen": "openapi-typescript openapi.snapshot.json -o src/api/generated.ts"
+    "codegen": "openapi-typescript openapi.snapshot.json -o src/api/generated.ts",
+    "check:contract": "tsc --noEmit"
   },
   "dependencies": {
     "lit": "^3.2.0"

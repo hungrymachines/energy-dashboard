@@ -135,6 +135,8 @@ cd ../hungry-machines-api && python -c "import json; from app.main import app; p
 
 Commit the resulting `openapi.snapshot.json` and `src/api/generated.ts` deltas in the same PR as the consuming change. The snapshot pins to **committed master-branch API code**, not whatever is deployed on the VPS — that's the point. Live deployment can lag the generated types and contract tests will still tell you the truth about the wire format the frontend has agreed to.
 
+`tests/contract.test.ts` enforces structural compatibility between the hand-typed wrappers in `src/api/*.ts` and the generated paths bundle: each interface (e.g. `Preferences`, `RatesResponse`, `Appliance`, `HvacScheduleResponse`, `SchedulesResponse`, `UserMe`, `Session`, `ApplianceSchedule`) has a module-scope `extends` assertion against `paths['<endpoint>']['<method>']['responses']['200']['content']['application/json']`. The drift gate is **`npm run check:contract`** (alias for `tsc --noEmit`); the runtime vitest case in the same file is just a placeholder so the file is counted in `npm test`. Run `npm run check:contract` before you push when changing `src/api/*.ts` or `openapi.snapshot.json`. CI runs it on every push and PR to `master` via `.github/workflows/contract.yml`.
+
 ## Changelog
 
 - **v0.4.0** — feat: poll the configured climate entity every 5 minutes and push readings to the API; the optimizer now has data to learn from.
