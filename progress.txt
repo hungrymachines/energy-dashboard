@@ -139,3 +139,18 @@
 - v0.3.0 introduced the bug; it was invisible because `apply_current_slot` defensively skips when `slot >= len(high_temps)` and high_temps was always [] — no error logged, no thermostat ever moved. End-to-end fetch→apply tests are the only thing that would have caught it; pure-fetch tests with a flat-shape fixture passed because the code "correctly" cached the (empty) flat-shape arrays.
 - The story's verify grep `grep -F "hvac.get('schedule')" scheduler.py` is case-sensitive and quote-literal — the fix line must use single quotes (`hvac.get('schedule')`) for the count to be ≥1, even though the surrounding code uses double quotes for string literals. Kept `"schedule"` for the dict-key reads on `sched.get(...)` and switched only the outer `hvac.get('schedule')` to single quotes.
 - pytest-asyncio is not installed in the global Python; this RALPH iteration ran from the API venv (`hungry-machines-api/.venv/bin/python3`) which already had it. If a future iteration's pytest invocation reports `async def functions are not natively supported`, install pytest-asyncio (`pip install pytest-asyncio`) — the conftest.py does NOT polyfill it.
+
+---
+
+## Iteration: Wednesday, May 6, 2026 09:54
+
+**Story:** US-FE-SLIDER-RANGE-01 - Thermostat card savings slider clamps to 1-3
+**Status:** Completed
+
+**Files Changed:**
+- src/cards/thermostat-card.ts (slider input `max="5"` -> `max="3"`; `_clampLevel` upper bound 5 -> 3, default for non-finite stays at 3)
+- tests/thermostat-card.test.ts (existing debounce test now drives slider to '2' so it asserts the round-trip without colliding with clamping; new cases assert max="3" rendered, _clampLevel boundary table, and that a synthesised input event with value '4' results in a PUT body of {savings_level: 3} and the visible .slider-value shows '3')
+
+**Learnings:**
+- Constraint editor's HVAC tab already used `max="3"` with the [1,3] savings_level validation in `_validate` (line 402-404) from a prior story — no edit was needed, and the AC's third bullet explicitly notes the validator was already in place. Don't blind-edit when re-reading a section first proves it's already correct; the diff for this story is only the thermostat card.
+- Existing test that drove `slider.value = '4'` and expected `savings_level: 4` in the PUT body was the "before clamp" specification. Updating it to use an in-range value ('2') preserves the debounce-round-trip assertion and a new dedicated case covers the out-of-range clamp explicitly. Splitting the cases keeps each test focused and the failure messages on regression more legible than overloading one test with two distinct guarantees.
