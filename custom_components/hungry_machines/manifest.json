@@ -1,7 +1,7 @@
 {
   "domain": "hungry_machines",
   "name": "Hungry Machines",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "documentation": "https://github.com/hungrymachines/energy-dashboard",
   "issue_tracker": "https://github.com/hungrymachines/energy-dashboard/issues",
   "codeowners": ["@hungrymachines"],

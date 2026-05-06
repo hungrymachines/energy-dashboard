@@ -125,6 +125,10 @@ npm test           # vitest suite
 
 The Python integration is a thin shim that registers the bundled JS file as a Lovelace resource and registers the sidebar panel. All product logic lives in the TypeScript bundle. Architecture reference: [`structure.md`](structure.md).
 
+## Changelog
+
+- **v0.3.4** — Fix: schedule applier was caching empty arrays, no setpoints were ever applied (regression from v0.3.0). The applier now correctly reads `appliance.schedule.high_temps` / `appliance.schedule.low_temps` from `/api/v1/schedules` instead of looking one level too high on the appliance entry itself.
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE).

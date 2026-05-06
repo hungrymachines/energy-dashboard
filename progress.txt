@@ -13,6 +13,7 @@
 - **API `create` shape is normalize-on-the-way-in.** `appliancesApi.create()` accepts either a full `Appliance` body or a thin `{appliance_id}` envelope from the server and synthesizes an `Appliance`-shaped object from the input + response. Callers always get the same shape, regardless of which the backend actually returns. Other API wrappers that have similarly thin response envelopes should follow this pattern rather than pushing the shape difference up to the consumer.
 - **Python tests use sys.modules stubs, not a real HA install.** RALPH iterations run without `homeassistant` / `aiohttp` / `voluptuous` available on PATH. `conftest.py` at the project root pre-installs minimal stubs for those modules (and the helper subpackages we use — `homeassistant.helpers.aiohttp_client`, `helpers.event`, `helpers.selector`, `components.frontend`, `components.http`) into `sys.modules` so `custom_components/hungry_machines/__init__.py` can be imported during test collection. Tests then `patch.object` the relevant pieces — typically `auth.aiohttp_client.async_get_clientsession` and `auth.refresh` / `auth.login` — to drive specific scenarios. Don't try to install real HA in the test loop; the stubs are sufficient and far faster.
 - **Credentials live in entry.data; password is never persisted.** `config_flow.async_step_user` calls `auth.login(hass, email, password)`, then stores ONLY `{email, access_token, refresh_token, expires_at, climate_entity}` in entry.data. Reauth re-prompts for password only and replaces tokens via `hass.config_entries.async_update_entry`. The grep guard for password in `__init__.py / scheduler.py` (count == 0) plus `auth.py` (count > 0 only as a function param + JSON body, never an entry.data write) is the load-bearing invariant. Future config-flow steps must follow the same shape — no PASSWORD in any `data=` kwarg passed to `async_create_entry` / `async_update_entry`.
+- **`/api/v1/schedules` schedule arrays are nested under `appliance.schedule.*`.** The contract is `{appliances: [{appliance_type, schedule: {intervals, high_temps, low_temps}, savings_pct, source, ...}]}`. v0.3.0–0.3.3 silently bug: `scheduler.py` read `hvac.get('high_temps')` (one level too high), so the cache was always empty and `apply_current_slot`'s slot-bounds check skipped every apply — no setpoint ever moved. Fixed in v0.3.4 by destructuring `sched = hvac.get('schedule') or {}` first. When mocking the schedules endpoint in tests, build the body with `schedule: {high_temps, low_temps, intervals}` nested on each appliance entry; legacy flat-shape bodies now correctly produce empty cache arrays (regression-marker test in `test_scheduler.py::test_fetch_schedule_legacy_flat_shape_yields_empty_cache`).
 
 ---
 
@@ -119,3 +120,22 @@
 - `aiohttp` async-context-manager mocking is tedious. The pattern that works: response = MagicMock with .status + .json=AsyncMock; cm = MagicMock with __aenter__=AsyncMock(return_value=response) and __aexit__=AsyncMock(return_value=False); session.post = MagicMock(return_value=cm). Wrapped in two helpers (`_mock_response`, `_session_with_post`) and reused across auth + scheduler tests.
 - ConfigFlow stub had to handle `class HungryMachinesConfigFlow(ConfigFlow, domain=DOMAIN):` — the keyword arg goes to `__init_subclass__`. The stub's `__init_subclass__(cls, *, domain=None, **kw)` accepts and ignores it (real HA uses it for handler registration; tests don't care).
 - Reauth flow's existing-email lookup via `self.hass.config_entries.async_get_entry(self.context["entry_id"])` would explode in tests if I did it before checking for `_reauth_entry`. Restructured `async_step_reauth` to set `self._reauth_entry` from the lookup, then `async_step_reauth_confirm` reads it directly — tests bypass the lookup by setting `flow._reauth_entry = entry` manually.
+
+---
+
+## Iteration: Wednesday, May 6, 2026 09:09
+
+**Story:** US-PY-FIX-SCHED-NESTED-01 - Read HVAC schedule from the nested 'schedule' object, not the top-level appliance entry
+**Status:** Completed
+
+**Files Changed:**
+- custom_components/hungry_machines/scheduler.py (lines 94-99 replaced — `sched = hvac.get('schedule') or {}` then read high_temps/low_temps off `sched`)
+- custom_components/hungry_machines/tests/test_scheduler.py (replaced legacy happy-path test with realistic-nested-body version, added legacy-flat-shape regression marker yielding empty arrays, added end-to-end fetch→apply at slot 28 test asserting climate.set_temperature is called with target_temp_high=74.0/target_temp_low=70.0/entity_id=climate.test)
+- custom_components/hungry_machines/manifest.json (0.3.3 → 0.3.4)
+- package.json (0.3.3 → 0.3.4)
+- README.md (added v0.3.4 changelog entry describing the silent-empty-cache regression and fix)
+
+**Learnings:**
+- v0.3.0 introduced the bug; it was invisible because `apply_current_slot` defensively skips when `slot >= len(high_temps)` and high_temps was always [] — no error logged, no thermostat ever moved. End-to-end fetch→apply tests are the only thing that would have caught it; pure-fetch tests with a flat-shape fixture passed because the code "correctly" cached the (empty) flat-shape arrays.
+- The story's verify grep `grep -F "hvac.get('schedule')" scheduler.py` is case-sensitive and quote-literal — the fix line must use single quotes (`hvac.get('schedule')`) for the count to be ≥1, even though the surrounding code uses double quotes for string literals. Kept `"schedule"` for the dict-key reads on `sched.get(...)` and switched only the outer `hvac.get('schedule')` to single quotes.
+- pytest-asyncio is not installed in the global Python; this RALPH iteration ran from the API venv (`hungry-machines-api/.venv/bin/python3`) which already had it. If a future iteration's pytest invocation reports `async def functions are not natively supported`, install pytest-asyncio (`pip install pytest-asyncio`) — the conftest.py does NOT polyfill it.
