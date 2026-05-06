@@ -178,6 +178,145 @@ describe('hm-constraint-editor', () => {
     });
   });
 
+  it('seeds all five hvac fields from currentConstraints (US-FE-HVAC-EDITOR-PREFS-01 a)', async () => {
+    captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: {
+        base_temperature: 70,
+        savings_level: 2,
+        optimization_mode: 'cool',
+        time_away: '07:30',
+        time_home: '18:00',
+      },
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const baseInput = root.querySelector<HTMLInputElement>('input[name="base_temperature"]')!;
+    expect(baseInput.value).toBe('70');
+    const savingsInput = root.querySelector<HTMLInputElement>('input[name="savings_level"]')!;
+    expect(savingsInput.value).toBe('2');
+    const modeSelect = root.querySelector<HTMLSelectElement>('select[name="optimization_mode"]')!;
+    expect(modeSelect.value).toBe('cool');
+    const awayInput = root.querySelector<HTMLInputElement>('input[name="time_away"]')!;
+    expect(awayInput.value).toBe('07:30');
+    const homeInput = root.querySelector<HTMLInputElement>('input[name="time_home"]')!;
+    expect(homeInput.value).toBe('18:00');
+  });
+
+  it('submits hvac with time_away set, time_home omitted when empty (US-FE-HVAC-EDITOR-PREFS-01 b)', async () => {
+    const { calls } = captureFetch(
+      jsonResponse({
+        base_temperature: 72,
+        savings_level: 2,
+        optimization_mode: 'cool',
+        time_away: '06:30',
+        time_home: '',
+      }),
+    );
+
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: {
+        base_temperature: 72,
+        savings_level: 2,
+        optimization_mode: 'cool',
+      },
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    setInputValue(root, 'time_away', '06:30');
+    await flush(el);
+
+    clickSave(root);
+    await flush(el);
+
+    expect(calls.length).toBe(1);
+    const [url, init] = calls[0]!;
+    expect(url).toContain('/api/v1/preferences');
+    expect(init?.method).toBe('PUT');
+    const body = JSON.parse(String(init?.body));
+    expect(body).toEqual({
+      base_temperature: 72,
+      savings_level: 2,
+      optimization_mode: 'cool',
+      time_away: '06:30',
+      hourly_low_temps_f: null,
+      hourly_high_temps_f: null,
+    });
+    expect('time_home' in body).toBe(false);
+  });
+
+  it('blocks save with Use HH:MM error when time_away is invalid (US-FE-HVAC-EDITOR-PREFS-01 c)', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: {
+        base_temperature: 72,
+        savings_level: 2,
+        optimization_mode: 'cool',
+      },
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    setInputValue(root, 'time_away', 'invalid');
+    await flush(el);
+
+    const save = Array.from(root.querySelectorAll<HTMLButtonElement>('button')).find((b) =>
+      b.classList.contains('save'),
+    )!;
+    expect(save.disabled).toBe(true);
+
+    const fieldErrors = Array.from(root.querySelectorAll('.field-error')).map((n) => n.textContent ?? '');
+    expect(fieldErrors.some((t) => t.includes('Use HH:MM'))).toBe(true);
+
+    clickSave(root);
+    await flush(el);
+    expect(calls.length).toBe(0);
+  });
+
+  it('hides time_away/time_home inputs when hourly bands are enabled (US-FE-HVAC-EDITOR-PREFS-01 d)', async () => {
+    captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: {
+        base_temperature: 72,
+        savings_level: 2,
+        optimization_mode: 'cool',
+        time_away: '08:00',
+        time_home: '17:00',
+      },
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(root.querySelector('input[name="time_away"]')).not.toBeNull();
+    expect(root.querySelector('input[name="time_home"]')).not.toBeNull();
+
+    // Open the hourly-bands panel and toggle the use-hourly-bands checkbox.
+    const toggle = root.querySelector<HTMLButtonElement>('button.hourly-toggle')!;
+    toggle.click();
+    await flush(el);
+    const useHourly = root.querySelector<HTMLInputElement>('input[name="use_hourly_bands"]')!;
+    useHourly.checked = true;
+    useHourly.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+
+    expect(root.querySelector('input[name="time_away"]')).toBeNull();
+    expect(root.querySelector('input[name="time_home"]')).toBeNull();
+  });
+
   it('blocks save when min_charge_pct is not less than target_charge_pct', async () => {
     const { calls } = captureFetch(
       jsonResponse({ status: 'ok', constraints: {} }),

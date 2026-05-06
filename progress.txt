@@ -157,6 +157,25 @@
 
 ---
 
+## Iteration: Wednesday, May 6, 2026 10:23
+
+**Story:** US-FE-HVAC-EDITOR-PREFS-01 - HVAC editor seeds from /api/v1/preferences and exposes time_away/time_home
+**Status:** Completed
+
+**Files Changed:**
+- src/panel/hungry-machines-panel.ts (_openEditor branches by appliance type — hvac seeds from this._preferences, others continue to seed from appliance.config; one-line comment explains the divergence)
+- src/ui/constraint-editor.ts (_seedValues hvac branch reads time_away/time_home via toString helper, defaulting to ''; _validate hvac branch validates HH:MM pattern only when non-empty; _buildPayload hvac branch includes time_away/time_home only when non-empty; render block adds two <input type='text' pattern='\d{2}:\d{2}'> labels with <small> helper hints, wrapped in <div class='time-fields'> with conditional html so the inputs are removed from the DOM when hourly bands are active)
+- tests/constraint-editor.test.ts (4 new cases: all-five-fields-populated render, submit with time_away changed and time_home omitted, 'invalid' time_away disables Save and shows 'Use HH:MM', enabling hourly bands removes time_away/time_home from DOM)
+- tests/panel-schedules.test.ts (new case: _openEditor('hvac-1','hvac') seeds _editorConstraints from _preferences (time_away/time_home present, hvac_type/home_size_sqft absent), _openEditor('ev-1','ev_charger') still uses appliance.config)
+
+**Learnings:**
+- The Preferences interface is `Record<string, unknown>`-shape-compatible at runtime but TS-incompatible by structural typing — the cast `(this._preferences ?? {}) as unknown as Record<string, unknown>` via the unknown bridge is the cleanest way to pass it to currentConstraints without widening the editor's prop type.
+- For "hidden in the DOM" semantics, conditional `html` rendering (`${cond ? null : html\`...\`}`) is stronger than the `hidden` attribute — the elements actually leave the DOM, so `querySelector` returns null after the toggle. This matches the strict reading of the criterion and means tests can simply assert the queries are null without inspecting attributes.
+- Empty string for time_away/time_home as 'no change' (not API defaults like '08:00'/'17:00') is load-bearing: the API has its own defaults, and seeding hard-coded times here would silently overwrite a user's previously-saved values on every submit. The test 'submit with time_away changed, time_home omitted' guards this — if `_buildPayload` ever starts including empty strings, it would fail.
+- For tests that need to access private state (_editorConstraints, _openEditor), the `as unknown as { ... }` double-cast is the project's established pattern (matches existing `el._view = 'dashboard'` pattern in panel-schedules.test.ts where `_view` is a private state field).
+
+---
+
 ## Iteration: Wednesday, May 6, 2026 10:17
 
 **Story:** US-FE-INSULATION-RANGE-01 - Water-heater insulation_factor accepts 0.01-0.05 with default 0.03

@@ -826,10 +826,14 @@ export class HungryMachinesPanel extends LitElement {
 
   private _openEditor(applianceId: string, type: ApplianceType): void {
     const appliance = this._appliancesById[applianceId];
-    const config = (appliance?.config ?? {}) as Record<string, unknown>;
+    // HVAC editor edits user preferences, not appliance.config (which is just {hvac_type, home_size_sqft}).
+    const seed: Record<string, unknown> =
+      type === 'hvac'
+        ? ((this._preferences ?? {}) as unknown as Record<string, unknown>)
+        : ((appliance?.config ?? {}) as Record<string, unknown>);
     this._editorApplianceId = applianceId;
     this._editorApplianceType = type;
-    this._editorConstraints = config;
+    this._editorConstraints = seed;
     this._editorOpen = true;
   }
 
