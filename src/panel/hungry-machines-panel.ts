@@ -841,6 +841,25 @@ export class HungryMachinesPanel extends LitElement {
     this._editorOpen = false;
   }
 
+  private _onConstraintsSaved(e: CustomEvent): void {
+    // The editor just persisted to the backend. For HVAC saves, the
+    // payload IS the user_preferences delta — fold it into our cached
+    // `_preferences` so reopening the editor reflects the just-saved
+    // state instead of the value we read at panel mount. Without this
+    // patch, the UI shows stale numbers until a full panel reload, which
+    // is indistinguishable from "save didn't work" to the user.
+    const detail = (e?.detail ?? {}) as {
+      applianceId?: string;
+      payload?: Record<string, unknown>;
+    };
+    const payload = detail.payload;
+    if (this._editorApplianceType === 'hvac' && payload && typeof payload === 'object') {
+      const current = this._preferences ?? ({} as Preferences);
+      this._preferences = { ...current, ...(payload as Partial<Preferences>) } as Preferences;
+    }
+    this._onEditorClosed();
+  }
+
   private _openAddAppliance = (): void => {
     this._addApplianceOpen = true;
   };
@@ -913,7 +932,7 @@ export class HungryMachinesPanel extends LitElement {
         .applianceType=${this._editorApplianceType}
         .currentConstraints=${this._editorConstraints}
         .open=${this._editorOpen}
-        @constraints-saved=${() => this._onEditorClosed()}
+        @constraints-saved=${(e: CustomEvent) => this._onConstraintsSaved(e)}
         @constraints-cancelled=${() => this._onEditorClosed()}
       ></hm-constraint-editor>
       <hm-appliance-form
