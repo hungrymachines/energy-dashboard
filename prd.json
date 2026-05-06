@@ -82,8 +82,8 @@
         "Verify: `cd hungry-machines_base-frontend && npm test` passes. `cd hungry-machines_base-frontend && npx tsc --noEmit` clean. `grep -F \"'none'\" src/ -r --include='*.ts' | grep -v node_modules | wc -l` returns 0 in any schedule-source context (the literal `'none'` may legitimately appear elsewhere — this verify is loose; the audit step above is the real check)."
       ],
       "priority": 5,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Audit step: zero hits for the literal `'none'` (or `\"none\"`) anywhere under src/, so there's no defensive frontend code left to remove. `getSchedule` is defined in src/api/appliances.ts:96 and called from nowhere in src/ (the only references in the repo are the wrapper itself and the prd/audit docs). Per AC step 2 we therefore left the wrapper for future use and added a `// post-Phase-1 contract: source is always 'optimization' or 'defaults'` comment immediately above its declaration. The `ApplianceSchedule.source` union (line 40) was already correctly `'optimization' | 'defaults'`, so no type change was needed. New tests/api-appliances.test.ts: one case mocks fetch with the spec-shaped body `{appliance_id:'a1', date:'2026-05-06', schedule:{intervals:[],high_temps:[],low_temps:[]}, savings_pct:0, source:'defaults'}` and asserts (a) the typed shape resolves cleanly with `result: ApplianceSchedule = await getSchedule('a1')`, (b) `result.source === 'defaults'`, and (c) the underlying fetch hits `/api/v1/appliances/a1/schedule`. Verify: npm test 105/105 (was 104; +1); npm run build clean; npx tsc --noEmit clean. Greps: `'none'` count under src/ = 0; the comment line above getSchedule in appliances.ts is present (1 hit for `post-Phase-1 contract`)."
     }
   ]
 }

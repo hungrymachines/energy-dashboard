@@ -92,6 +92,7 @@ export function setConstraints(id: string, body: Record<string, unknown>): Promi
   });
 }
 
+// post-Phase-1 contract: source is always 'optimization' or 'defaults'
 export function getSchedule(id: string): Promise<ApplianceSchedule> {
   return apiFetch<ApplianceSchedule>(`/api/v1/appliances/${encodeURIComponent(id)}/schedule`);
 }

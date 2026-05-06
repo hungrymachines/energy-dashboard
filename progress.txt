@@ -214,3 +214,20 @@
 - The test pattern reuses the now-canonical `_mock_response` / `_session_with_post` helpers from test_auth.py and test_scheduler.py (renamed inline in test_readings.py for module locality). The `_make_state` helper builds a MagicMock with `.state` and `.attributes` keys mirroring HA's State object — set attrs only when non-None so the test's `state.attributes.get('current_temperature')` returns None correctly when the user-facing scenario is "current_temperature missing".
 - Decided NOT to extract a shared `_authenticated_post`-style helper between scheduler.py and readings.py: scheduler does GET + body-read + cache-write, readings does POST + status-only. The shared surface is just "get token, set Bearer, log on 401" — about 4 lines either way. Extracting would add a helper module with two divergent callers and net zero. The criterion explicitly said "if it'll cut code duplication" + "do not over-engineer", so kept the inline patterns. If a third API caller lands later this becomes worth re-evaluating.
 - conftest.py needed an `async_track_time_interval` stub. The integration imports it at module-load time alongside `async_track_time_change`, so without the stub the entire `__init__.py` import fails during pytest collection. Followed the same MagicMock-with-return_value-MagicMock pattern as the existing `async_track_time_change` stub.
+
+---
+
+## Iteration: Wednesday, May 6, 2026 13:43
+
+**Story:** US-FE-APPL-SCHED-TYPE-01 - ApplianceSchedule TS type drops 'none' and matches post-Phase-1 backend
+
+**Status:** Completed
+
+**Files Changed:**
+- src/api/appliances.ts (added `// post-Phase-1 contract: source is always 'optimization' or 'defaults'` comment immediately above `getSchedule`; no signature or type change since `ApplianceSchedule.source` was already `'optimization' | 'defaults'`)
+- tests/api-appliances.test.ts (new — single case mocks fetch with the spec-shaped `defaults` body and asserts the typed shape resolves cleanly via `result: ApplianceSchedule = await getSchedule('a1')`, `result.source === 'defaults'`, and the URL hits `/api/v1/appliances/a1/schedule`)
+
+**Learnings:**
+- Audit step found zero `'none'` (or `"none"`) hits anywhere under src/ — the literal had already been scrubbed in earlier work, so the wrapper-only branch of the AC applied. The grep scan covered both single- and double-quoted forms plus regex variants combining "source" + "none" so the audit was load-bearing rather than a quick check.
+- `getSchedule` is currently called from nowhere in src/ (the only references in the repo are the wrapper itself, the prd entry, and API_CONTRACT_AUDIT.md). The AC's "leave the wrapper for future use + add the contract comment" branch was the right one. Comment lives directly above the function declaration so a future caller sees it inline at the definition site.
+- Test setup matches the canonical client-test pattern: `setApiBase(...)`, `setTokens(...)` in beforeEach, `vi.unstubAllGlobals()` + `clearTokens()` in afterEach, fetch stubbed via `vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, body)))`. No new patterns introduced — reused everything from tests/client.test.ts. Type-tightness is asserted by annotating the awaited result as `ApplianceSchedule` (rather than `unknown`); if the wrapper's return type were ever loosened to `any`, `tsc --noEmit` would still pass but the assertion would silently weaken — left as-is rather than over-engineering with conditional-type tests, since the AC just asks for "resolves the typed shape without TS errors".
