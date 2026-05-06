@@ -56,22 +56,42 @@ async def push_current_reading(
     """Read the configured climate entity and POST one reading to the API.
 
     Returns True iff the reading was accepted (HTTP 200/201). Returns False
-    silently when the entity is unconfigured / missing / lacks an indoor
-    temperature, or when the API rejects the post. On 401 the entry is
-    flagged for reauth.
+    when the entity is unconfigured / missing / lacks an indoor temperature,
+    or when the API rejects the post. On 401 the entry is flagged for
+    reauth. Each skip path logs at INFO so a misconfigured climate entity
+    is debuggable without enabling debug-level logging.
     """
     entity_id = entry.options.get(
         CONF_CLIMATE_ENTITY
     ) or entry.data.get(CONF_CLIMATE_ENTITY)
     if not entity_id:
+        _LOGGER.info(
+            "Hungry Machines readings poll skipped: no climate entity "
+            "configured. Set one in Settings → Devices & Services → "
+            "Hungry Machines → Configure."
+        )
         return False
 
     state = hass.states.get(entity_id)
     if state is None:
+        _LOGGER.info(
+            "Hungry Machines readings poll skipped: configured climate "
+            "entity '%s' is not present in hass.states (renamed/removed?).",
+            entity_id,
+        )
         return False
 
     reading = _build_reading(state)
     if reading is None:
+        _LOGGER.info(
+            "Hungry Machines readings poll skipped: climate entity '%s' "
+            "has no `current_temperature` attribute (got attrs=%s, state=%s). "
+            "Not all thermostats expose it; pick a different climate entity "
+            "or wire a sensor.* fallback.",
+            entity_id,
+            sorted(state.attributes.keys()) if state.attributes else [],
+            state.state,
+        )
         return False
 
     token = await auth.current_token(hass, entry)
