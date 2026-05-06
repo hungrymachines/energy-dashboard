@@ -19,8 +19,9 @@ All three share one sign-in. Sign in once via the panel and the cards activate e
 ## How it works
 
 1. You connect your appliances and preferences via the panel inside Home Assistant.
-2. Each night, the Hungry Machines API fetches a 24-hour weather forecast and your time-of-use rates, then runs an optimization that picks operating intervals to minimize cost while staying inside your comfort and charge constraints.
-3. Your Home Assistant pulls the resulting schedule the next morning and applies the setpoints. The panel and cards in this package show what's running, what's coming next, and what you'll pay.
+2. Throughout the day, your Home Assistant pushes a sensor reading (indoor temperature, HVAC state, target setpoint, humidity) to the Hungry Machines API every 5 minutes. The optimizer uses this stream to fit a per-home thermal model — without it, no real optimization is possible and the backend falls back to flat defaults.
+3. Each night, the Hungry Machines API fetches a 24-hour weather forecast and your time-of-use rates, then runs an optimization that picks operating intervals to minimize cost while staying inside your comfort and charge constraints.
+4. Your Home Assistant pulls the resulting schedule the next morning and applies the setpoints on every 30-minute boundary throughout the day. The panel and cards in this package show what's running, what's coming next, and what you'll pay.
 
 The optimization itself (per-home thermal models, HVAC scheduling, EV/battery load-shifting, water-heater control) lives entirely in the backend. This package is the user-facing window into it.
 
@@ -55,7 +56,7 @@ Go to **[hungrymachines.io](https://hungrymachines.io)** and sign up. Confirm yo
 
    Your password is sent once to `api.hungrymachines.io` so the integration can obtain access + refresh tokens. **Only the tokens** are persisted in Home Assistant — your password is never stored locally. If your tokens ever stop working, Home Assistant will prompt you to re-enter your password to refresh them.
 
-A **Hungry Machines** entry now appears in your sidebar, and the two Lovelace cards become available in the dashboard card picker. The integration also begins fetching your optimized HVAC schedule each morning and writing the targets to the climate entity you chose on every 30-minute boundary throughout the day.
+A **Hungry Machines** entry now appears in your sidebar, and the two Lovelace cards become available in the dashboard card picker. The integration also begins two background tasks: it polls the climate entity every 5 minutes and pushes a sensor reading to the API (so the optimizer can learn from how your home responds), and it fetches today's optimized HVAC schedule each morning and writes the targets to the climate entity on every 30-minute boundary.
 
 ### Step 4 — Sign in to the panel
 
@@ -91,7 +92,12 @@ Everything you'd expect to tune lives inside the panel's **Settings** tab:
 - **Pricing zone** — choose your time-of-use rate plan (1–8 preset zones covering common US utilities, including SDG&E, ConEd, and Xcel). Hourly rate overrides are supported if your utility doesn't fit a preset.
 - **Account** — sign out, or email [info@hungrymachines.io](mailto:info@hungrymachines.io) if you want your account deleted.
 
-Comfort and charge constraints (HVAC high/low temperature ranges, EV target state-of-charge, battery reserve, water-heater setpoint, etc.) are edited per-appliance in the panel's **Constraints** tab.
+Comfort and charge constraints are edited per-appliance from the **Dashboard** — each appliance card has an **Edit constraints** button that opens a per-type editor:
+
+- **HVAC** — base temperature, savings level (1 = tight ±2°F, 2 = moderate ±6°F, 3 = aggressive ±12°F), optimization mode (`cool`, `heat`, `auto`, `off`), and `time_away` / `time_home` (HH:MM, the times you typically leave and return). An optional **hourly comfort bands** override lets advanced users specify a per-hour low/high in °F across all 24 hours instead of the symmetric base±band — useful if your comfort needs change throughout the day in ways the base+savings-level abstraction can't capture.
+- **EV charger** — target charge %, minimum charge %, current charge %, deadline time (HH:MM by which the target must be reached).
+- **Home battery** — target charge %, minimum charge %, deadline time.
+- **Water heater** — minimum and maximum tank temperature (°F).
 
 ## Manual install (without HACS)
 
