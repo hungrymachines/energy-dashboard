@@ -154,3 +154,19 @@
 **Learnings:**
 - Constraint editor's HVAC tab already used `max="3"` with the [1,3] savings_level validation in `_validate` (line 402-404) from a prior story — no edit was needed, and the AC's third bullet explicitly notes the validator was already in place. Don't blind-edit when re-reading a section first proves it's already correct; the diff for this story is only the thermostat card.
 - Existing test that drove `slider.value = '4'` and expected `savings_level: 4` in the PUT body was the "before clamp" specification. Updating it to use an in-range value ('2') preserves the debounce-round-trip assertion and a new dedicated case covers the out-of-range clamp explicitly. Splitting the cases keeps each test focused and the failure messages on regression more legible than overloading one test with two distinct guarantees.
+
+---
+
+## Iteration: Wednesday, May 6, 2026 10:17
+
+**Story:** US-FE-INSULATION-RANGE-01 - Water-heater insulation_factor accepts 0.01-0.05 with default 0.03
+**Status:** Completed
+
+**Files Changed:**
+- src/ui/appliance-form.ts (default '0.5' -> '0.03' in _defaultValues; reqInRange bounds 0..1 -> 0.01..0.05 with 'Must be 0.01-0.05' error in _validate; input min/max/step/.value fallback updated to 0.01/0.05/0.005/'0.03'; label text '(0–1)' -> '(0.01–0.05)'; added <small class='label-text'> hint under the input)
+- tests/appliance-form.test.ts (4 new cases: default value + attrs, '0.5' fails validation and disables Add, '0.025' validates clean, submit with 0.03 posts numeric 0.03)
+
+**Learnings:**
+- The hint `<small>` was placed BEFORE the conditional field-error block so the help text stays visible even when validation fails — the inline error appears below the hint, which keeps the relative ordering "label → input → hint → error" consistent with the input being the focal element.
+- Frontend type coercion for the insulation_factor: `_buildConfig` uses `Number(v['insulation_factor'])` so submit-time defaults of '0.03' become 0.03 (numeric). Don't rely on the input element's stepping behavior to enforce range — the validator is the source of truth, the input attrs are just the picker hints.
+- Verify grep `grep -E 'reqInRange.*insulation_factor.*0\.01.*0\.05'` requires the dot to be escaped for the literal-dot match; using `-E` makes the dot a metacharacter, but it still matches a literal dot, so the count is 1 either way. Spelled the test grep with explicit escapes for safety.
