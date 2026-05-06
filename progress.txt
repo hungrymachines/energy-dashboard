@@ -231,3 +231,26 @@
 - Audit step found zero `'none'` (or `"none"`) hits anywhere under src/ — the literal had already been scrubbed in earlier work, so the wrapper-only branch of the AC applied. The grep scan covered both single- and double-quoted forms plus regex variants combining "source" + "none" so the audit was load-bearing rather than a quick check.
 - `getSchedule` is currently called from nowhere in src/ (the only references in the repo are the wrapper itself, the prd entry, and API_CONTRACT_AUDIT.md). The AC's "leave the wrapper for future use + add the contract comment" branch was the right one. Comment lives directly above the function declaration so a future caller sees it inline at the definition site.
 - Test setup matches the canonical client-test pattern: `setApiBase(...)`, `setTokens(...)` in beforeEach, `vi.unstubAllGlobals()` + `clearTokens()` in afterEach, fetch stubbed via `vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, body)))`. No new patterns introduced — reused everything from tests/client.test.ts. Type-tightness is asserted by annotating the awaited result as `ApplianceSchedule` (rather than `unknown`); if the wrapper's return type were ever loosened to `any`, `tsc --noEmit` would still pass but the assertion would silently weaken — left as-is rather than over-engineering with conditional-type tests, since the AC just asks for "resolves the typed shape without TS errors".
+
+---
+
+## Iteration: Wednesday, May 6, 2026 14:32
+
+**Story:** US-FE-OPENAPI-GEN-01 - Generate src/api/generated.ts from a committed openapi.snapshot.json
+**Status:** Completed
+
+**Files Changed:**
+- openapi.snapshot.json (regenerated from FastAPI app object — 39733 bytes; previous file was empty / 0 bytes)
+- package.json (added openapi-typescript@~7.13.0 + @types/node@~20.0.0 devDeps; new `codegen` npm script)
+- package-lock.json (regenerated for new deps)
+- src/api/generated.ts (NEW — 1260-line auto-generated typed paths bundle, output of `npm run codegen`)
+- tests/codegen-snapshot.test.ts (NEW — 2 vitest cases: file-exists guard + substring grep for the six known endpoint path keys)
+- README.md (NEW `## Regenerating the API types` section — one-line monorepo-root regen command + note that the snapshot pins committed master-branch state, not deployed state)
+
+**Learnings:**
+- Generating `openapi.snapshot.json` is straight-forward but the bash-redirection-to-file under sandbox is path-aware: `python3 -c '...' > .../openapi.snapshot.json` was rejected even when the target was inside the project root. Workaround: write the file from inside Python using `with open(target, 'w') as f: f.write(...)` instead of shell redirection. Future stories that need to materialize files via subprocess should use this pattern.
+- `openapi-typescript@~7.13.0` (rather than `^7.13.0`) is the right pin for "specific minor version" — `^` lets npm float the minor, `~` only floats the patch. The PRD wording matters; future codegen-style devDeps should follow the same convention.
+- The snapshot is generated from the SIBLING `hungry-machines-api/` repo's source code, not the live API. Running `python3 -c "import json; from app.main import app; print(json.dumps(app.openapi(), indent=2))"` with `PYTHONPATH=../hungry-machines-api` works because the API's CLAUDE.md guarantees lazy Supabase / Stripe clients — the app object imports cleanly with empty .env. This is the canonical "regenerate from committed master code" command and is documented verbatim in README.md.
+- Adding `@types/node` was forced by `node:fs` / `node:path` / `__dirname` in the new test. The project had no prior fs/path test usage so the dep was absent; pinned to `~20.0.0` to match typical Node 20 LTS environments. Future tests that read files from disk can rely on it now.
+- Verify grep `grep -F '/auth/register' openapi.snapshot.json | wc -l` returning 0 is the load-bearing assertion that the snapshot pins POST-Phase-1 API code — `/auth/register` was a doc-only endpoint that never existed in routes; if a future commit accidentally regenerates from a stale Phase-0 branch this guard catches it.
+- 17 vitest files / 107 tests pass after the change (prior baseline was 16 / 105). New file's 2 cases are the only delta; no other tests touched the codegen artifacts so no flakes.

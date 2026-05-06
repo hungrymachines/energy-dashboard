@@ -125,6 +125,16 @@ npm test           # vitest suite
 
 The Python integration is a thin shim that registers the bundled JS file as a Lovelace resource and registers the sidebar panel. All product logic lives in the TypeScript bundle. Architecture reference: [`structure.md`](structure.md).
 
+## Regenerating the API types
+
+`src/api/generated.ts` is produced by [`openapi-typescript`](https://www.npmjs.com/package/openapi-typescript) from the committed `openapi.snapshot.json`, which is itself produced from the FastAPI app object in the sibling `hungry-machines-api/` repo. When the backend lands a contract change, regenerate from the monorepo root:
+
+```bash
+cd ../hungry-machines-api && python -c "import json; from app.main import app; print(json.dumps(app.openapi(), indent=2))" > ../hungry-machines_base-frontend/openapi.snapshot.json && cd ../hungry-machines_base-frontend && npm run codegen && npm test
+```
+
+Commit the resulting `openapi.snapshot.json` and `src/api/generated.ts` deltas in the same PR as the consuming change. The snapshot pins to **committed master-branch API code**, not whatever is deployed on the VPS — that's the point. Live deployment can lag the generated types and contract tests will still tell you the truth about the wire format the frontend has agreed to.
+
 ## Changelog
 
 - **v0.4.0** — feat: poll the configured climate entity every 5 minutes and push readings to the API; the optimizer now has data to learn from.
