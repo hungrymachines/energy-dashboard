@@ -21,6 +21,7 @@ const SAMPLE_USER = {
   pricing_location: 3,
   timezone: 'America/Los_Angeles',
   subscription_tier: 'free',
+        weather_entity_id: '',
 };
 
 const HVAC_SCHEDULE_RESPONSE = {

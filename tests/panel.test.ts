@@ -25,6 +25,7 @@ const SAMPLE_USER = {
   pricing_location: 3,
   timezone: 'America/Los_Angeles',
   subscription_tier: 'free',
+        weather_entity_id: '',
 };
 
 function setAuthState(partial: Partial<AuthState>): void {

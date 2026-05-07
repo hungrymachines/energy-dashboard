@@ -1,9 +1,23 @@
 """Sensor readings poller for the Hungry Machines integration.
 
-Reads the user's configured climate entity, builds a single sensor reading,
-and POSTs it to ``/api/v1/readings`` so the backend's per-user thermal model
-fitter has observations to learn from. Tolerates missing entities, missing
-attributes, and 4xx responses without crashing.
+v2.0+: appliance-driven loop. Every 5 minutes:
+
+1. Fetch the user's appliances from `/api/v1/appliances`.
+2. For each registered appliance, look up `config.entity_id` (and any aux
+   sensor entity such as `soc_entity_id` / `temp_entity_id`) and read
+   their current state from `hass.states`.
+3. Build the appropriate per-type reading payload:
+   - `hvac` → POST to `/api/v1/readings` (the home-level endpoint that
+     feeds the thermal-model fitter; uses `current_temperature` +
+     `hvac_state` from the climate entity).
+   - `ev_charger` / `home_battery` → POST to
+     `/api/v1/appliances/{id}/readings` with `value` = SoC % and
+     `state` = "CHARGING"/"IDLE"/"ON"/"OFF" derived from the switch state.
+   - `water_heater` → POST to `/api/v1/appliances/{id}/readings` with
+     `value` = tank temperature and `state` derived from the switch.
+
+Skip paths log at INFO with enough context to debug a misconfigured
+entity from `home-assistant.log` without enabling debug-level logging.
 """
 from __future__ import annotations
 
@@ -11,120 +25,182 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import aiohttp_client
 
-from . import auth
-from .const import API_BASE_URL, CONF_CLIMATE_ENTITY
+from . import api
 
 _LOGGER = logging.getLogger(__name__)
 
 _VALID_HVAC_STATES = ("HEAT", "COOL", "OFF", "FAN")
 
 
-def _build_reading(state: Any) -> dict[str, Any] | None:
-    """Build the reading payload from a climate entity state."""
-    indoor_temp = state.attributes.get("current_temperature")
-    if indoor_temp is None:
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
         return None
 
+
+def _read_state(hass: HomeAssistant, entity_id: str) -> Any | None:
+    state = hass.states.get(entity_id) if entity_id else None
+    if state is None:
+        _LOGGER.info(
+            "Hungry Machines: configured entity '%s' is not present in hass.states; skipping",
+            entity_id,
+        )
+        return None
+    return state
+
+
+def _build_hvac_home_reading(state: Any) -> dict | None:
+    """Build the /api/v1/readings payload from the HVAC climate entity."""
+    indoor_temp = state.attributes.get("current_temperature")
+    if indoor_temp is None:
+        _LOGGER.info(
+            "Hungry Machines: HVAC entity '%s' lacks current_temperature attribute "
+            "(attrs=%s, state=%s); home reading skipped",
+            state.entity_id,
+            sorted(state.attributes.keys()) if state.attributes else [],
+            state.state,
+        )
+        return None
     raw_state = (state.state or "").upper()
     hvac_state = raw_state if raw_state in _VALID_HVAC_STATES else "OFF"
-
     reading: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "indoor_temp": indoor_temp,
         "hvac_state": hvac_state,
     }
-
     target_temp = state.attributes.get("temperature")
     if target_temp is not None:
         reading["target_temp"] = target_temp
-
     indoor_humidity = state.attributes.get("current_humidity")
     if indoor_humidity is not None:
         reading["indoor_humidity"] = indoor_humidity
-
     return reading
 
 
-async def push_current_reading(
-    hass: HomeAssistant, entry: ConfigEntry
-) -> bool:
-    """Read the configured climate entity and POST one reading to the API.
+def _on_off_state(state_str: str) -> str:
+    """Map an HA switch state to one of the documented appliance states."""
+    s = (state_str or "").lower()
+    if s in ("on", "charging"):
+        return "CHARGING" if s == "charging" else "ON"
+    if s in ("off", "idle"):
+        return "IDLE" if s == "idle" else "OFF"
+    return "OFF"
 
-    Returns True iff the reading was accepted (HTTP 200/201). Returns False
-    when the entity is unconfigured / missing / lacks an indoor temperature,
-    or when the API rejects the post. On 401 the entry is flagged for
-    reauth. Each skip path logs at INFO so a misconfigured climate entity
-    is debuggable without enabling debug-level logging.
-    """
-    entity_id = entry.options.get(
-        CONF_CLIMATE_ENTITY
-    ) or entry.data.get(CONF_CLIMATE_ENTITY)
-    if not entity_id:
+
+def _build_charge_reading(
+    hass: HomeAssistant, control_state: Any, soc_entity_id: str | None
+) -> dict | None:
+    """Per-appliance reading for an EV charger / home battery."""
+    soc: float | None = None
+    if soc_entity_id:
+        soc_state = _read_state(hass, soc_entity_id)
+        if soc_state is not None:
+            soc = _coerce_float(soc_state.state)
+    if soc is None:
+        # Without a SoC sensor we still send the on/off state but the
+        # value field is required by the API. Use 0.0 — the optimizer
+        # uses constraints (target_charge_pct etc) for its planning,
+        # not raw readings, so this is harmless.
+        soc = 0.0
+    reading = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "state": _on_off_state(control_state.state),
+        "value": max(0.0, min(100.0, soc)),
+    }
+    return reading
+
+
+def _build_water_heater_reading(
+    hass: HomeAssistant, control_state: Any, temp_entity_id: str | None
+) -> dict | None:
+    """Per-appliance reading for a water heater."""
+    tank_temp: float | None = None
+    if temp_entity_id:
+        temp_state = _read_state(hass, temp_entity_id)
+        if temp_state is not None:
+            tank_temp = _coerce_float(temp_state.state)
+    if tank_temp is None:
+        # Same fallback logic as the charge reading: send a plausible
+        # default. The water-heater optimizer cares about constraints +
+        # element wattage + insulation_factor more than raw tank temp.
+        tank_temp = 120.0
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "state": _on_off_state(control_state.state),
+        "value": max(60.0, min(180.0, tank_temp)),
+    }
+
+
+async def push_all_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
+    """Run one polling cycle. Returns the number of readings successfully posted."""
+    appliances = await api.get_appliances(hass, entry)
+    if appliances is None:
+        return 0
+    if not appliances:
         _LOGGER.info(
-            "Hungry Machines readings poll skipped: no climate entity "
-            "configured. Set one in Settings → Devices & Services → "
-            "Hungry Machines → Configure."
+            "Hungry Machines: no appliances registered yet; nothing to read. "
+            "Add an appliance via the panel's 'Add appliance' button."
         )
-        return False
+        return 0
 
-    state = hass.states.get(entity_id)
-    if state is None:
-        _LOGGER.info(
-            "Hungry Machines readings poll skipped: configured climate "
-            "entity '%s' is not present in hass.states (renamed/removed?).",
-            entity_id,
-        )
-        return False
+    successes = 0
+    for appliance in appliances:
+        atype = appliance.get("appliance_type")
+        aid = appliance.get("id")
+        config = appliance.get("config") or {}
+        entity_id = config.get("entity_id") if isinstance(config, dict) else None
+        if not isinstance(entity_id, str) or not entity_id:
+            _LOGGER.info(
+                "Hungry Machines: appliance %s (%s) has no entity_id in config; skipping",
+                aid,
+                atype,
+            )
+            continue
+        control_state = _read_state(hass, entity_id)
+        if control_state is None:
+            continue
 
-    reading = _build_reading(state)
-    if reading is None:
-        _LOGGER.info(
-            "Hungry Machines readings poll skipped: climate entity '%s' "
-            "has no `current_temperature` attribute (got attrs=%s, state=%s). "
-            "Not all thermostats expose it; pick a different climate entity "
-            "or wire a sensor.* fallback.",
-            entity_id,
-            sorted(state.attributes.keys()) if state.attributes else [],
-            state.state,
-        )
-        return False
+        if atype == "hvac":
+            reading = _build_hvac_home_reading(control_state)
+            if reading is None:
+                continue
+            ok = await api.post_home_reading(hass, entry, reading)
+        elif atype in ("ev_charger", "home_battery"):
+            reading = _build_charge_reading(
+                hass, control_state, config.get("soc_entity_id")
+            )
+            if reading is None:
+                continue
+            ok = await api.post_appliance_reading(hass, entry, aid, reading)
+        elif atype == "water_heater":
+            reading = _build_water_heater_reading(
+                hass, control_state, config.get("temp_entity_id")
+            )
+            if reading is None:
+                continue
+            ok = await api.post_appliance_reading(hass, entry, aid, reading)
+        else:
+            _LOGGER.info(
+                "Hungry Machines: unknown appliance_type=%s for %s; skipping",
+                atype,
+                aid,
+            )
+            continue
+        if ok:
+            successes += 1
+    return successes
 
-    token = await auth.current_token(hass, entry)
-    if token is None:
-        _LOGGER.warning(
-            "Hungry Machines token unavailable; triggering reauth"
-        )
-        entry.async_start_reauth(hass)
-        return False
 
-    session = aiohttp_client.async_get_clientsession(hass)
-    try:
-        async with session.post(
-            f"{API_BASE_URL}/api/v1/readings",
-            headers={"Authorization": f"Bearer {token}"},
-            json={"readings": [reading]},
-        ) as resp:
-            if resp.status == 401:
-                _LOGGER.warning(
-                    "Hungry Machines readings endpoint rejected token; "
-                    "triggering reauth"
-                )
-                entry.async_start_reauth(hass)
-                return False
-            if resp.status >= 400:
-                _LOGGER.warning(
-                    "Hungry Machines readings post failed (status=%s)",
-                    resp.status,
-                )
-                return False
-            return True
-    except aiohttp.ClientError as err:
-        _LOGGER.warning(
-            "Hungry Machines readings network error: %s", err
-        )
-        return False
+# Backwards-compatible name retained for tests + __init__.py wiring; the
+# function now drives the multi-appliance loop instead of polling a single
+# climate entity.
+async def push_current_reading(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Compatibility shim: returns True iff at least one reading was posted."""
+    n = await push_all_readings(hass, entry)
+    return n > 0

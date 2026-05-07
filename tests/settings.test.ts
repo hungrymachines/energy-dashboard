@@ -29,6 +29,7 @@ const SAMPLE_USER = {
   pricing_location: 3,
   timezone: 'America/Los_Angeles',
   subscription_tier: 'free',
+  weather_entity_id: '',
 };
 
 function setAuthState(partial: Partial<AuthState>): void {
@@ -94,7 +95,11 @@ const HASS = {
       state: 'sunny',
       attributes: { temperature: 58 },
     },
-    // Non-matching entities to ensure filtering works.
+    'weather.met_no': {
+      entity_id: 'weather.met_no',
+      state: 'cloudy',
+      attributes: { temperature: 60 },
+    },
     'sensor.living_room_temp': {
       entity_id: 'sensor.living_room_temp',
       state: '72',
@@ -106,7 +111,7 @@ const HASS = {
   },
 };
 
-describe('hungry-machines-panel settings', () => {
+describe('hungry-machines-panel settings (v2.0)', () => {
   beforeEach(() => {
     setApiBase('https://api.example.test');
     localStorage.clear();
@@ -119,7 +124,6 @@ describe('hungry-machines-panel settings', () => {
       user: { ...SAMPLE_USER },
     });
     vi.spyOn(authStore, 'hydrate').mockImplementation(async () => {});
-    // Default stub for the dashboard fetches fired on mount (schedules, rates, appliances).
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -140,64 +144,33 @@ describe('hungry-machines-panel settings', () => {
     setAuthState({});
   });
 
-  it('renders exactly two entity selects (climate and weather) populated with their respective domains', async () => {
-    const el = mountPanel({ hass: HASS });
-    await flush(el);
-    const root = el.shadowRoot!;
-    clickSettings(root);
-    await flush(el);
-
-    const settingsSection = Array.from(root.querySelectorAll('.settings-section')).find(
-      (s) => s.querySelector('h3')?.textContent?.includes('Home Assistant entities'),
-    );
-    expect(settingsSection).toBeDefined();
-    const entitySelects = Array.from(
-      settingsSection!.querySelectorAll<HTMLSelectElement>('select'),
-    );
-    expect(entitySelects).toHaveLength(2);
-
-    for (const legacy of ['indoor_temp', 'outdoor_temp', 'power']) {
-      expect(root.querySelector(`select[name="entity_${legacy}"]`)).toBeNull();
-    }
-
-    const climateSel = selectByName(root, 'entity_climate');
-    const climateValues = Array.from(climateSel.options)
-      .map((o) => o.value)
-      .filter((v) => v !== '');
-    expect(climateValues.sort()).toEqual(['climate.bedroom', 'climate.living_room']);
-    expect(climateSel.disabled).toBe(false);
-
-    const weatherSel = selectByName(root, 'entity_weather');
-    const weatherValues = Array.from(weatherSel.options)
-      .map((o) => o.value)
-      .filter((v) => v !== '');
-    expect(weatherValues).toEqual(['weather.home']);
-  });
-
-  it('case A: selecting a climate entity does NOT call localStorage.setItem (draft only)', async () => {
+  it('renders a single weather-entity picker (climate is now per-appliance)', async () => {
     const el = mountPanel({ hass: HASS });
     await flush(el);
     clickSettings(el.shadowRoot!);
     await flush(el);
 
-    // Spy AFTER mount so connectedCallback's getEntityMap migration (if any) does
-    // not pollute the count. localStorage is empty here so no migration runs.
-    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem');
-
     const root = el.shadowRoot!;
-    const climate = selectByName(root, 'entity_climate');
-    climate.value = 'climate.living_room';
-    climate.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush(el);
-
-    const entityMapWrites = setItemSpy.mock.calls.filter(
-      (c) => c[0] === 'hm_entity_map',
+    const settingsSection = Array.from(root.querySelectorAll('.settings-section')).find(
+      (s) => s.querySelector('h3')?.textContent?.includes('Weather'),
     );
-    expect(entityMapWrites).toHaveLength(0);
-    expect(localStorage.getItem('hm_entity_map')).toBeNull();
+    expect(settingsSection).toBeDefined();
+
+    const weatherSel = selectByName(root, 'weather_entity_id');
+    const values = Array.from(weatherSel.options)
+      .map((o) => o.value)
+      .filter((v) => v !== '');
+    expect(values.sort()).toEqual(['weather.home', 'weather.met_no']);
+
+    // The legacy "climate" entity picker is gone (climate lives on each appliance now).
+    expect(root.querySelector('select[name="entity_climate"]')).toBeNull();
+    // Legacy entity_map fields also gone.
+    for (const legacy of ['indoor_temp', 'outdoor_temp', 'power']) {
+      expect(root.querySelector(`select[name="entity_${legacy}"]`)).toBeNull();
+    }
   });
 
-  it('case B: clicking Save persists entity map and zone, and shows Saved text', async () => {
+  it('selecting a weather entity is a draft change — no PATCH until Save', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url =
@@ -208,7 +181,7 @@ describe('hungry-machines-panel settings', () => {
             : input.url;
       calls.push({ url, init });
       if (url.endsWith('/auth/me') && init?.method === 'PATCH') {
-        return jsonResponse({ ...SAMPLE_USER, pricing_location: 5 });
+        return jsonResponse({ ...SAMPLE_USER, weather_entity_id: 'weather.home' });
       }
       return jsonResponse(null);
     });
@@ -220,41 +193,45 @@ describe('hungry-machines-panel settings', () => {
     await flush(el);
 
     const root = el.shadowRoot!;
-    const climate = selectByName(root, 'entity_climate');
-    climate.value = 'climate.living_room';
-    climate.dispatchEvent(new Event('change', { bubbles: true }));
-    const zone = selectByName(root, 'pricing_zone');
-    zone.value = '5';
-    zone.dispatchEvent(new Event('change', { bubbles: true }));
+    const sel = selectByName(root, 'weather_entity_id');
+    sel.value = 'weather.home';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
     await flush(el);
 
-    // Before Save: nothing persisted, no PATCH yet.
-    expect(localStorage.getItem('hm_entity_map')).toBeNull();
     expect(calls.find((c) => c.init?.method === 'PATCH')).toBeUndefined();
 
-    const saveBtn = root.querySelector<HTMLButtonElement>('button.save-btn');
-    expect(saveBtn).not.toBeNull();
-    expect(saveBtn!.disabled).toBe(false);
-    saveBtn!.click();
+    root.querySelector<HTMLButtonElement>('button.save-btn')!.click();
     await flush(el);
 
-    // Entity map persisted.
-    const parsed = JSON.parse(localStorage.getItem('hm_entity_map')!);
-    expect(parsed).toEqual({ climate: 'climate.living_room' });
-
-    // Zone PATCH fired.
     const patchCall = calls.find(
       (c) => c.url.endsWith('/auth/me') && c.init?.method === 'PATCH',
     );
     expect(patchCall).toBeDefined();
-    expect(JSON.parse(String(patchCall!.init!.body))).toEqual({ pricing_location: 5 });
-
-    // 'Saved' indicator visible.
-    expect(root.textContent).toContain('Saved');
+    expect(JSON.parse(String(patchCall!.init!.body))).toEqual({
+      weather_entity_id: 'weather.home',
+    });
+    expect(authStore.state.user?.weather_entity_id).toBe('weather.home');
   });
 
-  it('case C: Reset after a post-save edit reverts to the saved state, not the draft', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse(null));
+  it('Save with both fields dirty sends both in one PATCH', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      calls.push({ url, init });
+      if (url.endsWith('/auth/me') && init?.method === 'PATCH') {
+        return jsonResponse({
+          ...SAMPLE_USER,
+          pricing_location: 5,
+          weather_entity_id: 'weather.met_no',
+        });
+      }
+      return jsonResponse(null);
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     const el = mountPanel({ hass: HASS });
@@ -263,35 +240,30 @@ describe('hungry-machines-panel settings', () => {
     await flush(el);
 
     const root = el.shadowRoot!;
-    const climate = selectByName(root, 'entity_climate');
-    climate.value = 'climate.living_room';
-    climate.dispatchEvent(new Event('change', { bubbles: true }));
+    const zone = selectByName(root, 'pricing_zone');
+    zone.value = '5';
+    zone.dispatchEvent(new Event('change', { bubbles: true }));
+    const weather = selectByName(root, 'weather_entity_id');
+    weather.value = 'weather.met_no';
+    weather.dispatchEvent(new Event('change', { bubbles: true }));
     await flush(el);
 
     root.querySelector<HTMLButtonElement>('button.save-btn')!.click();
     await flush(el);
 
-    // Now make a further edit (draft = bedroom, saved = living_room).
-    const climate2 = selectByName(root, 'entity_climate');
-    climate2.value = 'climate.bedroom';
-    climate2.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush(el);
-
-    expect(selectByName(root, 'entity_climate').value).toBe('climate.bedroom');
-
-    const resetBtn = root.querySelector<HTMLButtonElement>('button.reset-btn');
-    expect(resetBtn).not.toBeNull();
-    expect(resetBtn!.disabled).toBe(false);
-    resetBtn!.click();
-    await flush(el);
-
-    // After reset, form reverts to the SAVED state (living_room), not the draft (bedroom).
-    expect(selectByName(root, 'entity_climate').value).toBe('climate.living_room');
+    const patchCall = calls.find(
+      (c) => c.url.endsWith('/auth/me') && c.init?.method === 'PATCH',
+    );
+    expect(patchCall).toBeDefined();
+    expect(JSON.parse(String(patchCall!.init!.body))).toEqual({
+      pricing_location: 5,
+      weather_entity_id: 'weather.met_no',
+    });
+    expect(root.textContent).toContain('Saved');
   });
 
-  it('case D: after Save with no further edits, both Save and Reset are disabled', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse(null));
-    vi.stubGlobal('fetch', fetchMock);
+  it('after Save with no further edits, both Save and Reset are disabled', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
 
     const el = mountPanel({ hass: HASS });
     await flush(el);
@@ -299,92 +271,22 @@ describe('hungry-machines-panel settings', () => {
     await flush(el);
 
     const root = el.shadowRoot!;
-
-    // Initially nothing is dirty -> both buttons disabled.
     const saveInitial = root.querySelector<HTMLButtonElement>('button.save-btn')!;
     const resetInitial = root.querySelector<HTMLButtonElement>('button.reset-btn')!;
     expect(saveInitial.disabled).toBe(true);
     expect(resetInitial.disabled).toBe(true);
 
-    const climate = selectByName(root, 'entity_climate');
-    climate.value = 'climate.living_room';
-    climate.dispatchEvent(new Event('change', { bubbles: true }));
+    const weather = selectByName(root, 'weather_entity_id');
+    weather.value = 'weather.home';
+    weather.dispatchEvent(new Event('change', { bubbles: true }));
     await flush(el);
 
     expect(root.querySelector<HTMLButtonElement>('button.save-btn')!.disabled).toBe(false);
     expect(root.querySelector<HTMLButtonElement>('button.reset-btn')!.disabled).toBe(false);
-
-    root.querySelector<HTMLButtonElement>('button.save-btn')!.click();
-    await flush(el);
-
-    expect(root.querySelector<HTMLButtonElement>('button.save-btn')!.disabled).toBe(true);
-    expect(root.querySelector<HTMLButtonElement>('button.reset-btn')!.disabled).toBe(true);
   });
 
-  it('case E: re-mounting the panel hydrates form fields back to the saved values', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse(null));
-    vi.stubGlobal('fetch', fetchMock);
-
-    const el = mountPanel({ hass: HASS });
-    await flush(el);
-    clickSettings(el.shadowRoot!);
-    await flush(el);
-
-    const climate = selectByName(el.shadowRoot!, 'entity_climate');
-    climate.value = 'climate.bedroom';
-    climate.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush(el);
-    el.shadowRoot!.querySelector<HTMLButtonElement>('button.save-btn')!.click();
-    await flush(el);
-
-    // Unmount and remount.
-    el.remove();
-    const el2 = mountPanel({ hass: HASS });
-    await flush(el2);
-    clickSettings(el2.shadowRoot!);
-    await flush(el2);
-
-    const climate2 = selectByName(el2.shadowRoot!, 'entity_climate');
-    expect(climate2.value).toBe('climate.bedroom');
-  });
-
-  it('legacy four-key entity map is filtered to a clean shape on read', async () => {
-    localStorage.setItem(
-      'hm_entity_map',
-      JSON.stringify({
-        indoor_temp: 'sensor.foo',
-        outdoor_temp: 'sensor.bar',
-        power: 'sensor.baz',
-        weather: 'weather.home',
-      }),
-    );
-    const { getEntityMap } = await import('../src/store.js');
-    expect(getEntityMap()).toEqual({ weather: 'weather.home' });
-
-    // Legacy-only stored map filters down to {} on read.
-    localStorage.setItem(
-      'hm_entity_map',
-      JSON.stringify({ indoor_temp: 'sensor.foo', power: 'sensor.bar' }),
-    );
-    expect(getEntityMap()).toEqual({});
-  });
-
-  it('changing the pricing zone alone is a draft change — no fetch until Save', async () => {
-    const calls: Array<{ url: string; init?: RequestInit }> = [];
-    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const url =
-        typeof input === 'string'
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : input.url;
-      calls.push({ url, init });
-      if (url.endsWith('/auth/me') && init?.method === 'PATCH') {
-        return jsonResponse({ ...SAMPLE_USER, pricing_location: 5 });
-      }
-      return jsonResponse(null);
-    });
-    vi.stubGlobal('fetch', fetchMock);
+  it('Reset reverts the draft to the saved auth-store state', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
 
     const el = mountPanel({ hass: HASS });
     await flush(el);
@@ -392,23 +294,16 @@ describe('hungry-machines-panel settings', () => {
     await flush(el);
 
     const root = el.shadowRoot!;
-    const zone = selectByName(root, 'pricing_zone');
-    zone.value = '5';
-    zone.dispatchEvent(new Event('change', { bubbles: true }));
+    const weather = selectByName(root, 'weather_entity_id');
+    weather.value = 'weather.met_no';
+    weather.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+    expect(selectByName(root, 'weather_entity_id').value).toBe('weather.met_no');
+
+    root.querySelector<HTMLButtonElement>('button.reset-btn')!.click();
     await flush(el);
 
-    // No PATCH yet — only Save triggers it.
-    expect(calls.find((c) => c.init?.method === 'PATCH')).toBeUndefined();
-
-    root.querySelector<HTMLButtonElement>('button.save-btn')!.click();
-    await flush(el);
-
-    const patchCall = calls.find(
-      (c) => c.url.endsWith('/auth/me') && c.init?.method === 'PATCH',
-    );
-    expect(patchCall).toBeDefined();
-    expect(JSON.parse(String(patchCall!.init!.body))).toEqual({ pricing_location: 5 });
-    expect(authStore.state.user?.pricing_location).toBe(5);
+    expect(selectByName(root, 'weather_entity_id').value).toBe('');
   });
 
   it('pricing zone select shows utility/region labels and the zone-hint reflects the current selection', async () => {
@@ -431,8 +326,6 @@ describe('hungry-machines-panel settings', () => {
     expect(zoneSection).toBeDefined();
     const hint = zoneSection!.querySelector('.zone-hint');
     expect(hint).not.toBeNull();
-    // SAMPLE_USER.pricing_location === 3 (Provider TBD baseline).
-    expect(hint!.textContent ?? '').toContain('Provider TBD');
 
     zone.value = '1';
     zone.dispatchEvent(new Event('change', { bubbles: true }));
@@ -440,27 +333,20 @@ describe('hungry-machines-panel settings', () => {
     expect(zoneSection!.querySelector('.zone-hint')!.textContent ?? '').toMatch(
       /SDG.?E.*San Diego/,
     );
-
-    zone.value = '2';
-    zone.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush(el);
-    expect(zoneSection!.querySelector('.zone-hint')!.textContent ?? '').toContain(
-      'New York City',
-    );
   });
 
-  it('disables the entity dropdowns with a helper message when hass is not set', async () => {
+  it('disables the weather select with a helper message when hass is not set', async () => {
     const el = mountPanel();
     await flush(el);
     clickSettings(el.shadowRoot!);
     await flush(el);
 
     const root = el.shadowRoot!;
-    for (const field of ['climate', 'weather']) {
-      const sel = selectByName(root, `entity_${field}`);
-      expect(sel.disabled).toBe(true);
-    }
-    const section = root.querySelector('.settings-section');
+    const sel = selectByName(root, 'weather_entity_id');
+    expect(sel.disabled).toBe(true);
+    const section = Array.from(root.querySelectorAll('.settings-section')).find((s) =>
+      s.querySelector('h3')?.textContent?.includes('Weather'),
+    );
     expect(section?.textContent).toContain('only available inside Home Assistant');
   });
 

@@ -29,6 +29,7 @@ const SAMPLE_USER = {
   pricing_location: 3,
   timezone: 'America/Los_Angeles',
   subscription_tier: 'free',
+        weather_entity_id: '',
 };
 
 const ZONE_RATES_48 = Array<number>(48).fill(36.8);

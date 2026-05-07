@@ -41,6 +41,7 @@ export interface UserMe {
   pricing_location: number;
   timezone: string;
   subscription_tier: string;
+  weather_entity_id: string;
 }
 
 export interface PatchMeBody {
@@ -48,6 +49,7 @@ export interface PatchMeBody {
   home_size_sqft?: number;
   pricing_location?: number;
   timezone?: string;
+  weather_entity_id?: string;
 }
 
 export function signup(body: SignupBody): Promise<SignupResponse> {

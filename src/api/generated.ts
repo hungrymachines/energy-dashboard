@@ -180,7 +180,8 @@ export interface paths {
         };
         /**
          * Get All Schedules
-         * @description Unified endpoint: returns all appliance schedules for authenticated user.
+         * @description Unified endpoint: returns all appliance schedules for the
+         *     authenticated user. The integration polls this once per day.
          */
         get: operations["get_all_schedules_api_v1_schedules_get"];
         put?: never;
@@ -346,6 +347,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/weather": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Push Weather
+         * @description Store the user's HA weather forecast for tonight's optimization.
+         *
+         *     Existing forecast rows are overwritten (single-latest-row-per-user
+         *     semantics). Missing optional arrays (humidity, wind) are stored as
+         *     null — the optimizer treats those as "use defaults".
+         */
+        post: operations["push_weather_api_v1_weather_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -360,9 +385,7 @@ export interface components {
              * Config
              * @default {}
              */
-            config: {
-                [key: string]: unknown;
-            };
+            config: Record<string, never>;
         };
         /** ApplianceReading */
         ApplianceReading: {
@@ -378,18 +401,14 @@ export interface components {
             /** Power Watts */
             power_watts?: number | null;
             /** Metadata */
-            metadata?: {
-                [key: string]: unknown;
-            } | null;
+            metadata?: Record<string, never> | null;
         };
         /** ApplianceUpdate */
         ApplianceUpdate: {
             /** Name */
             name?: string | null;
             /** Config */
-            config?: {
-                [key: string]: unknown;
-            } | null;
+            config?: Record<string, never> | null;
         };
         /** CheckoutResponse */
         CheckoutResponse: {
@@ -409,6 +428,22 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * HvacScheduleBody
+         * @description The HVAC-specific schedule shape served by GET /api/v1/schedule.
+         *
+         *     Typed explicitly (vs. a free-form dict) so OpenAPI emits a precise
+         *     JSON schema for the response, which lets the frontend's contract
+         *     test catch drift on these field names + array shapes.
+         */
+        HvacScheduleBody: {
+            /** Intervals */
+            intervals: number[];
+            /** High Temps */
+            high_temps: number[];
+            /** Low Temps */
+            low_temps: number[];
         };
         /** LoginRequest */
         LoginRequest: {
@@ -433,6 +468,11 @@ export interface components {
             timezone: string;
             /** Subscription Tier */
             subscription_tier: string;
+            /**
+             * Weather Entity Id
+             * @default
+             */
+            weather_entity_id: string;
         };
         /** PortalResponse */
         PortalResponse: {
@@ -510,10 +550,7 @@ export interface components {
         ScheduleResponse: {
             /** Date */
             date: string;
-            /** Schedule */
-            schedule: {
-                [key: string]: unknown;
-            };
+            schedule: components["schemas"]["HvacScheduleBody"];
             /** Mode */
             mode: string;
             /** Estimated Savings Pct */
@@ -578,6 +615,8 @@ export interface components {
             pricing_location?: number | null;
             /** Timezone */
             timezone?: string | null;
+            /** Weather Entity Id */
+            weather_entity_id?: string | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -587,10 +626,26 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
-            /** Input */
-            input?: unknown;
-            /** Context */
-            ctx?: Record<string, never>;
+        };
+        /** WeatherForecast */
+        WeatherForecast: {
+            /** Hourly Temps F */
+            hourly_temps_f: number[];
+            /** Hourly Humidity */
+            hourly_humidity?: number[] | null;
+            /** Hourly Wind Mph */
+            hourly_wind_mph?: number[] | null;
+        };
+        /** WeatherPush */
+        WeatherPush: {
+            forecast: components["schemas"]["WeatherForecast"];
+        };
+        /** WeatherPushResponse */
+        WeatherPushResponse: {
+            /** Accepted Hours */
+            accepted_hours: number;
+            /** Pushed At */
+            pushed_at: string;
         };
         /** ReadingsBatch */
         app__routes__appliances__ReadingsBatch: {
@@ -1063,9 +1118,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
+                "application/json": Record<string, never>;
             };
         };
         responses: {
@@ -1244,6 +1297,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RatesResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    push_weather_api_v1_weather_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WeatherPush"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WeatherPushResponse"];
                 };
             };
             /** @description Validation Error */

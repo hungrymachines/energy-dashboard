@@ -1,8 +1,15 @@
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, type TemplateResult } from 'lit';
 import * as appliancesApi from '../api/appliances.js';
 import type { Appliance, ApplianceType } from '../api/appliances.js';
 
 type ErrorMap = Record<string, string>;
+
+type HassStateLike = {
+  entity_id?: string;
+  state?: unknown;
+  attributes?: Record<string, unknown>;
+};
+type HassLike = { states?: Record<string, HassStateLike> };
 
 const TYPE_OPTIONS: Array<{ type: ApplianceType; label: string; description: string }> = [
   { type: 'hvac', label: 'HVAC', description: 'Thermostat / heat pump / AC' },
@@ -10,6 +17,38 @@ const TYPE_OPTIONS: Array<{ type: ApplianceType; label: string; description: str
   { type: 'home_battery', label: 'Home battery', description: 'Battery storage system' },
   { type: 'water_heater', label: 'Water heater', description: 'Electric water heater' },
 ];
+
+// Per-type allowed control-entity domains. The integration applies the
+// optimized schedule by calling the matching service on this entity.
+const CONTROL_DOMAINS: Record<ApplianceType, ReadonlyArray<string>> = {
+  hvac: ['climate'],
+  ev_charger: ['switch'],
+  home_battery: ['switch'],
+  water_heater: ['switch', 'climate'],
+};
+
+// Optional auxiliary sensor entities — when present, the readings poller
+// includes their state in the per-appliance reading payload.
+const AUX_FIELDS: Partial<Record<ApplianceType, { name: string; label: string; help: string; domain: string }>> = {
+  ev_charger: {
+    name: 'soc_entity_id',
+    label: 'State-of-charge sensor (optional)',
+    help: 'sensor.* exposing battery % so the optimizer sees live SoC',
+    domain: 'sensor',
+  },
+  home_battery: {
+    name: 'soc_entity_id',
+    label: 'State-of-charge sensor (optional)',
+    help: 'sensor.* exposing battery % so the optimizer sees live SoC',
+    domain: 'sensor',
+  },
+  water_heater: {
+    name: 'temp_entity_id',
+    label: 'Tank temperature sensor (optional)',
+    help: 'sensor.* exposing tank temp in °F',
+    domain: 'sensor',
+  },
+};
 
 export class HmApplianceForm extends LitElement {
   static override styles = css`
@@ -107,6 +146,20 @@ export class HmApplianceForm extends LitElement {
       font-size: 12px;
       margin-top: 4px;
     }
+    .entity-section {
+      border-top: 1px solid rgba(100, 116, 139, 0.2);
+      padding-top: 12px;
+      margin-top: 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .entity-section .hint {
+      display: block;
+      margin-top: 4px;
+      color: var(--hm-muted, #64748B);
+      font-size: 12px;
+    }
     .top-error {
       background: #ffffff;
       color: var(--hm-error, #DC2626);
@@ -149,6 +202,7 @@ export class HmApplianceForm extends LitElement {
     open: { type: Boolean, reflect: true },
     submitting: { type: Boolean, reflect: true },
     error: { state: true },
+    hass: { attribute: false },
     _pickedType: { state: true },
     _values: { state: true },
     _errors: { state: true },
@@ -157,6 +211,7 @@ export class HmApplianceForm extends LitElement {
   open = false;
   submitting = false;
   error: string | null = null;
+  hass: HassLike | undefined = undefined;
   _pickedType: ApplianceType | null = null;
   _values: Record<string, string> = {};
   _errors: ErrorMap = {};
@@ -188,15 +243,20 @@ export class HmApplianceForm extends LitElement {
   }
 
   private _defaultValues(t: ApplianceType): Record<string, string> {
+    // Every type now requires `entity_id` (the HA entity to control) and
+    // optionally an aux sensor — both default empty so the user must
+    // pick from a populated dropdown.
     switch (t) {
       case 'hvac':
-        return { name: '', hvac_type: 'central_ac', home_size_sqft: '' };
+        return { name: '', hvac_type: 'central_ac', home_size_sqft: '', entity_id: '' };
       case 'ev_charger':
         return {
           name: '',
           battery_capacity_kwh: '',
           max_charge_rate_kw: '',
           efficiency: '0.9',
+          entity_id: '',
+          soc_entity_id: '',
         };
       case 'home_battery':
         return {
@@ -204,6 +264,8 @@ export class HmApplianceForm extends LitElement {
           capacity_kwh: '',
           max_charge_rate_kw: '',
           max_discharge_rate_kw: '',
+          entity_id: '',
+          soc_entity_id: '',
         };
       case 'water_heater':
         return {
@@ -211,8 +273,22 @@ export class HmApplianceForm extends LitElement {
           tank_size_gallons: '',
           element_watts: '',
           insulation_factor: '0.03',
+          entity_id: '',
+          temp_entity_id: '',
         };
     }
+  }
+
+  private _entityList(domains: ReadonlyArray<string>): string[] {
+    const states = this.hass?.states;
+    if (!states) return [];
+    const out: string[] = [];
+    for (const id of Object.keys(states)) {
+      const dot = id.indexOf('.');
+      if (dot <= 0) continue;
+      if (domains.includes(id.slice(0, dot))) out.push(id);
+    }
+    return out.sort();
   }
 
   private _back(): void {
@@ -296,34 +372,53 @@ export class HmApplianceForm extends LitElement {
         break;
       }
     }
+
+    // entity_id is required for every type — without it the integration
+    // can't apply the optimized schedule.
+    if (this._pickedType !== null) {
+      const eid = (values['entity_id'] ?? '').trim();
+      if (eid === '') {
+        errors['entity_id'] = 'Pick the Home Assistant entity to control';
+      }
+    }
     return errors;
   }
 
   private _buildConfig(): Record<string, unknown> {
     const v = this._values;
+    const entityId = (v['entity_id'] ?? '').trim();
+    const aux = AUX_FIELDS[this._pickedType as ApplianceType];
+    const auxValue = aux ? (v[aux.name] ?? '').trim() : '';
     switch (this._pickedType) {
       case 'hvac':
         return {
           hvac_type: v['hvac_type'] ?? 'central_ac',
           home_size_sqft: Number(v['home_size_sqft']),
+          entity_id: entityId,
         };
       case 'ev_charger':
         return {
           battery_capacity_kwh: Number(v['battery_capacity_kwh']),
           max_charge_rate_kw: Number(v['max_charge_rate_kw']),
           efficiency: Number(v['efficiency']),
+          entity_id: entityId,
+          ...(auxValue ? { soc_entity_id: auxValue } : {}),
         };
       case 'home_battery':
         return {
           capacity_kwh: Number(v['capacity_kwh']),
           max_charge_rate_kw: Number(v['max_charge_rate_kw']),
           max_discharge_rate_kw: Number(v['max_discharge_rate_kw']),
+          entity_id: entityId,
+          ...(auxValue ? { soc_entity_id: auxValue } : {}),
         };
       case 'water_heater':
         return {
           tank_size_gallons: Number(v['tank_size_gallons']),
           element_watts: Number(v['element_watts']),
           insulation_factor: Number(v['insulation_factor']),
+          entity_id: entityId,
+          ...(auxValue ? { temp_entity_id: auxValue } : {}),
         };
       default:
         return {};
@@ -620,6 +715,21 @@ export class HmApplianceForm extends LitElement {
     }
 
     const nameErr = errs['name'] ?? '';
+    const controlDomains = CONTROL_DOMAINS[t];
+    const controlOptions = this._entityList(controlDomains);
+    const controlErr = errs['entity_id'] ?? '';
+    const controlHelp =
+      t === 'hvac'
+        ? 'climate.* — sets target temps every 30 min'
+        : t === 'water_heater'
+          ? 'switch.* (resistive) or climate.* — toggled every 30 min'
+          : 'switch.* — toggled on/off every 30 min';
+    const aux = AUX_FIELDS[t];
+    const auxOptions = aux ? this._entityList([aux.domain]) : [];
+    const auxName = aux ? aux.name : '';
+    const auxLabel = aux ? aux.label : '';
+    const auxHelp = aux ? aux.help : '';
+    const auxValue = aux ? (v[aux.name] ?? '') : '';
     return html`
       <label>
         <span class="label-text">Name</span>
@@ -627,6 +737,46 @@ export class HmApplianceForm extends LitElement {
         <div class="field-error" ?hidden=${!nameErr}>${nameErr}</div>
       </label>
       <div class="type-fields">${typeFields}</div>
+      <div class="entity-section">
+        <label>
+          <span class="label-text">Home Assistant entity to control</span>
+          <select
+            name="entity_id"
+            .value=${v['entity_id'] ?? ''}
+            @change=${onSelect('entity_id')}
+          >
+            <option value="" ?selected=${(v['entity_id'] ?? '') === ''}>— pick one —</option>
+            ${controlOptions.map(
+              (id) => html`<option value=${id} ?selected=${id === v['entity_id']}>${id}</option>`,
+            )}
+          </select>
+          <small class="hint">${controlHelp}</small>
+          ${controlErr ? html`<div class="field-error">${controlErr}</div>` : null}
+          ${controlOptions.length === 0
+            ? html`<div class="field-error">
+                No matching entities found. Make sure your ${controlDomains.join('/')} integration is set up in HA.
+              </div>`
+            : null}
+        </label>
+        ${aux
+          ? html`
+              <label>
+                <span class="label-text">${auxLabel}</span>
+                <select
+                  name=${auxName}
+                  .value=${auxValue}
+                  @change=${onSelect(auxName)}
+                >
+                  <option value="" ?selected=${auxValue === ''}>— none —</option>
+                  ${auxOptions.map(
+                    (id) => html`<option value=${id} ?selected=${id === auxValue}>${id}</option>`,
+                  )}
+                </select>
+                <small class="hint">${auxHelp}</small>
+              </label>
+            `
+          : null}
+      </div>
       <div class="actions">
         <button class="back" type="button" @click=${() => this._back()}>Back</button>
         <button class="cancel" type="button" @click=${() => this._onCancel()}>Cancel</button>
@@ -639,4 +789,5 @@ export class HmApplianceForm extends LitElement {
       </div>
     `;
   }
+
 }

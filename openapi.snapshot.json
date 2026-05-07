@@ -380,7 +380,7 @@
           "schedules"
         ],
         "summary": "Get All Schedules",
-        "description": "Unified endpoint: returns all appliance schedules for authenticated user.",
+        "description": "Unified endpoint: returns all appliance schedules for the\nauthenticated user. The integration polls this once per day.",
         "operationId": "get_all_schedules_api_v1_schedules_get",
         "responses": {
           "200": {
@@ -604,7 +604,6 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "additionalProperties": true,
                 "title": "Constraints"
               }
             }
@@ -859,6 +858,53 @@
           }
         ]
       }
+    },
+    "/api/v1/weather": {
+      "post": {
+        "tags": [
+          "weather"
+        ],
+        "summary": "Push Weather",
+        "description": "Store the user's HA weather forecast for tonight's optimization.\n\nExisting forecast rows are overwritten (single-latest-row-per-user\nsemantics). Missing optional arrays (humidity, wind) are stored as\nnull \u2014 the optimizer treats those as \"use defaults\".",
+        "operationId": "push_weather_api_v1_weather_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WeatherPush"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WeatherPushResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -874,7 +920,6 @@
             "title": "Name"
           },
           "config": {
-            "additionalProperties": true,
             "type": "object",
             "title": "Config",
             "default": {}
@@ -916,7 +961,6 @@
           "metadata": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -950,7 +994,6 @@
           "config": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -1012,6 +1055,39 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "HvacScheduleBody": {
+        "properties": {
+          "intervals": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Intervals"
+          },
+          "high_temps": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "High Temps"
+          },
+          "low_temps": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Low Temps"
+          }
+        },
+        "type": "object",
+        "required": [
+          "intervals",
+          "high_temps",
+          "low_temps"
+        ],
+        "title": "HvacScheduleBody",
+        "description": "The HVAC-specific schedule shape served by GET /api/v1/schedule.\n\nTyped explicitly (vs. a free-form dict) so OpenAPI emits a precise\nJSON schema for the response, which lets the frontend's contract\ntest catch drift on these field names + array shapes."
+      },
       "LoginRequest": {
         "properties": {
           "email": {
@@ -1059,6 +1135,11 @@
           "subscription_tier": {
             "type": "string",
             "title": "Subscription Tier"
+          },
+          "weather_entity_id": {
+            "type": "string",
+            "title": "Weather Entity Id",
+            "default": ""
           }
         },
         "type": "object",
@@ -1342,9 +1423,7 @@
             "title": "Date"
           },
           "schedule": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Schedule"
+            "$ref": "#/components/schemas/HvacScheduleBody"
           },
           "mode": {
             "type": "string",
@@ -1565,6 +1644,17 @@
               }
             ],
             "title": "Timezone"
+          },
+          "weather_entity_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weather Entity Id"
           }
         },
         "type": "object",
@@ -1593,13 +1683,6 @@
           "type": {
             "type": "string",
             "title": "Error Type"
-          },
-          "input": {
-            "title": "Input"
-          },
-          "ctx": {
-            "type": "object",
-            "title": "Context"
           }
         },
         "type": "object",
@@ -1609,6 +1692,80 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "WeatherForecast": {
+        "properties": {
+          "hourly_temps_f": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Hourly Temps F"
+          },
+          "hourly_humidity": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly Humidity"
+          },
+          "hourly_wind_mph": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly Wind Mph"
+          }
+        },
+        "type": "object",
+        "required": [
+          "hourly_temps_f"
+        ],
+        "title": "WeatherForecast"
+      },
+      "WeatherPush": {
+        "properties": {
+          "forecast": {
+            "$ref": "#/components/schemas/WeatherForecast"
+          }
+        },
+        "type": "object",
+        "required": [
+          "forecast"
+        ],
+        "title": "WeatherPush"
+      },
+      "WeatherPushResponse": {
+        "properties": {
+          "accepted_hours": {
+            "type": "integer",
+            "title": "Accepted Hours"
+          },
+          "pushed_at": {
+            "type": "string",
+            "title": "Pushed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "accepted_hours",
+          "pushed_at"
+        ],
+        "title": "WeatherPushResponse"
       },
       "app__routes__appliances__ReadingsBatch": {
         "properties": {

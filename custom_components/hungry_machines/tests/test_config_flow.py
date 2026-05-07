@@ -1,4 +1,11 @@
-"""Tests for custom_components.hungry_machines.config_flow."""
+"""Tests for custom_components.hungry_machines.config_flow (v2.0).
+
+The config flow was simplified in v2.0 — it now only collects credentials.
+The HVAC climate entity moved into per-appliance config (picked at "Add
+appliance" time inside the panel) and the weather entity moved to
+`users.weather_entity_id` (picked in panel Settings). The config flow
+stores nothing beyond the tokens + email.
+"""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -8,7 +15,6 @@ import pytest
 from hungry_machines import config_flow
 from hungry_machines.const import (
     CONF_ACCESS_TOKEN,
-    CONF_CLIMATE_ENTITY,
     CONF_EMAIL,
     CONF_EXPIRES_AT,
     CONF_PASSWORD,
@@ -36,13 +42,9 @@ def _make_flow() -> config_flow.HungryMachinesConfigFlow:
 
 
 @pytest.mark.asyncio
-async def test_user_step_success_creates_entry_without_password() -> None:
+async def test_user_step_success_creates_entry_with_only_credentials() -> None:
     flow = _make_flow()
-    user_input = {
-        CONF_EMAIL: "u@example.com",
-        CONF_PASSWORD: "secret",
-        CONF_CLIMATE_ENTITY: "climate.living_room",
-    }
+    user_input = {CONF_EMAIL: "u@example.com", CONF_PASSWORD: "secret"}
 
     with patch.object(
         config_flow.auth, "login", AsyncMock(return_value=_make_tokens())
@@ -55,7 +57,9 @@ async def test_user_step_success_creates_entry_without_password() -> None:
     assert data[CONF_ACCESS_TOKEN] == "atok"
     assert data[CONF_REFRESH_TOKEN] == "rtok"
     assert data[CONF_EXPIRES_AT] == 9_999_999_999.0
-    assert data[CONF_CLIMATE_ENTITY] == "climate.living_room"
+    # v2.0: no climate_entity / weather_entity fields stored on the entry.
+    assert "climate_entity" not in data
+    assert "weather_entity_id" not in data
     assert CONF_PASSWORD not in data
     assert flow.unique_id == "user-123"
 
@@ -63,11 +67,7 @@ async def test_user_step_success_creates_entry_without_password() -> None:
 @pytest.mark.asyncio
 async def test_user_step_invalid_credentials_renders_form_with_error() -> None:
     flow = _make_flow()
-    user_input = {
-        CONF_EMAIL: "u@example.com",
-        CONF_PASSWORD: "wrong",
-        CONF_CLIMATE_ENTITY: "climate.living_room",
-    }
+    user_input = {CONF_EMAIL: "u@example.com", CONF_PASSWORD: "wrong"}
 
     with patch.object(
         config_flow.auth, "login", AsyncMock(return_value=None)
@@ -97,7 +97,6 @@ async def test_reauth_confirm_updates_entry_with_new_tokens() -> None:
         CONF_ACCESS_TOKEN: "old-a",
         CONF_REFRESH_TOKEN: "old-r",
         CONF_EXPIRES_AT: 0.0,
-        CONF_CLIMATE_ENTITY: "climate.living_room",
     }
     flow._reauth_entry = entry
 
@@ -121,10 +120,7 @@ async def test_reauth_confirm_updates_entry_with_new_tokens() -> None:
     assert kwargs["data"][CONF_ACCESS_TOKEN] == "new-a"
     assert kwargs["data"][CONF_REFRESH_TOKEN] == "new-r"
     assert kwargs["data"][CONF_EXPIRES_AT] == 1_700_000_000.0
-    # Email + climate entity preserved from prior entry
     assert kwargs["data"][CONF_EMAIL] == "u@example.com"
-    assert kwargs["data"][CONF_CLIMATE_ENTITY] == "climate.living_room"
-    # Password is never persisted
     assert CONF_PASSWORD not in kwargs["data"]
     assert result["type"] == "abort"
     assert result["reason"] == "reauth_successful"
@@ -145,35 +141,3 @@ async def test_reauth_confirm_invalid_password_renders_form_with_error() -> None
     assert result["type"] == "form"
     assert result["errors"] == {"base": "invalid_auth"}
     flow.hass.config_entries.async_update_entry.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_options_flow_persists_climate_entity() -> None:
-    entry = MagicMock()
-    entry.data = {CONF_CLIMATE_ENTITY: "climate.old"}
-    entry.options = {}
-
-    options = config_flow.HungryMachinesOptionsFlow(entry)
-    options.hass = MagicMock()
-
-    result = await options.async_step_init(
-        {CONF_CLIMATE_ENTITY: "climate.new"}
-    )
-
-    assert result["type"] == "create_entry"
-    assert result["data"] == {CONF_CLIMATE_ENTITY: "climate.new"}
-
-
-@pytest.mark.asyncio
-async def test_options_flow_no_input_shows_form_with_current_default() -> None:
-    entry = MagicMock()
-    entry.data = {CONF_CLIMATE_ENTITY: "climate.old"}
-    entry.options = {}
-
-    options = config_flow.HungryMachinesOptionsFlow(entry)
-    options.hass = MagicMock()
-
-    result = await options.async_step_init(None)
-
-    assert result["type"] == "form"
-    assert result["step_id"] == "init"
