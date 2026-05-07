@@ -145,7 +145,9 @@ Commit the resulting `openapi.snapshot.json` and `src/api/generated.ts` deltas i
 
 ## Changelog
 
-- **v0.4.0** — feat: poll the configured climate entity every 5 minutes and push readings to the API; the optimizer now has data to learn from.
+- **v1.1.1** — fix: HVAC editor save now updates the panel's cached preferences immediately, so reopening the editor reflects the saved value without a full reload. feat: readings poller logs at INFO when it skips a tick (missing entity / no `current_temperature` attribute / etc.), so misconfigurations are debuggable from `home-assistant.log` without enabling debug-level logging.
+- **v1.1.0** — Initial v1 release matching the post-Phase-1 backend: per-appliance constraints persisted, per-appliance schedule endpoint returns the documented shape, OpenAPI codegen + contract test infrastructure, full panel HVAC editor (`time_away` / `time_home` / hourly comfort bands).
+- **v1.0.0** — feat: poll the configured climate entity every 5 minutes and push readings to the API; the optimizer now has data to learn from.
 - **v0.3.4** — Fix: schedule applier was caching empty arrays, no setpoints were ever applied (regression from v0.3.0). The applier now correctly reads `appliance.schedule.high_temps` / `appliance.schedule.low_temps` from `/api/v1/schedules` instead of looking one level too high on the appliance entry itself.
 
 ## License
