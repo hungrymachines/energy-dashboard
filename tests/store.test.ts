@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { authStore, getEntityMap, setEntityMap } from '../src/store.js';
+import { authStore } from '../src/store.js';
 import { setApiBase, getAccessToken, getRefreshToken } from '../src/api/client.js';
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -18,6 +18,7 @@ const SAMPLE_ME = {
   pricing_location: 3,
   timezone: 'America/Los_Angeles',
   subscription_tier: 'free',
+        weather_entity_id: '',
 };
 
 const SAMPLE_SESSION = {
@@ -141,34 +142,9 @@ describe('authStore', () => {
     expect(getAccessToken()).toBeNull();
   });
 
-  it('getEntityMap migrates legacy four-key shape to the new climate/weather shape', () => {
-    localStorage.setItem(
-      'hm_entity_map',
-      JSON.stringify({
-        indoor_temp: 'sensor.living',
-        outdoor_temp: 'sensor.outside',
-        power: 'sensor.power',
-        weather: 'weather.home',
-      }),
-    );
-
-    const cleaned = getEntityMap();
-    expect(cleaned).toEqual({ weather: 'weather.home' });
-
-    // Read also persists the cleaned shape so the legacy keys are gone on disk.
-    const persisted = JSON.parse(localStorage.getItem('hm_entity_map')!);
-    expect(persisted).toEqual({ weather: 'weather.home' });
-
-    // A subsequent setEntityMap writes only the new shape.
-    setEntityMap({ climate: 'climate.living_room', weather: 'weather.home' });
-    const persisted2 = JSON.parse(localStorage.getItem('hm_entity_map')!);
-    expect(persisted2).toEqual({
-      climate: 'climate.living_room',
-      weather: 'weather.home',
-    });
-    expect(persisted2.indoor_temp).toBeUndefined();
-    expect(persisted2.power).toBeUndefined();
-  });
+  // v2.0+: getEntityMap / setEntityMap removed. Entity mapping moved to
+  // appliance.config.entity_id (per-appliance) and users.weather_entity_id
+  // (per-user). The hm_entity_map localStorage key is no longer touched.
 
   it('logout clears localStorage, resets tokens, and resets state', async () => {
     localStorage.setItem('hm_access_token', 'ACCESS-1');

@@ -1,11 +1,5 @@
 import { LitElement, html, css, type TemplateResult } from 'lit';
-import {
-  authStore,
-  getEntityMap,
-  setEntityMap,
-  type AuthState,
-  type EntityMap,
-} from '../store.js';
+import { authStore, type AuthState } from '../store.js';
 import {
   getAllSchedules,
   type ApplianceScheduleEntry,
@@ -27,15 +21,8 @@ import {
   type PricingZone,
 } from '../data/pricing-zones.js';
 
-type EntityField = 'climate' | 'weather';
-
 type HassStateLike = { entity_id?: string; state?: unknown; attributes?: Record<string, unknown> };
 type HassLike = { states?: Record<string, HassStateLike> };
-
-const ENTITY_FIELDS: Array<{ key: EntityField; label: string; domain: 'climate' | 'weather' }> = [
-  { key: 'climate', label: 'HVAC climate entity', domain: 'climate' },
-  { key: 'weather', label: 'Weather', domain: 'weather' },
-];
 
 const PRICING_ZONES = Object.keys(PRICING_ZONE_LABELS)
   .map((k) => Number(k) as PricingZone)
@@ -58,10 +45,6 @@ function asNumberArray(value: unknown): number[] | undefined {
 function asBooleanArray(value: unknown): boolean[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.every((v) => typeof v === 'boolean') ? (value as boolean[]) : undefined;
-}
-
-function entityMapsEqual(a: EntityMap, b: EntityMap): boolean {
-  return (a.climate ?? null) === (b.climate ?? null) && (a.weather ?? null) === (b.weather ?? null);
 }
 
 export class HungryMachinesPanel extends LitElement {
@@ -533,8 +516,7 @@ export class HungryMachinesPanel extends LitElement {
     _editorApplianceType: { state: true },
     _editorConstraints: { state: true },
     _addApplianceOpen: { state: true },
-    _entityMap: { state: true },
-    _entityMapDraft: { state: true },
+    _weatherEntityDraft: { state: true },
     _zoneDraft: { state: true },
     _savedFlash: { state: true },
     _zoneSaving: { state: true },
@@ -560,8 +542,7 @@ export class HungryMachinesPanel extends LitElement {
   _editorApplianceType: ApplianceType = 'hvac';
   _editorConstraints: Record<string, unknown> | undefined = undefined;
   _addApplianceOpen = false;
-  _entityMap: EntityMap = {};
-  _entityMapDraft: EntityMap = {};
+  _weatherEntityDraft = '';
   _zoneDraft = 1;
   _savedFlash = false;
   _zoneSaving = false;
@@ -582,14 +563,14 @@ export class HungryMachinesPanel extends LitElement {
   override connectedCallback(): void {
     super.connectedCallback();
     this._auth = authStore.state;
-    this._entityMap = getEntityMap();
-    this._entityMapDraft = { ...this._entityMap };
     this._zoneDraft = this._auth.user?.pricing_location ?? 1;
+    this._weatherEntityDraft = this._auth.user?.weather_entity_id ?? '';
     this._unsubscribe = authStore.subscribe((s) => {
       const prevStatus = this._auth.status;
       this._auth = s;
       if (prevStatus !== 'authed' && s.status === 'authed') {
         this._zoneDraft = s.user?.pricing_location ?? 1;
+        this._weatherEntityDraft = s.user?.weather_entity_id ?? '';
         void this._loadSchedulesIfNeeded();
       }
       if (s.status !== 'authed') {
@@ -664,14 +645,8 @@ export class HungryMachinesPanel extends LitElement {
     authStore.logout();
   };
 
-  private _onEntityChange(field: EntityField, entityId: string): void {
-    const next: EntityMap = { ...this._entityMapDraft };
-    if (entityId) {
-      next[field] = entityId;
-    } else {
-      delete next[field];
-    }
-    this._entityMapDraft = next;
+  private _onWeatherEntityChange(entityId: string): void {
+    this._weatherEntityDraft = entityId;
   }
 
   private _onZoneChange(zone: number): void {
@@ -679,32 +654,36 @@ export class HungryMachinesPanel extends LitElement {
   }
 
   private _isDirty(): boolean {
-    if (!entityMapsEqual(this._entityMap, this._entityMapDraft)) return true;
     const currentZone = this._auth.user?.pricing_location ?? 1;
-    return this._zoneDraft !== currentZone;
+    if (this._zoneDraft !== currentZone) return true;
+    const currentWeather = this._auth.user?.weather_entity_id ?? '';
+    return this._weatherEntityDraft !== currentWeather;
   }
 
   private async _onSave(): Promise<void> {
     if (!this._isDirty()) return;
-    if (!entityMapsEqual(this._entityMap, this._entityMapDraft)) {
-      setEntityMap(this._entityMapDraft);
-      this._entityMap = { ...this._entityMapDraft };
-    }
     const currentZone = this._auth.user?.pricing_location ?? 1;
-    if (this._zoneDraft !== currentZone) {
-      this._zoneSaving = true;
-      this._zoneError = null;
-      try {
-        const updated = await patchMe({ pricing_location: this._zoneDraft });
-        authStore.patchUser({ pricing_location: updated.pricing_location });
-      } catch (err) {
-        this._zoneError =
-          err instanceof Error && err.message ? err.message : 'Could not update pricing zone';
-        this._zoneSaving = false;
-        return;
-      }
+    const currentWeather = this._auth.user?.weather_entity_id ?? '';
+    const patch: { pricing_location?: number; weather_entity_id?: string } = {};
+    if (this._zoneDraft !== currentZone) patch.pricing_location = this._zoneDraft;
+    if (this._weatherEntityDraft !== currentWeather)
+      patch.weather_entity_id = this._weatherEntityDraft;
+
+    this._zoneSaving = true;
+    this._zoneError = null;
+    try {
+      const updated = await patchMe(patch);
+      authStore.patchUser({
+        pricing_location: updated.pricing_location,
+        weather_entity_id: updated.weather_entity_id,
+      });
+    } catch (err) {
+      this._zoneError =
+        err instanceof Error && err.message ? err.message : 'Could not update settings';
       this._zoneSaving = false;
+      return;
     }
+    this._zoneSaving = false;
     this._savedFlash = true;
     if (this._savedFlashTimer !== null) clearTimeout(this._savedFlashTimer);
     this._savedFlashTimer = setTimeout(() => {
@@ -714,8 +693,8 @@ export class HungryMachinesPanel extends LitElement {
   }
 
   private _onReset(): void {
-    this._entityMapDraft = { ...this._entityMap };
     this._zoneDraft = this._auth.user?.pricing_location ?? 1;
+    this._weatherEntityDraft = this._auth.user?.weather_entity_id ?? '';
   }
 
   private async _loadRatesIfNeeded(): Promise<void> {
@@ -937,6 +916,7 @@ export class HungryMachinesPanel extends LitElement {
       ></hm-constraint-editor>
       <hm-appliance-form
         .open=${this._addApplianceOpen}
+        .hass=${this.hass}
         @appliance-created=${this._onApplianceCreated}
         @cancelled=${this._onApplianceCancelled}
       ></hm-appliance-form>
@@ -1092,12 +1072,11 @@ export class HungryMachinesPanel extends LitElement {
     const states = hass && typeof hass === 'object' ? hass.states : undefined;
     const hasHass = !!states;
     const allEntities = states ? Object.keys(states).sort() : [];
-    const climateEntities = allEntities.filter((id) => id.startsWith('climate.'));
     const weatherEntities = allEntities.filter((id) => id.startsWith('weather.'));
-    const draftMap = this._entityMapDraft;
     const user = this._auth.user;
     const email = user?.email ?? '';
     const pricing = this._zoneDraft;
+    const weatherDraft = this._weatherEntityDraft;
     const isDirty = this._isDirty();
     const settingsSaving = this._zoneSaving;
 
@@ -1126,40 +1105,34 @@ export class HungryMachinesPanel extends LitElement {
       <h2>Settings</h2>
       <div class="settings">
         <div class="settings-section">
-          <h3>Home Assistant entities</h3>
-          ${hasHass
-            ? html`<p class="hint">
-                Pick which Home Assistant entities feed the Hungry Machines cards.
-              </p>`
-            : html`<p class="hint">
-                Entity mapping is only available inside Home Assistant.
-              </p>`}
-          ${ENTITY_FIELDS.map((f) => {
-            const options = f.domain === 'climate' ? climateEntities : weatherEntities;
-            const selected = draftMap[f.key] ?? '';
-            return html`
-              <label>
-                <span class="label-text">${f.label}</span>
-                <select
-                  name=${`entity_${f.key}`}
-                  data-field=${f.key}
-                  ?disabled=${!hasHass}
-                  .value=${selected}
-                  @change=${(e: Event) =>
-                    this._onEntityChange(
-                      f.key,
-                      (e.target as HTMLSelectElement).value,
-                    )}
-                >
-                  <option value="" ?selected=${selected === ''}>— not set —</option>
-                  ${options.map(
-                    (id) =>
-                      html`<option value=${id} ?selected=${id === selected}>${id}</option>`,
-                  )}
-                </select>
-              </label>
-            `;
-          })}
+          <h3>Weather entity</h3>
+          <p class="hint">
+            The HACS integration pushes this entity's hourly forecast to the
+            optimizer once a day. Pick the most accurate provider you have set
+            up in Home Assistant. If none is set, the optimizer falls back to
+            Open-Meteo using your zip code.
+          </p>
+          <label>
+            <span class="label-text">Forecast source</span>
+            <select
+              name="weather_entity_id"
+              ?disabled=${!hasHass || settingsSaving}
+              .value=${weatherDraft}
+              @change=${(e: Event) =>
+                this._onWeatherEntityChange(
+                  (e.target as HTMLSelectElement).value,
+                )}
+            >
+              <option value="" ?selected=${weatherDraft === ''}>— use Open-Meteo fallback —</option>
+              ${weatherEntities.map(
+                (id) =>
+                  html`<option value=${id} ?selected=${id === weatherDraft}>${id}</option>`,
+              )}
+            </select>
+          </label>
+          ${!hasHass
+            ? html`<p class="hint">Weather picker is only available inside Home Assistant.</p>`
+            : null}
         </div>
 
         <div class="settings-section">

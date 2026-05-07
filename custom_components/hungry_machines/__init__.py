@@ -1,11 +1,22 @@
 """Hungry Machines — Home Assistant integration.
 
-Registers the bundled JavaScript frontend, then keeps the user's optimized
-HVAC schedule fresh and applies it to their climate entity on each
-30-minute boundary throughout the day.
+v2.0+: drives a closed control loop across every registered appliance.
+
+* **Sensor read** (every 5 min) — `readings.push_all_readings` walks the
+  user's appliances, reads each one's HA entity, and POSTs the appropriate
+  shape (home reading for HVAC, per-appliance reading for the rest).
+* **Schedule fetch** (daily at 05:05 local) — `scheduler.fetch_today_schedule`
+  pulls `/api/v1/schedules` and caches each appliance's schedule + entity_id.
+* **Schedule apply** (every :00 / :30) — `scheduler.apply_current_slot`
+  iterates the cache and calls the right service per appliance type:
+  `climate.set_temperature` for HVAC, `switch.turn_on/off` for the rest.
+* **Weather push** (daily at 03:30 UTC) — `weather.push_today_forecast`
+  reads the user's HA weather entity and POSTs its forecast so the API's
+  nightly optimizer prefers it over Open-Meteo.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import timedelta
 from pathlib import Path
@@ -25,7 +36,7 @@ from homeassistant.helpers.event import (
     async_track_time_interval,
 )
 
-from . import readings
+from . import readings, weather
 from .const import (
     DOMAIN,
     PANEL_ICON,
@@ -42,6 +53,21 @@ _LOGGER = logging.getLogger(__name__)
 _FRONTEND_REGISTERED = "_frontend_registered"
 
 
+def _read_manifest_version() -> str:
+    """Read the integration version from manifest.json.
+
+    Used as a cache-busting query string on the bundled JS URL so
+    browsers fetch the new bundle on every release instead of serving
+    the previous cached copy. Returns "0" on any read failure — the
+    URL still works without a version, just without auto-busting.
+    """
+    try:
+        with (Path(__file__).parent / "manifest.json").open() as f:
+            return str(json.load(f).get("version") or "0")
+    except (OSError, ValueError):
+        return "0"
+
+
 async def _ensure_frontend_registered(hass: HomeAssistant) -> bool:
     """Idempotently serve the bundled JS at SCRIPT_URL.
 
@@ -49,6 +75,11 @@ async def _ensure_frontend_registered(hass: HomeAssistant) -> bool:
     per-entry. Registering them in async_setup_entry triggers
     'route already registered' errors on entry reload / re-add, so we
     guard with a flag in hass.data and only register once per HA process.
+
+    The static path itself is registered without a version (HA's static
+    handler ignores query strings), but the URL we hand to
+    add_extra_js_url carries `?v=<manifest version>` so browsers treat
+    each release as a distinct resource and fetch fresh after an update.
     """
     domain_data = hass.data.setdefault(DOMAIN, {})
     if domain_data.get(_FRONTEND_REGISTERED):
@@ -67,7 +98,8 @@ async def _ensure_frontend_registered(hass: HomeAssistant) -> bool:
     await hass.http.async_register_static_paths(
         [StaticPathConfig(SCRIPT_URL, str(frontend_file), False)]
     )
-    add_extra_js_url(hass, SCRIPT_URL)
+    versioned_url = f"{SCRIPT_URL}?v={_read_manifest_version()}"
+    add_extra_js_url(hass, versioned_url)
     domain_data[_FRONTEND_REGISTERED] = True
     return True
 
@@ -122,11 +154,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     )
 
-    def _push_reading(_now) -> None:
-        hass.async_create_task(readings.push_current_reading(hass, entry))
+    async def _push_reading(_now) -> None:
+        # async_track_time_interval will await this directly on the event
+        # loop. The earlier sync-def + hass.async_create_task pattern fired
+        # from a worker thread which HA 2024.x raises as an error per
+        # https://developers.home-assistant.io/docs/asyncio_thread_safety/
+        await readings.push_all_readings(hass, entry)
 
     domain_data["readings_unsub"] = async_track_time_interval(
         hass, _push_reading, timedelta(minutes=5)
+    )
+
+    # Daily weather push at 03:30 UTC, just before the API's nightly
+    # optimizer fires at 04:00 UTC. Skip silently if the user hasn't
+    # picked a weather entity in the panel Settings yet.
+    async def _push_weather(_now) -> None:
+        await weather.push_today_forecast(hass, entry)
+
+    unsubs.append(
+        async_track_time_change(
+            hass, _push_weather, hour=3, minute=30, second=0
+        )
     )
 
     return True

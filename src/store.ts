@@ -19,44 +19,15 @@ export interface AuthState {
 
 export type AuthListener = (state: AuthState) => void;
 
-export interface EntityMap {
-  climate?: string;
-  weather?: string;
-}
-
-const LEGACY_ENTITY_KEYS = ['indoor_temp', 'outdoor_temp', 'power'] as const;
-
-function migrateEntityMap(raw: Record<string, unknown>): EntityMap {
-  const next: EntityMap = {};
-  if (typeof raw['climate'] === 'string') next.climate = raw['climate'];
-  if (typeof raw['weather'] === 'string') next.weather = raw['weather'];
-  return next;
-}
-
-export function getEntityMap(): EntityMap {
-  const raw = safeGet('hm_entity_map');
-  if (!raw) return {};
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return {};
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return {};
-  }
-  const obj = parsed as Record<string, unknown>;
-  const cleaned = migrateEntityMap(obj);
-  const hadLegacy = LEGACY_ENTITY_KEYS.some((k) => k in obj);
-  if (hadLegacy) {
-    safeSet('hm_entity_map', JSON.stringify(cleaned));
-  }
-  return cleaned;
-}
-
-export function setEntityMap(map: EntityMap): void {
-  safeSet('hm_entity_map', JSON.stringify(map ?? {}));
-}
+// v2.0+: entity mapping moved to backend.
+//   - HVAC / EV / battery / water heater control entities live in
+//     `appliance.config.entity_id` (per-appliance, persisted via the API).
+//   - Weather entity lives in `users.weather_entity_id` (per-user,
+//     persisted via PATCH /auth/me).
+// The legacy `hm_entity_map` localStorage key is no longer read or
+// written; if a user upgraded from v1.x they can ignore the stale entry
+// (it does nothing). To clean up, run `localStorage.removeItem('hm_entity_map')`
+// in browser devtools — purely cosmetic.
 
 function safeGet(key: string): string | null {
   try {

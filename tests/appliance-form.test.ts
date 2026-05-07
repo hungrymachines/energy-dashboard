@@ -22,11 +22,39 @@ async function flush(el: FormEl): Promise<void> {
   }
 }
 
+// v2.0+: appliance form now requires `hass` to populate the entity picker.
+// Tests stub a small set of climate/switch/sensor entities so the dropdowns
+// are non-empty and the entity_id field can be filled.
+const TEST_HASS = {
+  states: {
+    'climate.living_room': { entity_id: 'climate.living_room' },
+    'climate.bedroom': { entity_id: 'climate.bedroom' },
+    'switch.tesla_charger': { entity_id: 'switch.tesla_charger' },
+    'switch.water_heater': { entity_id: 'switch.water_heater' },
+    'switch.home_battery': { entity_id: 'switch.home_battery' },
+    'sensor.tesla_battery_level': { entity_id: 'sensor.tesla_battery_level' },
+    'sensor.tank_temp': { entity_id: 'sensor.tank_temp' },
+  },
+};
+
 function mountForm(): FormEl {
   const el = document.createElement('hm-appliance-form') as FormEl;
+  el.hass = TEST_HASS;
   el.open = true;
   document.body.appendChild(el);
   return el;
+}
+
+function selectByName(root: ShadowRoot, name: string): HTMLSelectElement {
+  const el = root.querySelector<HTMLSelectElement>(`select[name="${name}"]`);
+  if (!el) throw new Error(`select[name="${name}"] not found`);
+  return el;
+}
+
+function pickEntity(root: ShadowRoot, value: string): void {
+  const sel = selectByName(root, 'entity_id');
+  sel.value = value;
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
 function buttonByText(root: ShadowRoot, text: string): HTMLButtonElement | undefined {
@@ -148,6 +176,7 @@ describe('hm-appliance-form', () => {
     const hvacType = root.querySelector<HTMLSelectElement>('select[name="hvac_type"]')!;
     hvacType.value = 'heat_pump';
     hvacType.dispatchEvent(new Event('change', { bubbles: true }));
+    pickEntity(root, 'climate.living_room');
     await flush(el);
 
     const submitBtn = buttonByText(root, 'Add');
@@ -165,6 +194,7 @@ describe('hm-appliance-form', () => {
     expect(body.config).toMatchObject({
       hvac_type: 'heat_pump',
       home_size_sqft: 1800,
+      entity_id: 'climate.living_room',
     });
 
     expect(createdEvent).not.toBeNull();
@@ -190,6 +220,7 @@ describe('hm-appliance-form', () => {
     const homeSize = inputByName(root, 'home_size_sqft');
     homeSize.value = '1800';
     homeSize.dispatchEvent(new Event('input', { bubbles: true }));
+    pickEntity(root, 'climate.living_room');
     await flush(el);
 
     buttonByText(root, 'Add')!.click();
@@ -268,6 +299,7 @@ describe('hm-appliance-form', () => {
     const insul = inputByName(root, 'insulation_factor');
     insul.value = '0.025';
     insul.dispatchEvent(new Event('input', { bubbles: true }));
+    pickEntity(root, 'switch.water_heater');
     await flush(el);
 
     const errs = Array.from(root.querySelectorAll('.field-error')).map((e) => e.textContent);
@@ -306,6 +338,7 @@ describe('hm-appliance-form', () => {
     inputByName(root, 'element_watts').value = '4500';
     inputByName(root, 'element_watts').dispatchEvent(new Event('input', { bubbles: true }));
     // insulation_factor stays at default '0.03'
+    pickEntity(root, 'switch.water_heater');
     await flush(el);
 
     const submitBtn = buttonByText(root, 'Add');
@@ -320,6 +353,7 @@ describe('hm-appliance-form', () => {
     const body = JSON.parse(String(postCall!.init!.body));
     expect(body.appliance_type).toBe('water_heater');
     expect(body.config.insulation_factor).toBe(0.03);
+    expect(body.config.entity_id).toBe('switch.water_heater');
   });
 
   it("clicking 'Cancel' on step 2 dispatches cancelled and the form resets to step 1", async () => {

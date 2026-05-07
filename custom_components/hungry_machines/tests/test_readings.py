@@ -1,4 +1,10 @@
-"""Tests for custom_components.hungry_machines.readings."""
+"""Tests for custom_components.hungry_machines.readings (v2.0).
+
+The poller now iterates `/api/v1/appliances` and routes per-type:
+    hvac → POST /api/v1/readings (home thermal-model data)
+    ev_charger / home_battery → POST /api/v1/appliances/{id}/readings
+    water_heater → POST /api/v1/appliances/{id}/readings
+"""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -6,254 +12,230 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from hungry_machines import readings
-from hungry_machines.const import CONF_CLIMATE_ENTITY
 
 
-def _mock_response(status: int, json_body: dict | None = None) -> MagicMock:
-    response = MagicMock()
-    response.status = status
-    response.json = AsyncMock(return_value=json_body or {})
-    cm = MagicMock()
-    cm.__aenter__ = AsyncMock(return_value=response)
-    cm.__aexit__ = AsyncMock(return_value=False)
-    return cm
-
-
-def _session_with_post(cm: MagicMock) -> MagicMock:
-    session = MagicMock()
-    session.post = MagicMock(return_value=cm)
-    return session
-
-
-def _make_state(
-    state: str = "cool",
-    *,
-    current_temperature: float | None = 72.5,
-    temperature: float | None = 72.0,
-    current_humidity: float | None = None,
-) -> MagicMock:
+def _state(state: str = "cool", attributes: dict | None = None) -> MagicMock:
     s = MagicMock()
     s.state = state
-    attrs: dict = {}
-    if current_temperature is not None:
-        attrs["current_temperature"] = current_temperature
-    if temperature is not None:
-        attrs["temperature"] = temperature
-    if current_humidity is not None:
-        attrs["current_humidity"] = current_humidity
-    s.attributes = attrs
+    s.entity_id = "climate.test"
+    s.attributes = attributes or {}
     return s
 
 
-def _make_hass(state: MagicMock | None) -> MagicMock:
+def _hass(states_map: dict | None) -> MagicMock:
     hass = MagicMock()
     hass.states = MagicMock()
-    hass.states.get = MagicMock(return_value=state)
+    hass.states.get = MagicMock(side_effect=lambda eid: (states_map or {}).get(eid))
     return hass
 
 
-def _make_entry(
-    climate_entity: str | None = "climate.living_room",
-) -> MagicMock:
+def _entry() -> MagicMock:
     entry = MagicMock()
     entry.entry_id = "abc"
-    entry.data = (
-        {CONF_CLIMATE_ENTITY: climate_entity} if climate_entity else {}
-    )
+    entry.data = {}
     entry.options = {}
     entry.async_start_reauth = MagicMock()
     return entry
 
 
 @pytest.mark.asyncio
-async def test_push_current_reading_happy_path() -> None:
-    """Climate entity present with valid attrs → POSTs one reading."""
-    state = _make_state(
-        state="COOL",
-        current_temperature=72.5,
-        temperature=72.0,
-        current_humidity=44,
+async def test_no_appliances_returns_zero() -> None:
+    hass = _hass({})
+    entry = _entry()
+    with patch.object(readings.api, "get_appliances", AsyncMock(return_value=[])):
+        n = await readings.push_all_readings(hass, entry)
+    assert n == 0
+
+
+@pytest.mark.asyncio
+async def test_hvac_appliance_posts_home_reading() -> None:
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    state = _state(
+        "cool",
+        {"current_temperature": 72.5, "temperature": 72.0, "current_humidity": 44},
     )
-    hass = _make_hass(state)
-    entry = _make_entry()
+    hass = _hass({"climate.living_room": state})
+    entry = _entry()
 
-    cm = _mock_response(201, {"accepted": 1})
-    session = _session_with_post(cm)
+    home_post = AsyncMock(return_value=True)
+    appl_post = AsyncMock(return_value=True)
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ), patch.object(readings.api, "post_home_reading", home_post), patch.object(
+        readings.api, "post_appliance_reading", appl_post
+    ):
+        n = await readings.push_all_readings(hass, entry)
+
+    assert n == 1
+    home_post.assert_awaited_once()
+    appl_post.assert_not_awaited()
+    posted = home_post.await_args.args[2]
+    assert posted["indoor_temp"] == 72.5
+    assert posted["hvac_state"] == "COOL"
+    assert posted["target_temp"] == 72.0
+    assert posted["indoor_humidity"] == 44
+
+
+@pytest.mark.asyncio
+async def test_ev_charger_posts_per_appliance_reading_with_soc() -> None:
+    appliance = {
+        "id": "ev-1",
+        "appliance_type": "ev_charger",
+        "config": {
+            "entity_id": "switch.tesla_charger",
+            "soc_entity_id": "sensor.tesla_battery_level",
+        },
+    }
+    control = _state("on", {})
+    soc = _state("65.5", {})
+    hass = _hass({
+        "switch.tesla_charger": control,
+        "sensor.tesla_battery_level": soc,
+    })
+    entry = _entry()
+
+    home_post = AsyncMock(return_value=True)
+    appl_post = AsyncMock(return_value=True)
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ), patch.object(readings.api, "post_home_reading", home_post), patch.object(
+        readings.api, "post_appliance_reading", appl_post
+    ):
+        n = await readings.push_all_readings(hass, entry)
+
+    assert n == 1
+    home_post.assert_not_awaited()
+    appl_post.assert_awaited_once()
+    aid_arg, reading = appl_post.await_args.args[2], appl_post.await_args.args[3]
+    assert aid_arg == "ev-1"
+    assert reading["state"] == "ON"
+    assert reading["value"] == 65.5
+
+
+@pytest.mark.asyncio
+async def test_water_heater_posts_per_appliance_reading_with_temp_sensor() -> None:
+    appliance = {
+        "id": "wh-1",
+        "appliance_type": "water_heater",
+        "config": {
+            "entity_id": "switch.water_heater",
+            "temp_entity_id": "sensor.tank_temp",
+        },
+    }
+    control = _state("off", {})
+    temp = _state("128.4", {})
+    hass = _hass({
+        "switch.water_heater": control,
+        "sensor.tank_temp": temp,
+    })
+    entry = _entry()
+
+    appl_post = AsyncMock(return_value=True)
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ), patch.object(readings.api, "post_home_reading", AsyncMock()), patch.object(
+        readings.api, "post_appliance_reading", appl_post
+    ):
+        n = await readings.push_all_readings(hass, entry)
+
+    assert n == 1
+    reading = appl_post.await_args.args[3]
+    assert reading["state"] == "OFF"
+    assert reading["value"] == 128.4
+
+
+@pytest.mark.asyncio
+async def test_appliance_without_entity_id_skipped_silently() -> None:
+    appliance = {
+        "id": "ev-2",
+        "appliance_type": "ev_charger",
+        "config": {},  # entity_id missing
+    }
+    hass = _hass({})
+    entry = _entry()
+
+    appl_post = AsyncMock(return_value=True)
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ), patch.object(readings.api, "post_appliance_reading", appl_post):
+        n = await readings.push_all_readings(hass, entry)
+
+    assert n == 0
+    appl_post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hvac_without_current_temperature_skipped() -> None:
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.no_temp"},
+    }
+    state = _state("cool", {})  # no current_temperature
+    hass = _hass({"climate.no_temp": state})
+    entry = _entry()
+
+    home_post = AsyncMock(return_value=True)
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ), patch.object(readings.api, "post_home_reading", home_post):
+        n = await readings.push_all_readings(hass, entry)
+
+    assert n == 0
+    home_post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_compat_shim_returns_true_when_at_least_one_posted() -> None:
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.x"},
+    }
+    state = _state("heat", {"current_temperature": 70.0})
+    hass = _hass({"climate.x": state})
+    entry = _entry()
 
     with patch.object(
-        readings.auth, "current_token", AsyncMock(return_value="tok")
-    ), patch.object(
-        readings.aiohttp_client,
-        "async_get_clientsession",
-        return_value=session,
-    ):
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ), patch.object(readings.api, "post_home_reading", AsyncMock(return_value=True)):
         result = await readings.push_current_reading(hass, entry)
-
     assert result is True
-    session.post.assert_called_once()
-    args, kwargs = session.post.call_args
-    assert args[0].endswith("/api/v1/readings")
-    assert kwargs["headers"]["Authorization"] == "Bearer tok"
-    body = kwargs["json"]
-    assert "readings" in body
-    assert len(body["readings"]) == 1
-    reading = body["readings"][0]
-    assert "timestamp" in reading
-    assert reading["indoor_temp"] == 72.5
-    assert reading["hvac_state"] == "COOL"
-    assert reading["target_temp"] == 72.0
-    assert reading["indoor_humidity"] == 44
-    entry.async_start_reauth.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_push_current_reading_no_climate_entity_returns_false() -> None:
-    """No climate entity configured → returns False, no post."""
-    hass = _make_hass(_make_state())
-    entry = _make_entry(climate_entity=None)
-
-    session = _session_with_post(_mock_response(201))
-    with patch.object(
-        readings.auth, "current_token", AsyncMock(return_value="tok")
-    ), patch.object(
-        readings.aiohttp_client,
-        "async_get_clientsession",
-        return_value=session,
-    ):
+async def test_compat_shim_returns_false_when_nothing_posted() -> None:
+    hass = _hass({})
+    entry = _entry()
+    with patch.object(readings.api, "get_appliances", AsyncMock(return_value=[])):
         result = await readings.push_current_reading(hass, entry)
-
     assert result is False
-    session.post.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_push_current_reading_entity_missing_returns_false() -> None:
-    """States.get returns None → returns False, no post."""
-    hass = _make_hass(None)
-    entry = _make_entry()
+async def test_charge_reading_clamps_soc_above_100() -> None:
+    appliance = {
+        "id": "ev-1",
+        "appliance_type": "ev_charger",
+        "config": {
+            "entity_id": "switch.charger",
+            "soc_entity_id": "sensor.soc",
+        },
+    }
+    control = _state("on", {})
+    soc = _state("150.0", {})  # nonsense, must clamp to 100
+    hass = _hass({"switch.charger": control, "sensor.soc": soc})
+    entry = _entry()
 
-    session = _session_with_post(_mock_response(201))
+    appl_post = AsyncMock(return_value=True)
     with patch.object(
-        readings.auth, "current_token", AsyncMock(return_value="tok")
-    ), patch.object(
-        readings.aiohttp_client,
-        "async_get_clientsession",
-        return_value=session,
-    ):
-        result = await readings.push_current_reading(hass, entry)
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ), patch.object(readings.api, "post_appliance_reading", appl_post):
+        await readings.push_all_readings(hass, entry)
 
-    assert result is False
-    session.post.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_push_current_reading_no_indoor_temp_returns_false() -> None:
-    """current_temperature missing → returns False, no post."""
-    state = _make_state(current_temperature=None)
-    hass = _make_hass(state)
-    entry = _make_entry()
-
-    session = _session_with_post(_mock_response(201))
-    with patch.object(
-        readings.auth, "current_token", AsyncMock(return_value="tok")
-    ), patch.object(
-        readings.aiohttp_client,
-        "async_get_clientsession",
-        return_value=session,
-    ):
-        result = await readings.push_current_reading(hass, entry)
-
-    assert result is False
-    session.post.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_push_current_reading_401_triggers_reauth() -> None:
-    """401 from API → returns False and triggers reauth on the entry."""
-    hass = _make_hass(_make_state())
-    entry = _make_entry()
-
-    cm = _mock_response(401, {"detail": "expired"})
-    session = _session_with_post(cm)
-
-    with patch.object(
-        readings.auth, "current_token", AsyncMock(return_value="tok")
-    ), patch.object(
-        readings.aiohttp_client,
-        "async_get_clientsession",
-        return_value=session,
-    ):
-        result = await readings.push_current_reading(hass, entry)
-
-    assert result is False
-    entry.async_start_reauth.assert_called_once_with(hass)
-
-
-@pytest.mark.asyncio
-async def test_push_current_reading_429_returns_false_no_crash() -> None:
-    """429 from API → returns False without crashing or triggering reauth."""
-    hass = _make_hass(_make_state())
-    entry = _make_entry()
-
-    cm = _mock_response(429, {"detail": "rate limit"})
-    session = _session_with_post(cm)
-
-    with patch.object(
-        readings.auth, "current_token", AsyncMock(return_value="tok")
-    ), patch.object(
-        readings.aiohttp_client,
-        "async_get_clientsession",
-        return_value=session,
-    ):
-        result = await readings.push_current_reading(hass, entry)
-
-    assert result is False
-    entry.async_start_reauth.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_push_current_reading_lowercase_state_normalized_to_upper() -> None:
-    """``state.state`` of 'cool' (lowercase) → hvac_state 'COOL'."""
-    state = _make_state(state="cool")
-    hass = _make_hass(state)
-    entry = _make_entry()
-
-    cm = _mock_response(201, {"accepted": 1})
-    session = _session_with_post(cm)
-
-    with patch.object(
-        readings.auth, "current_token", AsyncMock(return_value="tok")
-    ), patch.object(
-        readings.aiohttp_client,
-        "async_get_clientsession",
-        return_value=session,
-    ):
-        result = await readings.push_current_reading(hass, entry)
-
-    assert result is True
-    body = session.post.call_args.kwargs["json"]
-    assert body["readings"][0]["hvac_state"] == "COOL"
-
-
-@pytest.mark.asyncio
-async def test_push_current_reading_unknown_state_falls_back_to_off() -> None:
-    """Unmapped state like 'auto' → hvac_state 'OFF' (the safe fallback)."""
-    state = _make_state(state="auto")
-    hass = _make_hass(state)
-    entry = _make_entry()
-
-    cm = _mock_response(201, {"accepted": 1})
-    session = _session_with_post(cm)
-
-    with patch.object(
-        readings.auth, "current_token", AsyncMock(return_value="tok")
-    ), patch.object(
-        readings.aiohttp_client,
-        "async_get_clientsession",
-        return_value=session,
-    ):
-        result = await readings.push_current_reading(hass, entry)
-
-    assert result is True
-    body = session.post.call_args.kwargs["json"]
-    assert body["readings"][0]["hvac_state"] == "OFF"
+    reading = appl_post.await_args.args[3]
+    assert reading["value"] == 100.0
