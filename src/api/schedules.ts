@@ -1,11 +1,11 @@
 import { apiFetch } from './client.js';
 import type { ApplianceType } from './appliances.js';
 
-export interface HvacScheduleBody {
+export type HvacScheduleBody = {
   intervals: number[];
   high_temps: number[];
   low_temps: number[];
-}
+};
 
 export interface HvacScheduleResponse {
   date: string;
@@ -14,7 +14,7 @@ export interface HvacScheduleResponse {
   estimated_savings_pct: number;
   model_confidence: number | null;
   generated_at: string;
-  stale?: boolean;
+  stale: boolean;
   source: 'optimization' | 'defaults';
 }
 

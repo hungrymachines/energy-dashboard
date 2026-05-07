@@ -220,7 +220,7 @@ export class HmThermostatCard extends LitElement {
     if (!Number.isFinite(n)) return 3;
     const rounded = Math.round(n);
     if (rounded < 1) return 1;
-    if (rounded > 5) return 5;
+    if (rounded > 3) return 3;
     return rounded;
   }
 
@@ -324,7 +324,7 @@ export class HmThermostatCard extends LitElement {
           name="savings_level"
           type="range"
           min="1"
-          max="5"
+          max="3"
           step="1"
           .value=${String(this._savingsLevel)}
           @input=${(e: Event) => this._onSavingsInput(e)}

@@ -311,12 +311,16 @@ export class HmConstraintEditor extends LitElement {
         const base = toNumber((c as Record<string, unknown>)['base_temperature']);
         const savings = toNumber((c as Record<string, unknown>)['savings_level']);
         const mode = toString((c as Record<string, unknown>)['optimization_mode']);
+        const timeAway = toString((c as Record<string, unknown>)['time_away']);
+        const timeHome = toString((c as Record<string, unknown>)['time_home']);
         return {
           base_temperature: base === null ? '72' : String(base),
           savings_level: savings === null ? '3' : String(savings),
           optimization_mode: (OPTIMIZATION_MODES as ReadonlyArray<string>).includes(mode)
             ? mode
             : 'auto',
+          time_away: timeAway,
+          time_home: timeHome,
         };
       }
     }
@@ -406,6 +410,14 @@ export class HmConstraintEditor extends LitElement {
         if (!(OPTIMIZATION_MODES as ReadonlyArray<string>).includes(mode)) {
           errors['optimization_mode'] = 'Pick an option';
         }
+        const timeAwayRaw = values['time_away'] ?? '';
+        if (timeAwayRaw !== '' && !TIME_PATTERN.test(timeAwayRaw)) {
+          errors['time_away'] = 'Use HH:MM';
+        }
+        const timeHomeRaw = values['time_home'] ?? '';
+        if (timeHomeRaw !== '' && !TIME_PATTERN.test(timeHomeRaw)) {
+          errors['time_home'] = 'Use HH:MM';
+        }
         if (this._hourlyEnabled) {
           for (let i = 0; i < 24; i++) {
             const lowRaw = this._hourlyLow[i] ?? '';
@@ -455,6 +467,10 @@ export class HmConstraintEditor extends LitElement {
           savings_level: Number(v['savings_level']),
           optimization_mode: (v['optimization_mode'] ?? 'auto') as OptimizationMode,
         };
+        const timeAway = v['time_away'] ?? '';
+        if (timeAway !== '') payload['time_away'] = timeAway;
+        const timeHome = v['time_home'] ?? '';
+        if (timeHome !== '') payload['time_home'] = timeHome;
         if (this._hourlyEnabled) {
           payload['hourly_low_temps_f'] = this._hourlyLow.map((s) => Number(s));
           payload['hourly_high_temps_f'] = this._hourlyHigh.map((s) => Number(s));
@@ -756,6 +772,44 @@ export class HmConstraintEditor extends LitElement {
                     ? html`<div class="field-error">${errs['optimization_mode']}</div>`
                     : null}
                 </label>
+                <div class="time-fields">
+                  ${this._hourlyEnabled
+                    ? null
+                    : html`
+                        <label>
+                          <span class="label-text">Time away (HH:MM)</span>
+                          <input
+                            name="time_away"
+                            type="text"
+                            inputmode="numeric"
+                            placeholder="08:00"
+                            pattern="\\d{2}:\\d{2}"
+                            .value=${v['time_away'] ?? ''}
+                            @input=${onNum('time_away')}
+                          />
+                          <small class="label-text">Time you typically leave home (HH:MM, leave blank to keep current)</small>
+                          ${errs['time_away']
+                            ? html`<div class="field-error">${errs['time_away']}</div>`
+                            : null}
+                        </label>
+                        <label>
+                          <span class="label-text">Time home (HH:MM)</span>
+                          <input
+                            name="time_home"
+                            type="text"
+                            inputmode="numeric"
+                            placeholder="17:00"
+                            pattern="\\d{2}:\\d{2}"
+                            .value=${v['time_home'] ?? ''}
+                            @input=${onNum('time_home')}
+                          />
+                          <small class="label-text">Time you typically return home (HH:MM, leave blank to keep current)</small>
+                          ${errs['time_home']
+                            ? html`<div class="field-error">${errs['time_home']}</div>`
+                            : null}
+                        </label>
+                      `}
+                </div>
                 <div class="hourly-bands">
                   <button
                     class="hourly-toggle ${this._hourlyOpen ? 'open' : ''}"

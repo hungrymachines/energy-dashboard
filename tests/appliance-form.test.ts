@@ -203,6 +203,125 @@ describe('hm-appliance-form', () => {
     expect(inputByName(root2, 'name').value).toBe('My HVAC');
   });
 
+  it("water heater: insulation_factor input defaults to '0.03'", async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'water_heater')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const insul = inputByName(root, 'insulation_factor');
+    expect(insul.value).toBe('0.03');
+    expect(insul.getAttribute('min')).toBe('0.01');
+    expect(insul.getAttribute('max')).toBe('0.05');
+    expect(insul.getAttribute('step')).toBe('0.005');
+  });
+
+  it("water heater: entering '0.5' for insulation_factor fails validation", async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'water_heater')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const name = inputByName(root, 'name');
+    name.value = 'Tank';
+    name.dispatchEvent(new Event('input', { bubbles: true }));
+    inputByName(root, 'tank_size_gallons').value = '50';
+    inputByName(root, 'tank_size_gallons').dispatchEvent(new Event('input', { bubbles: true }));
+    inputByName(root, 'element_watts').value = '4500';
+    inputByName(root, 'element_watts').dispatchEvent(new Event('input', { bubbles: true }));
+    const insul = inputByName(root, 'insulation_factor');
+    insul.value = '0.5';
+    insul.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush(el);
+
+    const errEl = root.querySelector('.field-error');
+    expect(errEl).not.toBeNull();
+    const errs = Array.from(root.querySelectorAll('.field-error')).map((e) => e.textContent);
+    expect(errs.some((t) => t?.includes('Must be 0.01-0.05'))).toBe(true);
+
+    const submitBtn = buttonByText(root, 'Add');
+    expect(submitBtn!.disabled).toBe(true);
+  });
+
+  it("water heater: entering '0.025' for insulation_factor validates clean", async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'water_heater')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const name = inputByName(root, 'name');
+    name.value = 'Tank';
+    name.dispatchEvent(new Event('input', { bubbles: true }));
+    inputByName(root, 'tank_size_gallons').value = '50';
+    inputByName(root, 'tank_size_gallons').dispatchEvent(new Event('input', { bubbles: true }));
+    inputByName(root, 'element_watts').value = '4500';
+    inputByName(root, 'element_watts').dispatchEvent(new Event('input', { bubbles: true }));
+    const insul = inputByName(root, 'insulation_factor');
+    insul.value = '0.025';
+    insul.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush(el);
+
+    const errs = Array.from(root.querySelectorAll('.field-error')).map((e) => e.textContent);
+    expect(errs.some((t) => t?.includes('Must be 0.01-0.05'))).toBe(false);
+
+    const submitBtn = buttonByText(root, 'Add');
+    expect(submitBtn!.disabled).toBe(false);
+  });
+
+  it('water heater: submitting with 0.03 calls create with config.insulation_factor === 0.03', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      calls.push({ url, init });
+      return jsonResponse({ appliance_id: 'app-wh-1' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'water_heater')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const name = inputByName(root, 'name');
+    name.value = 'Tank';
+    name.dispatchEvent(new Event('input', { bubbles: true }));
+    inputByName(root, 'tank_size_gallons').value = '50';
+    inputByName(root, 'tank_size_gallons').dispatchEvent(new Event('input', { bubbles: true }));
+    inputByName(root, 'element_watts').value = '4500';
+    inputByName(root, 'element_watts').dispatchEvent(new Event('input', { bubbles: true }));
+    // insulation_factor stays at default '0.03'
+    await flush(el);
+
+    const submitBtn = buttonByText(root, 'Add');
+    expect(submitBtn!.disabled).toBe(false);
+    submitBtn!.click();
+    await flush(el);
+
+    const postCall = calls.find(
+      (c) => c.url.endsWith('/api/v1/appliances') && c.init?.method === 'POST',
+    );
+    expect(postCall).toBeDefined();
+    const body = JSON.parse(String(postCall!.init!.body));
+    expect(body.appliance_type).toBe('water_heater');
+    expect(body.config.insulation_factor).toBe(0.03);
+  });
+
   it("clicking 'Cancel' on step 2 dispatches cancelled and the form resets to step 1", async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
     const el = mountForm();

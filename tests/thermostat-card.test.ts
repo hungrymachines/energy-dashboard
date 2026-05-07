@@ -195,7 +195,7 @@ describe('hm-thermostat-card', () => {
     // Clear any prior calls so we only capture the PUT triggered by the slider.
     const startIdx = calls.length;
 
-    slider!.value = '4';
+    slider!.value = '2';
     slider!.dispatchEvent(new Event('input', { bubbles: true }));
 
     // Before timer fires, no PUT.
@@ -212,7 +212,93 @@ describe('hm-thermostat-card', () => {
     );
     expect(putCall).toBeDefined();
     const body = JSON.parse(String(putCall!.init!.body));
-    expect(body).toEqual({ savings_level: 4 });
+    expect(body).toEqual({ savings_level: 2 });
+  });
+
+  it('renders the savings slider with max="3" (matches backend [1,3] range)', async () => {
+    installFetchStub();
+    const el = mountCard({
+      hass: {
+        states: {
+          'sensor.living_room_temp': {
+            entity_id: 'sensor.living_room_temp',
+            state: '72',
+          },
+        },
+      },
+    });
+    el.setConfig({
+      type: 'custom:hm-thermostat-card',
+      entities: { indoor_temp: 'sensor.living_room_temp' },
+    });
+    await flush(el);
+
+    const slider = el.shadowRoot!.querySelector<HTMLInputElement>(
+      'input[name="savings_level"]',
+    );
+    expect(slider).not.toBeNull();
+    expect(slider!.getAttribute('max')).toBe('3');
+    expect(slider!.getAttribute('min')).toBe('1');
+  });
+
+  it('_clampLevel clamps above 3 down to 3 and below 1 up to 1', () => {
+    const el = mountCard();
+    const clamp = (
+      el as unknown as { _clampLevel: (n: number) => number }
+    )._clampLevel.bind(el);
+    expect(clamp(5)).toBe(3);
+    expect(clamp(4)).toBe(3);
+    expect(clamp(0)).toBe(1);
+    expect(clamp(-1)).toBe(1);
+    expect(clamp(2)).toBe(2);
+    // Non-finite falls back to default 3.
+    expect(clamp(Number.NaN)).toBe(3);
+  });
+
+  it('clamps a slider drag to 4 down to 3 before persisting', async () => {
+    const calls = installFetchStub();
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] });
+
+    const el = mountCard({
+      hass: {
+        states: {
+          'sensor.living_room_temp': {
+            entity_id: 'sensor.living_room_temp',
+            state: '72',
+          },
+        },
+      },
+    });
+    el.setConfig({
+      type: 'custom:hm-thermostat-card',
+      entities: { indoor_temp: 'sensor.living_room_temp' },
+    });
+    await flush(el);
+
+    const slider = el.shadowRoot!.querySelector<HTMLInputElement>(
+      'input[name="savings_level"]',
+    );
+    expect(slider).not.toBeNull();
+
+    const startIdx = calls.length;
+    // Browsers honor the input element's max attribute, but we still defend
+    // in code. Simulate a value out of range slipping through.
+    slider!.value = '4';
+    slider!.dispatchEvent(new Event('input', { bubbles: true }));
+
+    await vi.advanceTimersByTimeAsync(500);
+    await flush(el);
+
+    const putCall = calls.slice(startIdx).find(
+      (c) => c.url.endsWith('/api/v1/preferences') && c.init?.method === 'PUT',
+    );
+    expect(putCall).toBeDefined();
+    const body = JSON.parse(String(putCall!.init!.body));
+    expect(body).toEqual({ savings_level: 3 });
+
+    // The visible slider value also reflects the clamp.
+    const sliderValue = el.shadowRoot!.querySelector('.slider-value');
+    expect(sliderValue!.textContent).toBe('3');
   });
 
   it('renders the sign-in stub when the auth store is not authed', async () => {

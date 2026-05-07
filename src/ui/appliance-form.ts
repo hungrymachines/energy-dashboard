@@ -210,7 +210,7 @@ export class HmApplianceForm extends LitElement {
           name: '',
           tank_size_gallons: '',
           element_watts: '',
-          insulation_factor: '0.5',
+          insulation_factor: '0.03',
         };
     }
   }
@@ -292,7 +292,7 @@ export class HmApplianceForm extends LitElement {
           const n = Number(watts);
           if (!Number.isInteger(n) || n <= 0) errors['element_watts'] = 'Positive integer';
         }
-        reqInRange('insulation_factor', 0, 1, 'Must be 0–1');
+        reqInRange('insulation_factor', 0.01, 0.05, 'Must be 0.01-0.05');
         break;
       }
     }
@@ -601,16 +601,17 @@ export class HmApplianceForm extends LitElement {
             : null}
         </label>
         <label>
-          <span class="label-text">Insulation factor (0–1)</span>
+          <span class="label-text">Insulation factor (0.01–0.05)</span>
           <input
             name="insulation_factor"
             type="number"
-            min="0"
-            max="1"
-            step="0.05"
-            .value=${v['insulation_factor'] ?? '0.5'}
+            min="0.01"
+            max="0.05"
+            step="0.005"
+            .value=${v['insulation_factor'] ?? '0.03'}
             @input=${onInput('insulation_factor')}
           />
+          <small class="label-text">Lower = better insulated. 0.03 is typical for a residential tank.</small>
           ${errs['insulation_factor']
             ? html`<div class="field-error">${errs['insulation_factor']}</div>`
             : null}

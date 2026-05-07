@@ -332,6 +332,79 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
     expect(hvacCard.textContent).not.toContain('Your comfort range');
   });
 
+  it('_openEditor for hvac seeds from _preferences, not appliance.config (US-FE-HVAC-EDITOR-PREFS-01)', async () => {
+    const prefs = {
+      ...PREFS_DEFAULT,
+      base_temperature: 71,
+      savings_level: 2,
+      time_away: '07:30',
+      time_home: '18:00',
+    };
+    const APPLIANCES = [
+      {
+        id: 'hvac-1',
+        user_id: 'user-123',
+        appliance_type: 'hvac',
+        name: 'Living Room AC',
+        config: { hvac_type: 'central', home_size_sqft: 1800 },
+        is_active: true,
+        created_at: '2026-01-01T00:00:00Z',
+      },
+      {
+        id: 'ev-1',
+        user_id: 'user-123',
+        appliance_type: 'ev_charger',
+        name: 'Tesla Model 3',
+        config: { battery_capacity_kwh: 75, max_charge_rate_kw: 11 },
+        is_active: true,
+        created_at: '2026-01-01T00:00:00Z',
+      },
+    ];
+    installFetchStub({
+      '/api/v1/schedules': SCHEDULES_RESPONSE,
+      '/api/v1/rates': RATES_RESPONSE,
+      '/api/v1/preferences': prefs,
+      '/api/v1/appliances': APPLIANCES,
+    });
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+
+    const el = mountPanel();
+    el._view = 'dashboard';
+    await flush(el);
+
+    // HVAC: editor is seeded from _preferences (which includes time_away/time_home),
+    // not from appliance.config (which only has hvac_type/home_size_sqft).
+    (el as unknown as { _openEditor: (id: string, t: string) => void })._openEditor(
+      'hvac-1',
+      'hvac',
+    );
+    await flush(el);
+    const constraintsHvac = (el as unknown as { _editorConstraints: Record<string, unknown> })
+      ._editorConstraints;
+    expect(constraintsHvac['base_temperature']).toBe(71);
+    expect(constraintsHvac['savings_level']).toBe(2);
+    expect(constraintsHvac['time_away']).toBe('07:30');
+    expect(constraintsHvac['time_home']).toBe('18:00');
+    expect('hvac_type' in constraintsHvac).toBe(false);
+    expect('home_size_sqft' in constraintsHvac).toBe(false);
+
+    // Non-HVAC: editor is still seeded from appliance.config.
+    (el as unknown as { _openEditor: (id: string, t: string) => void })._openEditor(
+      'ev-1',
+      'ev_charger',
+    );
+    await flush(el);
+    const constraintsEv = (el as unknown as { _editorConstraints: Record<string, unknown> })
+      ._editorConstraints;
+    expect(constraintsEv['battery_capacity_kwh']).toBe(75);
+    expect(constraintsEv['max_charge_rate_kw']).toBe(11);
+  });
+
   it('still renders the dashboard when /preferences fetch fails', async () => {
     vi.stubGlobal(
       'fetch',

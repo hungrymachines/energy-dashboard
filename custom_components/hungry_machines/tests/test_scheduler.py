@@ -43,26 +43,43 @@ def _make_entry(climate_entity: str | None = None) -> MagicMock:
     return entry
 
 
+def _realistic_schedules_body() -> dict:
+    """Build a /api/v1/schedules body matching the documented contract.
+
+    HVAC schedule arrays live under ``appliance.schedule.high_temps`` /
+    ``appliance.schedule.low_temps``, NOT directly on the appliance entry.
+    """
+    return {
+        "date": "2026-05-06",
+        "appliances": [
+            {
+                "appliance_id": "a1",
+                "appliance_type": "hvac",
+                "name": "AC",
+                "schedule": {
+                    "intervals": list(range(48)),
+                    "high_temps": [74.0] * 48,
+                    "low_temps": [70.0] * 48,
+                },
+                "savings_pct": 18.5,
+                "source": "optimization",
+            },
+        ],
+    }
+
+
 @pytest.mark.asyncio
 async def test_fetch_schedule_populates_cache_on_success() -> None:
+    """Happy path: the realistic nested-schedule body populates the cache.
+
+    Regression test for the v0.3.0 bug where ``hvac.get('high_temps')`` reached
+    into the appliance entry directly instead of ``hvac['schedule']``. With the
+    bug, this test fails because the cache arrays are empty.
+    """
     hass = _make_hass()
     entry = _make_entry()
 
-    payload = {
-        "appliances": [
-            {
-                "appliance_type": "ev",
-                "high_temps": [],
-                "low_temps": [],
-            },
-            {
-                "appliance_type": "hvac",
-                "high_temps": [76] * 48,
-                "low_temps": [68] * 48,
-            },
-        ]
-    }
-    cm = _mock_response(200, payload)
+    cm = _mock_response(200, _realistic_schedules_body())
     session = _session_with_get(cm)
 
     with patch.object(
@@ -76,13 +93,105 @@ async def test_fetch_schedule_populates_cache_on_success() -> None:
 
     assert result is not None
     cache = hass.data[DOMAIN]["schedule"]
-    assert cache["high_temps"] == [76] * 48
-    assert cache["low_temps"] == [68] * 48
+    assert len(cache["high_temps"]) == 48
+    assert len(cache["low_temps"]) == 48
+    assert cache["high_temps"][0] == 74.0
+    assert cache["low_temps"][0] == 70.0
+    assert cache is result
     assert "fetched_at" in cache
     args, kwargs = session.get.call_args
     assert args[0].endswith("/api/v1/schedules")
     assert kwargs["headers"]["Authorization"] == "Bearer tok"
     entry.async_start_reauth.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_schedule_legacy_flat_shape_yields_empty_cache() -> None:
+    """Legacy flat shape (high_temps at appliance level) yields empty arrays.
+
+    Documents that the integration no longer supports the broken legacy shape:
+    the new code reads from ``hvac['schedule']`` only, so a flat-shaped body
+    correctly produces empty cache arrays rather than silently caching them.
+    """
+    hass = _make_hass()
+    entry = _make_entry()
+
+    legacy_body = {
+        "date": "2026-05-06",
+        "appliances": [
+            {
+                "appliance_id": "a1",
+                "appliance_type": "hvac",
+                "name": "AC",
+                "high_temps": [74.0] * 48,
+                "low_temps": [70.0] * 48,
+            },
+        ],
+    }
+    cm = _mock_response(200, legacy_body)
+    session = _session_with_get(cm)
+
+    with patch.object(
+        scheduler.auth, "current_token", AsyncMock(return_value="tok")
+    ), patch.object(
+        scheduler.aiohttp_client,
+        "async_get_clientsession",
+        return_value=session,
+    ):
+        result = await scheduler.fetch_today_schedule(hass, entry)
+
+    assert result is not None
+    cache = hass.data[DOMAIN]["schedule"]
+    assert len(cache["high_temps"]) == 0
+    assert len(cache["low_temps"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_fetch_then_apply_writes_targets_at_slot_28() -> None:
+    """End-to-end: a fetched schedule actually moves the thermostat.
+
+    Populates the cache via fetch_today_schedule using the realistic nested
+    body, then exercises apply_current_slot at 14:00 (slot 28) and asserts the
+    climate.set_temperature service was called with the right targets.
+    """
+    hass = _make_hass()
+    entry = _make_entry()
+    entry.options = {CONF_CLIMATE_ENTITY: "climate.test"}
+
+    cm = _mock_response(200, _realistic_schedules_body())
+    session = _session_with_get(cm)
+
+    with patch.object(
+        scheduler.auth, "current_token", AsyncMock(return_value="tok")
+    ), patch.object(
+        scheduler.aiohttp_client,
+        "async_get_clientsession",
+        return_value=session,
+    ):
+        await scheduler.fetch_today_schedule(hass, entry)
+
+    fixed = datetime(2026, 5, 6, 14, 0, 0)
+
+    class _DT(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed
+
+    with patch.object(scheduler, "datetime", _DT):
+        await scheduler.apply_current_slot(hass, entry)
+
+    expected_slot = (14 * 2) + 0  # 14:00 -> slot 28
+    assert expected_slot == 28
+    hass.services.async_call.assert_awaited_once_with(
+        "climate",
+        "set_temperature",
+        {
+            "entity_id": "climate.test",
+            "target_temp_low": 70.0,
+            "target_temp_high": 74.0,
+        },
+        blocking=False,
+    )
 
 
 @pytest.mark.asyncio

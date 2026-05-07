@@ -91,9 +91,10 @@ async def fetch_today_schedule(
         )
         return None
 
+    sched = hvac.get('schedule') or {}
     cached = {
-        "high_temps": list(hvac.get("high_temps") or []),
-        "low_temps": list(hvac.get("low_temps") or []),
+        "high_temps": list(sched.get("high_temps") or []),
+        "low_temps": list(sched.get("low_temps") or []),
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
     _domain_data(hass)["schedule"] = cached
