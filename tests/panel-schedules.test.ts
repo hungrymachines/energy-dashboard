@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { HungryMachinesPanel } from '../src/panel/hungry-machines-panel.js';
 import { HmLoginForm } from '../src/ui/login-form.js';
 import { HmScheduleChart } from '../src/ui/schedule-chart.js';
+import { HmOptimizationChart } from '../src/ui/optimization-chart.js';
 import { authStore, type AuthState } from '../src/store.js';
 import { clearTokens, setApiBase } from '../src/api/client.js';
 
@@ -10,6 +11,9 @@ if (!customElements.get('hm-login-form')) {
 }
 if (!customElements.get('hm-schedule-chart')) {
   customElements.define('hm-schedule-chart', HmScheduleChart);
+}
+if (!customElements.get('hm-optimization-chart')) {
+  customElements.define('hm-optimization-chart', HmOptimizationChart);
 }
 if (!customElements.get('hungry-machines-panel')) {
   customElements.define('hungry-machines-panel', HungryMachinesPanel);
@@ -51,8 +55,26 @@ const EV_SCHEDULE = {
     intervals: Array<boolean>(48).fill(false).map((_, i) => i >= 20 && i < 28),
     value_trajectory: Array.from({ length: 48 }, (_, i) => 30 + i),
     unit: 'percent',
+    min_value: 25,
+    target_value: 80,
+    deadline_interval: 16,
   },
   savings_pct: 32.1,
+  source: 'optimization',
+};
+
+const WATER_HEATER_SCHEDULE = {
+  appliance_id: 'wh-1',
+  appliance_type: 'water_heater' as const,
+  name: 'Garage Tank',
+  schedule: {
+    intervals: Array<boolean>(48).fill(false),
+    temp_trajectory: Array.from({ length: 48 }, (_, i) => 120 + (i % 8)),
+    high_temps: Array<number>(48).fill(140),
+    low_temps: Array<number>(48).fill(110),
+    unit: 'fahrenheit',
+  },
+  savings_pct: 14.0,
   source: 'optimization',
 };
 
@@ -158,8 +180,10 @@ describe('hungry-machines-panel dashboard (US-FE-07)', () => {
     await flush(el);
 
     const root = el.shadowRoot!;
-    const charts = root.querySelectorAll('hm-schedule-chart');
-    expect(charts.length).toBe(2);
+    // v2.3: every appliance card renders hm-optimization-chart with the
+    // appropriate unit + line series.
+    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(2);
+    expect(root.querySelectorAll('hm-schedule-chart').length).toBe(0);
 
     const content = root.querySelector('section.content')!;
     expect(content.textContent).toContain('Living Room AC');
@@ -186,6 +210,7 @@ describe('hungry-machines-panel dashboard (US-FE-07)', () => {
 
     const content = el.shadowRoot!.querySelector('section.content')!;
     expect(content.textContent).toContain('No appliances registered yet');
+    expect(el.shadowRoot!.querySelectorAll('hm-optimization-chart').length).toBe(0);
     expect(el.shadowRoot!.querySelectorAll('hm-schedule-chart').length).toBe(0);
   });
 
@@ -236,7 +261,9 @@ describe('hungry-machines-panel dashboard (US-FE-07)', () => {
     await flush(el);
 
     expect(root.querySelector('.error')).toBeNull();
-    expect(root.querySelectorAll('hm-schedule-chart').length).toBe(2);
+    // Every appliance now renders an hm-optimization-chart.
+    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(2);
+    expect(root.querySelectorAll('hm-schedule-chart').length).toBe(0);
   });
 });
 
@@ -258,7 +285,7 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
     setAuthState({});
   });
 
-  it('expands hourly comfort bands to length 48 and passes them to the HVAC chart', async () => {
+  it('passes hourly comfort bands as highLimits / lowLimits to the HVAC optimization chart (length 48)', async () => {
     const prefs = {
       ...PREFS_DEFAULT,
       hourly_high_temps_f: Array<number>(24).fill(74),
@@ -281,32 +308,38 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
     await flush(el);
 
     const root = el.shadowRoot!;
-    const charts = Array.from(
-      root.querySelectorAll<HTMLElement & { comfortHighs?: number[]; comfortLows?: number[] }>('hm-schedule-chart'),
-    );
-    expect(charts.length).toBe(2);
     const hvacCard = root.querySelector('.card[data-appliance-type="hvac"]')!;
     const hvacChart = hvacCard.querySelector<
-      HTMLElement & { comfortHighs?: number[]; comfortLows?: number[] }
-    >('hm-schedule-chart')!;
-    expect(Array.isArray(hvacChart.comfortHighs)).toBe(true);
-    expect(hvacChart.comfortHighs!.length).toBe(48);
-    expect(hvacChart.comfortHighs!.every((v) => v === 74)).toBe(true);
-    expect(Array.isArray(hvacChart.comfortLows)).toBe(true);
-    expect(hvacChart.comfortLows!.length).toBe(48);
-    expect(hvacChart.comfortLows!.every((v) => v === 70)).toBe(true);
+      HTMLElement & { highLimits?: number[]; lowLimits?: number[]; targetValues?: number[] }
+    >('hm-optimization-chart')!;
+    expect(hvacChart).not.toBeNull();
+    expect(Array.isArray(hvacChart.highLimits)).toBe(true);
+    expect(hvacChart.highLimits!.length).toBe(48);
+    expect(hvacChart.highLimits!.every((v) => v === 74)).toBe(true);
+    expect(Array.isArray(hvacChart.lowLimits)).toBe(true);
+    expect(hvacChart.lowLimits!.length).toBe(48);
+    expect(hvacChart.lowLimits!.every((v) => v === 70)).toBe(true);
 
+    // v2.3: the EV card now also uses hm-optimization-chart (percent unit).
     const evCard = root.querySelector('.card[data-appliance-type="ev_charger"]')!;
     const evChart = evCard.querySelector<
-      HTMLElement & { comfortHighs?: number[] }
-    >('hm-schedule-chart')!;
-    expect(evChart.comfortHighs).toBeUndefined();
-
-    expect(hvacCard.textContent).toContain('Your comfort range');
-    expect(evCard.textContent).not.toContain('Your comfort range');
+      HTMLElement & {
+        unit?: string;
+        lowLimits?: number[];
+        targetValues?: number[];
+        targetMarker?: { interval: number; value: number; label?: string };
+      }
+    >('hm-optimization-chart')!;
+    expect(evChart).not.toBeNull();
+    expect(evChart.unit).toBe('percent');
+    expect(evChart.targetValues!.length).toBe(48);
+    // min_value: 25 (constant flat dashed line at 25%)
+    expect(evChart.lowLimits).toEqual(Array<number>(48).fill(25));
+    // deadline_interval: 16 (08:00), target_value: 80 → marker dot
+    expect(evChart.targetMarker).toEqual({ interval: 16, value: 80 });
   });
 
-  it('omits the comfort overlay when hourly bands are not set in preferences', async () => {
+  it('falls back to the schedule high_temps/low_temps when no hourly bands are set', async () => {
     installFetchStub({
       '/api/v1/schedules': SCHEDULES_RESPONSE,
       '/api/v1/rates': RATES_RESPONSE,
@@ -326,11 +359,12 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
     const root = el.shadowRoot!;
     const hvacCard = root.querySelector('.card[data-appliance-type="hvac"]')!;
     const hvacChart = hvacCard.querySelector<
-      HTMLElement & { comfortHighs?: number[]; comfortLows?: number[] }
-    >('hm-schedule-chart')!;
-    expect(hvacChart.comfortHighs).toBeUndefined();
-    expect(hvacChart.comfortLows).toBeUndefined();
-    expect(hvacCard.textContent).not.toContain('Your comfort range');
+      HTMLElement & { highLimits?: number[]; lowLimits?: number[] }
+    >('hm-optimization-chart')!;
+    // The HVAC schedule fixture has high_temps=[74]*48, low_temps=[70]*48.
+    // Without hourly preferences, the chart shows those as the limit lines.
+    expect(hvacChart.highLimits).toEqual(Array<number>(48).fill(74));
+    expect(hvacChart.lowLimits).toEqual(Array<number>(48).fill(70));
   });
 
   it('_openEditor for hvac seeds from _preferences, not appliance.config (US-FE-HVAC-EDITOR-PREFS-01)', async () => {
@@ -441,14 +475,46 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
 
     const root = el.shadowRoot!;
     expect(root.querySelector('.error')).toBeNull();
-    const charts = root.querySelectorAll<
-      HTMLElement & { comfortHighs?: number[]; comfortLows?: number[] }
-    >('hm-schedule-chart');
-    expect(charts.length).toBe(2);
-    for (const c of charts) {
-      expect(c.comfortHighs).toBeUndefined();
-      expect(c.comfortLows).toBeUndefined();
-    }
-    expect(root.textContent).not.toContain('Your comfort range');
+    // Every appliance card uses hm-optimization-chart.
+    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(2);
+    expect(root.querySelectorAll('hm-schedule-chart').length).toBe(0);
+  });
+
+  it('renders water heater with high/low/temp_trajectory limits in fahrenheit', async () => {
+    const SCHED = {
+      date: '2025-11-18',
+      appliances: [HVAC_SCHEDULE, WATER_HEATER_SCHEDULE],
+    };
+    installFetchStub({
+      '/api/v1/schedules': SCHED,
+      '/api/v1/rates': RATES_RESPONSE,
+      '/api/v1/preferences': PREFS_DEFAULT,
+    });
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+
+    const el = mountPanel();
+    el._view = 'dashboard';
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const whCard = root.querySelector('.card[data-appliance-type="water_heater"]')!;
+    const whChart = whCard.querySelector<
+      HTMLElement & {
+        unit?: string;
+        highLimits?: number[];
+        lowLimits?: number[];
+        targetValues?: number[];
+      }
+    >('hm-optimization-chart')!;
+    expect(whChart).not.toBeNull();
+    expect(whChart.unit).toBe('fahrenheit');
+    expect(whChart.highLimits).toEqual(Array<number>(48).fill(140));
+    expect(whChart.lowLimits).toEqual(Array<number>(48).fill(110));
+    expect(whChart.targetValues!.length).toBe(48);
   });
 });

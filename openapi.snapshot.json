@@ -1077,6 +1077,20 @@
             },
             "type": "array",
             "title": "Low Temps"
+          },
+          "temp_trajectory": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temp Trajectory"
           }
         },
         "type": "object",

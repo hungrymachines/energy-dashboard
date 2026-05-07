@@ -444,6 +444,8 @@ export interface components {
             high_temps: number[];
             /** Low Temps */
             low_temps: number[];
+            /** Temp Trajectory */
+            temp_trajectory?: number[] | null;
         };
         /** LoginRequest */
         LoginRequest: {

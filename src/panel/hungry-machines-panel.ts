@@ -47,6 +47,14 @@ function asBooleanArray(value: unknown): boolean[] | undefined {
   return value.every((v) => typeof v === 'boolean') ? (value as boolean[]) : undefined;
 }
 
+function asFiniteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function constantArray(value: number, length = 48): number[] {
+  return new Array(length).fill(value);
+}
+
 export class HungryMachinesPanel extends LitElement {
   static override styles = css`
     :host {
@@ -995,40 +1003,60 @@ export class HungryMachinesPanel extends LitElement {
     const schedule = appliance.schedule ?? {};
     const savings = `${Math.round(appliance.savings_pct)}% savings today`;
 
-    let highTemps: number[] | undefined;
-    let lowTemps: number[] | undefined;
-    let comfortHighs: number[] | undefined;
-    let comfortLows: number[] | undefined;
-    let booleanSchedule: boolean[] | undefined;
-    let trajectory: number[] | undefined;
-    let unit: string | undefined;
+    // Every appliance type gets the same user-facing optimization chart:
+    // background hourly price bars + up to three line series (high limit,
+    // low limit, optimizer target). The data wired in differs by type.
+    const sched = schedule as Record<string, unknown>;
+    let highLimits: number[] | undefined;
+    let lowLimits: number[] | undefined;
+    let targetValues: number[] | undefined;
+    let chartUnit: 'fahrenheit' | 'percent' = 'fahrenheit';
+    let marker:
+      | { interval: number; value: number; label?: string }
+      | undefined;
 
     if (type === 'hvac') {
-      highTemps = asNumberArray((schedule as Record<string, unknown>)['high_temps']);
-      lowTemps = asNumberArray((schedule as Record<string, unknown>)['low_temps']);
+      const highTemps = asNumberArray(sched['high_temps']);
+      const lowTemps = asNumberArray(sched['low_temps']);
+      targetValues = asNumberArray(sched['temp_trajectory']);
       const prefs = this._preferences;
-      if (prefs && hasHourlyComfortBands(prefs)) {
-        comfortHighs = expandHourlyTo48(prefs.hourly_high_temps_f as number[]);
-        comfortLows = expandHourlyTo48(prefs.hourly_low_temps_f as number[]);
-      }
-    } else if (type === 'ev_charger' || type === 'home_battery') {
-      booleanSchedule = asBooleanArray(
-        (schedule as Record<string, unknown>)['intervals'],
-      );
-      trajectory = asNumberArray(
-        (schedule as Record<string, unknown>)['value_trajectory'],
-      );
-      const rawUnit = (schedule as Record<string, unknown>)['unit'];
-      unit = typeof rawUnit === 'string' ? rawUnit : 'percent';
+      // The user's saved comfort band wins over whatever the nightly job
+      // happened to bake into this row, so live edits don't wait until
+      // tomorrow's run to show up on the chart.
+      highLimits =
+        prefs && hasHourlyComfortBands(prefs)
+          ? expandHourlyTo48(prefs.hourly_high_temps_f as number[])
+          : highTemps;
+      lowLimits =
+        prefs && hasHourlyComfortBands(prefs)
+          ? expandHourlyTo48(prefs.hourly_low_temps_f as number[])
+          : lowTemps;
+      chartUnit = 'fahrenheit';
     } else if (type === 'water_heater') {
-      booleanSchedule = asBooleanArray(
-        (schedule as Record<string, unknown>)['intervals'],
-      );
-      trajectory = asNumberArray(
-        (schedule as Record<string, unknown>)['temp_trajectory'],
-      );
-      const rawUnit = (schedule as Record<string, unknown>)['unit'];
-      unit = typeof rawUnit === 'string' ? rawUnit : 'fahrenheit';
+      highLimits = asNumberArray(sched['high_temps']);
+      lowLimits = asNumberArray(sched['low_temps']);
+      targetValues = asNumberArray(sched['temp_trajectory']);
+      chartUnit = 'fahrenheit';
+    } else if (type === 'ev_charger' || type === 'home_battery') {
+      targetValues = asNumberArray(sched['value_trajectory']);
+      chartUnit = 'percent';
+      const minValue = asFiniteNumber(sched['min_value']);
+      if (minValue !== undefined) {
+        // Single-value minimum becomes a flat dashed line across 24h —
+        // the bottom-of-chart "min" rule from the reference sketch.
+        lowLimits = constantArray(minValue);
+      }
+      const targetValue = asFiniteNumber(sched['target_value']);
+      const deadlineRaw = asFiniteNumber(sched['deadline_interval']);
+      if (
+        targetValue !== undefined &&
+        deadlineRaw !== undefined &&
+        Number.isInteger(deadlineRaw) &&
+        deadlineRaw >= 0 &&
+        deadlineRaw < 48
+      ) {
+        marker = { interval: deadlineRaw, value: targetValue };
+      }
     }
 
     return html`
@@ -1038,24 +1066,14 @@ export class HungryMachinesPanel extends LitElement {
           <span class="name">${appliance.name}</span>
         </div>
         <div class="savings">${savings}</div>
-        <hm-schedule-chart
+        <hm-optimization-chart
           .rates=${rates}
-          .highTemps=${highTemps}
-          .lowTemps=${lowTemps}
-          .comfortHighs=${comfortHighs}
-          .comfortLows=${comfortLows}
-          .booleanSchedule=${booleanSchedule}
-          .trajectory=${trajectory}
-          .unit=${unit}
-        ></hm-schedule-chart>
-        ${comfortHighs && comfortLows
-          ? html`
-              <div class="comfort-legend">
-                <span class="comfort-legend-swatch" aria-hidden="true"></span>
-                <span class="comfort-legend-label">Your comfort range</span>
-              </div>
-            `
-          : null}
+          .highLimits=${highLimits}
+          .lowLimits=${lowLimits}
+          .targetValues=${targetValues}
+          .targetMarker=${marker}
+          .unit=${chartUnit}
+        ></hm-optimization-chart>
         <button
           class="edit-btn"
           type="button"
