@@ -16,15 +16,20 @@ const TYPE_OPTIONS: Array<{ type: ApplianceType; label: string; description: str
   { type: 'ev_charger', label: 'EV charger', description: 'Electric vehicle charger' },
   { type: 'home_battery', label: 'Home battery', description: 'Battery storage system' },
   { type: 'water_heater', label: 'Water heater', description: 'Electric water heater' },
+  { type: 'solar', label: 'Solar PV', description: 'Rooftop solar generation' },
 ];
 
 // Per-type allowed control-entity domains. The integration applies the
 // optimized schedule by calling the matching service on this entity.
+// Solar has no control surface (it produces what it produces) — the
+// empty list here is the signal that the form should hide the entity
+// picker and skip the "pick an entity" validation.
 const CONTROL_DOMAINS: Record<ApplianceType, ReadonlyArray<string>> = {
   hvac: ['climate'],
   ev_charger: ['switch'],
   home_battery: ['switch'],
   water_heater: ['switch', 'climate'],
+  solar: [],
 };
 
 // Optional auxiliary sensor entities — when present, the readings poller
@@ -276,6 +281,16 @@ export class HmApplianceForm extends LitElement {
           entity_id: '',
           temp_entity_id: '',
         };
+      case 'solar':
+        // Forecast-only appliance — no entity_id, no readings. Defaults
+        // mirror the SolarConfig pydantic model on the backend (azimuth
+        // 180 = south-facing, tilt 20 = mid-latitude rooftop).
+        return {
+          name: '',
+          system_size_kw: '',
+          azimuth_degrees: '180',
+          tilt_degrees: '20',
+        };
     }
   }
 
@@ -371,11 +386,17 @@ export class HmApplianceForm extends LitElement {
         reqInRange('insulation_factor', 0.01, 0.05, 'Must be 0.01-0.05');
         break;
       }
+      case 'solar':
+        reqInRange('system_size_kw', 0.1, 100, 'Must be 0.1-100 kW');
+        reqInRange('azimuth_degrees', 0, 360, 'Must be 0-360°');
+        reqInRange('tilt_degrees', 0, 90, 'Must be 0-90°');
+        break;
     }
 
-    // entity_id is required for every type — without it the integration
-    // can't apply the optimized schedule.
-    if (this._pickedType !== null) {
+    // entity_id is required for every type with a non-empty CONTROL_DOMAINS
+    // list — without it the integration can't apply the optimized schedule.
+    // Solar has no control surface, so the picker is hidden and not validated.
+    if (this._pickedType !== null && CONTROL_DOMAINS[this._pickedType].length > 0) {
       const eid = (values['entity_id'] ?? '').trim();
       if (eid === '') {
         errors['entity_id'] = 'Pick the Home Assistant entity to control';
@@ -419,6 +440,12 @@ export class HmApplianceForm extends LitElement {
           insulation_factor: Number(v['insulation_factor']),
           entity_id: entityId,
           ...(auxValue ? { temp_entity_id: auxValue } : {}),
+        };
+      case 'solar':
+        return {
+          system_size_kw: Number(v['system_size_kw']),
+          azimuth_degrees: Number(v['azimuth_degrees']),
+          tilt_degrees: Number(v['tilt_degrees']),
         };
       default:
         return {};
@@ -665,7 +692,7 @@ export class HmApplianceForm extends LitElement {
             : null}
         </label>
       `;
-    } else {
+    } else if (t === 'water_heater') {
       typeFields = html`
         <label>
           <span class="label-text">Tank size (gallons)</span>
@@ -712,11 +739,66 @@ export class HmApplianceForm extends LitElement {
             : null}
         </label>
       `;
+    } else {
+      // solar — forecast-only, system size + orientation only.
+      typeFields = html`
+        <label>
+          <span class="label-text">System size (kW)</span>
+          <input
+            name="system_size_kw"
+            type="number"
+            min="0.1"
+            max="100"
+            step="0.1"
+            .value=${v['system_size_kw'] ?? ''}
+            @input=${onInput('system_size_kw')}
+          />
+          <small class="label-text">DC nameplate of the array, e.g. 8.5 for an 8.5 kW system.</small>
+          ${errs['system_size_kw']
+            ? html`<div class="field-error">${errs['system_size_kw']}</div>`
+            : null}
+        </label>
+        <label>
+          <span class="label-text">Azimuth (degrees)</span>
+          <input
+            name="azimuth_degrees"
+            type="number"
+            min="0"
+            max="360"
+            step="5"
+            .value=${v['azimuth_degrees'] ?? '180'}
+            @input=${onInput('azimuth_degrees')}
+          />
+          <small class="label-text">180 = south-facing (default for the Northern Hemisphere).</small>
+          ${errs['azimuth_degrees']
+            ? html`<div class="field-error">${errs['azimuth_degrees']}</div>`
+            : null}
+        </label>
+        <label>
+          <span class="label-text">Tilt (degrees)</span>
+          <input
+            name="tilt_degrees"
+            type="number"
+            min="0"
+            max="90"
+            step="1"
+            .value=${v['tilt_degrees'] ?? '20'}
+            @input=${onInput('tilt_degrees')}
+          />
+          <small class="label-text">Roof pitch, 0 = flat, 20 is typical for residential.</small>
+          ${errs['tilt_degrees']
+            ? html`<div class="field-error">${errs['tilt_degrees']}</div>`
+            : null}
+        </label>
+      `;
     }
 
     const nameErr = errs['name'] ?? '';
     const controlDomains = CONTROL_DOMAINS[t];
-    const controlOptions = this._entityList(controlDomains);
+    // `solar` is forecast-only — no control entity, so the picker is
+    // hidden entirely. Other types still require one.
+    const showEntitySection = controlDomains.length > 0;
+    const controlOptions = showEntitySection ? this._entityList(controlDomains) : [];
     const controlErr = errs['entity_id'] ?? '';
     const controlHelp =
       t === 'hvac'
@@ -738,42 +820,46 @@ export class HmApplianceForm extends LitElement {
       </label>
       <div class="type-fields">${typeFields}</div>
       <div class="entity-section">
-        <label>
-          <span class="label-text">Home Assistant entity to control</span>
-          <select
-            name="entity_id"
-            .value=${v['entity_id'] ?? ''}
-            @change=${onSelect('entity_id')}
-          >
-            <option value="" ?selected=${(v['entity_id'] ?? '') === ''}>— pick one —</option>
-            ${controlOptions.map(
-              (id) => html`<option value=${id} ?selected=${id === v['entity_id']}>${id}</option>`,
-            )}
-          </select>
-          <small class="hint">${controlHelp}</small>
-          ${controlErr ? html`<div class="field-error">${controlErr}</div>` : null}
-          ${controlOptions.length === 0
-            ? html`<div class="field-error">
-                No matching entities found. Make sure your ${controlDomains.join('/')} integration is set up in HA.
-              </div>`
-            : null}
-        </label>
-        ${aux
+        ${showEntitySection
           ? html`
               <label>
-                <span class="label-text">${auxLabel}</span>
+                <span class="label-text">Home Assistant entity to control</span>
                 <select
-                  name=${auxName}
-                  .value=${auxValue}
-                  @change=${onSelect(auxName)}
+                  name="entity_id"
+                  .value=${v['entity_id'] ?? ''}
+                  @change=${onSelect('entity_id')}
                 >
-                  <option value="" ?selected=${auxValue === ''}>— none —</option>
-                  ${auxOptions.map(
-                    (id) => html`<option value=${id} ?selected=${id === auxValue}>${id}</option>`,
+                  <option value="" ?selected=${(v['entity_id'] ?? '') === ''}>— pick one —</option>
+                  ${controlOptions.map(
+                    (id) => html`<option value=${id} ?selected=${id === v['entity_id']}>${id}</option>`,
                   )}
                 </select>
-                <small class="hint">${auxHelp}</small>
+                <small class="hint">${controlHelp}</small>
+                ${controlErr ? html`<div class="field-error">${controlErr}</div>` : null}
+                ${controlOptions.length === 0
+                  ? html`<div class="field-error">
+                      No matching entities found. Make sure your ${controlDomains.join('/')} integration is set up in HA.
+                    </div>`
+                  : null}
               </label>
+              ${aux
+                ? html`
+                    <label>
+                      <span class="label-text">${auxLabel}</span>
+                      <select
+                        name=${auxName}
+                        .value=${auxValue}
+                        @change=${onSelect(auxName)}
+                      >
+                        <option value="" ?selected=${auxValue === ''}>— none —</option>
+                        ${auxOptions.map(
+                          (id) => html`<option value=${id} ?selected=${id === auxValue}>${id}</option>`,
+                        )}
+                      </select>
+                      <small class="hint">${auxHelp}</small>
+                    </label>
+                  `
+                : null}
             `
           : null}
       </div>

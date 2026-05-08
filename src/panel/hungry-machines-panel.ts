@@ -2,6 +2,7 @@ import { LitElement, html, css, type TemplateResult } from 'lit';
 import { authStore, type AuthState } from '../store.js';
 import {
   getAllSchedules,
+  recomputeSchedule,
   type ApplianceScheduleEntry,
   type SchedulesResponse,
 } from '../api/schedules.js';
@@ -35,6 +36,7 @@ const TYPE_LABELS: Record<ApplianceType, string> = {
   ev_charger: 'EV',
   home_battery: 'Battery',
   water_heater: 'Water',
+  solar: 'Solar',
 };
 
 function asNumberArray(value: unknown): number[] | undefined {
@@ -245,6 +247,74 @@ export class HungryMachinesPanel extends LitElement {
       display: flex;
       justify-content: flex-end;
       margin-top: 16px;
+    }
+    .recompute-overlay {
+      /* Fixed instead of absolute so the overlay covers the whole panel
+         even when the dashboard is scrolled. */
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding-top: 96px;
+      background: rgba(248, 250, 252, 0.72);
+      backdrop-filter: blur(2px);
+      z-index: 50;
+      pointer-events: all;
+    }
+    .recompute-card {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 18px;
+      border-radius: 10px;
+      background: var(--hm-surface, #FFFFFF);
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+      max-width: 420px;
+    }
+    .recompute-card .spinner {
+      width: 22px;
+      height: 22px;
+      border: 3px solid rgba(30, 58, 138, 0.18);
+      border-top-color: var(--hm-primary, #1E3A8A);
+      border-radius: 50%;
+      animation: hm-spin 0.9s linear infinite;
+    }
+    .recompute-card .recompute-text strong {
+      display: block;
+      color: var(--hm-text, #0F172A);
+      margin-bottom: 2px;
+      font-weight: 600;
+    }
+    .recompute-card .recompute-text p {
+      margin: 0;
+      color: var(--hm-muted, #64748B);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    @keyframes hm-spin {
+      to { transform: rotate(360deg); }
+    }
+    .recompute-error {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      margin-bottom: 14px;
+      border-radius: 8px;
+      background: rgba(220, 38, 38, 0.08);
+      color: var(--hm-error, #DC2626);
+      font-size: 13px;
+    }
+    .recompute-error-dismiss {
+      margin-left: auto;
+      background: transparent;
+      border: none;
+      color: inherit;
+      font-size: 18px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0 4px;
     }
     .skeleton {
       display: grid;
@@ -535,6 +605,8 @@ export class HungryMachinesPanel extends LitElement {
     _customRatesInputs: { state: true },
     _customRatesSaving: { state: true },
     _customRatesSaveError: { state: true },
+    _recomputing: { state: true },
+    _recomputeError: { state: true },
   };
 
   hass: unknown = undefined;
@@ -561,6 +633,12 @@ export class HungryMachinesPanel extends LitElement {
   _customRatesInputs: string[] = Array.from({ length: 24 }, () => '');
   _customRatesSaving = false;
   _customRatesSaveError: string | null = null;
+  // Inline recompute state. `_recomputing` drives the "Optimizing…"
+  // overlay shown over the dashboard while the backend reruns the
+  // optimizer for this user; `_recomputeError` surfaces a failure as a
+  // dismissible toast so the user knows the chart didn't update.
+  _recomputing = false;
+  _recomputeError: string | null = null;
 
   private _unsubscribe: (() => void) | null = null;
   private _schedulesFetched = false;
@@ -845,7 +923,40 @@ export class HungryMachinesPanel extends LitElement {
       this._preferences = { ...current, ...(payload as Partial<Preferences>) } as Preferences;
     }
     this._onEditorClosed();
+    void this._recomputeNow();
   }
+
+  /**
+   * Trigger a synchronous server-side re-optimization for this user
+   * and replace `_schedules` with the result so the dashboard charts
+   * reflect the just-saved constraints without a page reload.
+   *
+   * Renders an overlay while in flight (HVAC optimizer can take up to
+   * ~30s in pathological cases; typical run is 1-5s). On error we
+   * surface a toast — the saved values are persisted regardless, the
+   * user just needs to wait for the next nightly run for the chart to
+   * pick them up.
+   */
+  private async _recomputeNow(): Promise<void> {
+    this._recomputing = true;
+    this._recomputeError = null;
+    try {
+      const fresh = await recomputeSchedule();
+      this._schedules = fresh;
+      this._schedulesFetched = true;
+    } catch (err) {
+      this._recomputeError =
+        err instanceof Error
+          ? err.message
+          : 'Could not refresh schedule — your changes were saved, the next nightly run will pick them up.';
+    } finally {
+      this._recomputing = false;
+    }
+  }
+
+  private _dismissRecomputeError = (): void => {
+    this._recomputeError = null;
+  };
 
   private _openAddAppliance = (): void => {
     this._addApplianceOpen = true;
@@ -853,8 +964,10 @@ export class HungryMachinesPanel extends LitElement {
 
   private _onApplianceCreated = (): void => {
     this._addApplianceOpen = false;
-    this._schedulesFetched = false;
-    void this._loadSchedulesIfNeeded();
+    // The new appliance has no schedule row yet; an immediate recompute
+    // populates one so the dashboard card renders a real chart instead
+    // of the "no schedule" empty state.
+    void this._recomputeNow();
   };
 
   private _onApplianceCancelled = (): void => {
@@ -928,6 +1041,8 @@ export class HungryMachinesPanel extends LitElement {
         @appliance-created=${this._onApplianceCreated}
         @cancelled=${this._onApplianceCancelled}
       ></hm-appliance-form>
+      ${this._recomputeError ? this._renderRecomputeToast() : ''}
+      ${this._recomputing ? this._renderRecomputeOverlay() : ''}
     `;
   }
 
@@ -994,6 +1109,41 @@ export class HungryMachinesPanel extends LitElement {
     `;
   }
 
+  private _renderRecomputeOverlay(): TemplateResult {
+    if (!this._recomputing) return html``;
+    return html`
+      <div class="recompute-overlay" role="status" aria-live="polite">
+        <div class="recompute-card">
+          <div class="spinner" aria-hidden="true"></div>
+          <div class="recompute-text">
+            <strong>Optimizing&hellip;</strong>
+            <p>
+              Building a fresh schedule with your new settings. This usually
+              takes a few seconds.
+            </p>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  private _renderRecomputeToast(): TemplateResult {
+    if (!this._recomputeError) return html``;
+    return html`
+      <div class="recompute-error" role="alert">
+        <span>${this._recomputeError}</span>
+        <button
+          type="button"
+          class="recompute-error-dismiss"
+          @click=${this._dismissRecomputeError}
+          aria-label="Dismiss"
+        >
+          &times;
+        </button>
+      </div>
+    `;
+  }
+
   private _renderApplianceCard(
     appliance: ApplianceScheduleEntry,
     rates: number[],
@@ -1002,6 +1152,10 @@ export class HungryMachinesPanel extends LitElement {
     const label = TYPE_LABELS[type] ?? type.slice(0, 3).toUpperCase();
     const schedule = appliance.schedule ?? {};
     const savings = `${Math.round(appliance.savings_pct)}% savings today`;
+
+    if (type === 'solar') {
+      return this._renderSolarCard(appliance, label);
+    }
 
     // Every appliance type gets the same user-facing optimization chart:
     // background hourly price bars + up to three line series (high limit,
@@ -1081,6 +1235,40 @@ export class HungryMachinesPanel extends LitElement {
         >
           Edit constraints
         </button>
+      </div>
+    `;
+  }
+
+  /**
+   * Compact informational tile for a solar appliance.
+   *
+   * Solar is forecast-only — there's no schedule to render and no
+   * constraints to edit. The tile shows the registered system size and
+   * a short note explaining how it influences the other appliances'
+   * schedules. Keeping it on the dashboard (rather than hiding it)
+   * gives the user a confirmation that solar is registered and feeding
+   * the optimizer.
+   */
+  private _renderSolarCard(
+    appliance: ApplianceScheduleEntry,
+    label: string,
+  ): TemplateResult {
+    const fullAppliance = this._appliancesById[appliance.appliance_id];
+    const config = (fullAppliance?.config ?? {}) as Record<string, unknown>;
+    const sizeRaw = config['system_size_kw'];
+    const sizeKw = typeof sizeRaw === 'number' && Number.isFinite(sizeRaw) ? sizeRaw : null;
+    const sizeText = sizeKw !== null ? `${sizeKw.toFixed(1)} kW system` : 'Solar PV';
+    return html`
+      <div class="card" data-appliance-type="solar">
+        <div class="card-head">
+          <span class="badge" aria-hidden="true">${label}</span>
+          <span class="name">${appliance.name}</span>
+        </div>
+        <div class="savings">${sizeText}</div>
+        <p style="margin: 8px 0 0; color: var(--hm-muted, #64748B); font-size: 14px;">
+          Generation forecast is folded into pricing for HVAC, EV, battery, and water-heater
+          schedules so they prefer daylight hours when possible.
+        </p>
       </div>
     `;
   }

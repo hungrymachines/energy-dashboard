@@ -39,3 +39,17 @@ export function getAllSchedules(): Promise<SchedulesResponse> {
 export function getHvacSchedule(): Promise<HvacScheduleResponse> {
   return apiFetch<HvacScheduleResponse>('/api/v1/schedule');
 }
+
+/**
+ * Trigger an immediate, synchronous re-optimization for the
+ * authenticated user and return the freshly written schedules.
+ *
+ * Latency: typically 1-5s, worst case ~30s (HVAC optimizer's
+ * bounded backtrack budget). Callers should show a progress
+ * indicator while this is in flight.
+ */
+export function recomputeSchedule(): Promise<SchedulesResponse> {
+  return apiFetch<SchedulesResponse>('/api/v1/schedule/recompute', {
+    method: 'POST',
+  });
+}
