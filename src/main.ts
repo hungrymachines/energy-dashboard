@@ -6,6 +6,7 @@ import { HmLoginForm } from './ui/login-form.js';
 import { HmScheduleChart } from './ui/schedule-chart.js';
 import { HmConstraintEditor } from './ui/constraint-editor.js';
 import { HmApplianceForm } from './ui/appliance-form.js';
+import { HmOptimizationChart } from './ui/optimization-chart.js';
 
 declare global {
   interface Window {
@@ -38,6 +39,9 @@ if (!customElements.get('hm-constraint-editor')) {
 if (!customElements.get('hm-appliance-form')) {
   customElements.define('hm-appliance-form', HmApplianceForm);
 }
+if (!customElements.get('hm-optimization-chart')) {
+  customElements.define('hm-optimization-chart', HmOptimizationChart);
+}
 
 window.customCards = window.customCards || [];
 const existing = new Set(window.customCards.map((c) => c.type));
@@ -64,4 +68,5 @@ export {
   HmScheduleChart,
   HmConstraintEditor,
   HmApplianceForm,
+  HmOptimizationChart,
 };

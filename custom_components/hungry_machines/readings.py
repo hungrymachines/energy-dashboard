@@ -1,23 +1,27 @@
-"""Sensor readings poller for the Hungry Machines integration.
+"""Sensor readings: 5-min capture, hourly batched flush.
 
-v2.0+: appliance-driven loop. Every 5 minutes:
+v2.1+: split into two timers to reduce API call volume by ~12×.
 
-1. Fetch the user's appliances from `/api/v1/appliances`.
-2. For each registered appliance, look up `config.entity_id` (and any aux
-   sensor entity such as `soc_entity_id` / `temp_entity_id`) and read
-   their current state from `hass.states`.
-3. Build the appropriate per-type reading payload:
-   - `hvac` → POST to `/api/v1/readings` (the home-level endpoint that
-     feeds the thermal-model fitter; uses `current_temperature` +
-     `hvac_state` from the climate entity).
-   - `ev_charger` / `home_battery` → POST to
-     `/api/v1/appliances/{id}/readings` with `value` = SoC % and
-     `state` = "CHARGING"/"IDLE"/"ON"/"OFF" derived from the switch state.
-   - `water_heater` → POST to `/api/v1/appliances/{id}/readings` with
-     `value` = tank temperature and `state` derived from the switch.
+* `capture_readings` (every 5 min) iterates the user's appliances, reads
+  each one's HA entity, and APPENDS one reading per appliance to an
+  in-memory buffer keyed by destination endpoint:
+      hass.data[DOMAIN]['readings_buffer'] = {
+          'home':       [reading, ...],          # → POST /api/v1/readings
+          '<appliance_id>': [reading, ...],      # → POST /api/v1/appliances/{id}/readings
+      }
+* `flush_readings` (top of every hour, ~minute=2) drains the buffer with
+  one POST per non-empty key. On success the corresponding sublist is
+  cleared; on failure (4xx, network, etc.) the buffer is retained so the
+  next flush retries.
 
-Skip paths log at INFO with enough context to debug a misconfigured
-entity from `home-assistant.log` without enabling debug-level logging.
+Trade-offs:
+* HA restart between flushes loses any unflushed readings (≤55 min). For
+  a 14-day thermal-model fit this is invisible. If it ever matters, swap
+  the dict-in-hass-data for `homeassistant.helpers.storage.Store`.
+* The backend's 100-reading-per-batch validator (readings.py:46) caps a
+  batch at 100, so the worst case (12 captures × all 4 appliance types)
+  is well below the limit even if a flush is retried with 60+ minutes
+  of accumulated data.
 """
 from __future__ import annotations
 
@@ -29,10 +33,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from . import api
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
 _VALID_HVAC_STATES = ("HEAT", "COOL", "OFF", "FAN")
+_HOME_BUCKET = "home"
+_BUFFER_KEY = "readings_buffer"
 
 
 def _coerce_float(value: Any) -> float | None:
@@ -96,39 +103,29 @@ def _on_off_state(state_str: str) -> str:
 def _build_charge_reading(
     hass: HomeAssistant, control_state: Any, soc_entity_id: str | None
 ) -> dict | None:
-    """Per-appliance reading for an EV charger / home battery."""
     soc: float | None = None
     if soc_entity_id:
         soc_state = _read_state(hass, soc_entity_id)
         if soc_state is not None:
             soc = _coerce_float(soc_state.state)
     if soc is None:
-        # Without a SoC sensor we still send the on/off state but the
-        # value field is required by the API. Use 0.0 — the optimizer
-        # uses constraints (target_charge_pct etc) for its planning,
-        # not raw readings, so this is harmless.
         soc = 0.0
-    reading = {
+    return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "state": _on_off_state(control_state.state),
         "value": max(0.0, min(100.0, soc)),
     }
-    return reading
 
 
 def _build_water_heater_reading(
     hass: HomeAssistant, control_state: Any, temp_entity_id: str | None
 ) -> dict | None:
-    """Per-appliance reading for a water heater."""
     tank_temp: float | None = None
     if temp_entity_id:
         temp_state = _read_state(hass, temp_entity_id)
         if temp_state is not None:
             tank_temp = _coerce_float(temp_state.state)
     if tank_temp is None:
-        # Same fallback logic as the charge reading: send a plausible
-        # default. The water-heater optimizer cares about constraints +
-        # element wattage + insulation_factor more than raw tank temp.
         tank_temp = 120.0
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -137,19 +134,32 @@ def _build_water_heater_reading(
     }
 
 
-async def push_all_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
-    """Run one polling cycle. Returns the number of readings successfully posted."""
+def _buffer(hass: HomeAssistant) -> dict[str, list[dict]]:
+    return hass.data.setdefault(DOMAIN, {}).setdefault(_BUFFER_KEY, {})
+
+
+def _append(hass: HomeAssistant, key: str, reading: dict) -> None:
+    buf = _buffer(hass)
+    buf.setdefault(key, []).append(reading)
+
+
+async def capture_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
+    """Read every appliance's HA entity and append to the in-memory buffer.
+
+    Returns the number of readings captured this tick. Does NOT post —
+    `flush_readings` is responsible for the network call.
+    """
     appliances = await api.get_appliances(hass, entry)
     if appliances is None:
         return 0
     if not appliances:
         _LOGGER.info(
-            "Hungry Machines: no appliances registered yet; nothing to read. "
+            "Hungry Machines: no appliances registered yet; nothing to capture. "
             "Add an appliance via the panel's 'Add appliance' button."
         )
         return 0
 
-    successes = 0
+    captured = 0
     for appliance in appliances:
         atype = appliance.get("appliance_type")
         aid = appliance.get("id")
@@ -170,37 +180,67 @@ async def push_all_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
             reading = _build_hvac_home_reading(control_state)
             if reading is None:
                 continue
-            ok = await api.post_home_reading(hass, entry, reading)
+            _append(hass, _HOME_BUCKET, reading)
+            captured += 1
         elif atype in ("ev_charger", "home_battery"):
             reading = _build_charge_reading(
                 hass, control_state, config.get("soc_entity_id")
             )
             if reading is None:
                 continue
-            ok = await api.post_appliance_reading(hass, entry, aid, reading)
+            _append(hass, aid, reading)
+            captured += 1
         elif atype == "water_heater":
             reading = _build_water_heater_reading(
                 hass, control_state, config.get("temp_entity_id")
             )
             if reading is None:
                 continue
-            ok = await api.post_appliance_reading(hass, entry, aid, reading)
+            _append(hass, aid, reading)
+            captured += 1
         else:
             _LOGGER.info(
                 "Hungry Machines: unknown appliance_type=%s for %s; skipping",
                 atype,
                 aid,
             )
+    return captured
+
+
+async def flush_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
+    """POST every non-empty bucket and clear it on success.
+
+    Returns the number of readings successfully POSTed. Failed buckets are
+    retained for the next flush — POSTs are simple inserts on the backend
+    and the timestamp ordering means a retry won't double-count anything
+    the optimizer cares about.
+    """
+    buf = _buffer(hass)
+    if not buf:
+        return 0
+
+    sent = 0
+    for key in list(buf.keys()):
+        readings = buf.get(key) or []
+        if not readings:
             continue
+        if key == _HOME_BUCKET:
+            ok = await api.post_home_readings(hass, entry, readings)
+        else:
+            ok = await api.post_appliance_readings(hass, entry, key, readings)
         if ok:
-            successes += 1
-    return successes
+            sent += len(readings)
+            buf[key] = []
+        else:
+            _LOGGER.info(
+                "Hungry Machines: flush of %d readings to bucket=%s failed; "
+                "retaining for next flush",
+                len(readings),
+                key,
+            )
+    return sent
 
 
-# Backwards-compatible name retained for tests + __init__.py wiring; the
-# function now drives the multi-appliance loop instead of polling a single
-# climate entity.
-async def push_current_reading(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Compatibility shim: returns True iff at least one reading was posted."""
-    n = await push_all_readings(hass, entry)
-    return n > 0
+def buffered_count(hass: HomeAssistant) -> int:
+    """Total readings currently buffered. Useful for tests + diagnostics."""
+    return sum(len(v) for v in _buffer(hass).values())

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import timedelta
 from pathlib import Path
 
 from typing import Any
@@ -31,10 +30,7 @@ from homeassistant.components.frontend import (
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.event import (
-    async_track_time_change,
-    async_track_time_interval,
-)
+from homeassistant.helpers.event import async_track_time_change
 
 from . import readings, weather
 from .const import (
@@ -56,16 +52,24 @@ _FRONTEND_REGISTERED = "_frontend_registered"
 def _read_manifest_version() -> str:
     """Read the integration version from manifest.json.
 
-    Used as a cache-busting query string on the bundled JS URL so
-    browsers fetch the new bundle on every release instead of serving
-    the previous cached copy. Returns "0" on any read failure — the
-    URL still works without a version, just without auto-busting.
+    Called once at module import time (synchronous, before HA's event
+    loop starts) and cached in MANIFEST_VERSION below. The previous
+    inline call from _ensure_frontend_registered triggered HA's
+    blocking-IO-on-event-loop warning per
+    https://developers.home-assistant.io/docs/asyncio_blocking_operations/
     """
     try:
         with (Path(__file__).parent / "manifest.json").open() as f:
             return str(json.load(f).get("version") or "0")
     except (OSError, ValueError):
         return "0"
+
+
+# Read once at import. HA imports custom_components synchronously during
+# integration loading (before the event loop fully spins up), so doing
+# the file IO here is safe — and avoids the blocking-call warning when
+# we use the value below to build the cache-busting JS URL.
+MANIFEST_VERSION = _read_manifest_version()
 
 
 async def _ensure_frontend_registered(hass: HomeAssistant) -> bool:
@@ -98,7 +102,7 @@ async def _ensure_frontend_registered(hass: HomeAssistant) -> bool:
     await hass.http.async_register_static_paths(
         [StaticPathConfig(SCRIPT_URL, str(frontend_file), False)]
     )
-    versioned_url = f"{SCRIPT_URL}?v={_read_manifest_version()}"
+    versioned_url = f"{SCRIPT_URL}?v={MANIFEST_VERSION}"
     add_extra_js_url(hass, versioned_url)
     domain_data[_FRONTEND_REGISTERED] = True
     return True
@@ -154,15 +158,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     )
 
-    async def _push_reading(_now) -> None:
-        # async_track_time_interval will await this directly on the event
-        # loop. The earlier sync-def + hass.async_create_task pattern fired
-        # from a worker thread which HA 2024.x raises as an error per
-        # https://developers.home-assistant.io/docs/asyncio_thread_safety/
-        await readings.push_all_readings(hass, entry)
+    # v2.1+: capture every 5 min into an in-memory buffer; flush to the
+    # API once per hour. Same data shape, ~12× fewer API calls.
+    async def _capture_readings(_now) -> None:
+        await readings.capture_readings(hass, entry)
 
-    domain_data["readings_unsub"] = async_track_time_interval(
-        hass, _push_reading, timedelta(minutes=5)
+    async def _flush_readings(_now) -> None:
+        await readings.flush_readings(hass, entry)
+
+    unsubs.append(
+        async_track_time_change(
+            hass,
+            _capture_readings,
+            minute=[0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55],
+            second=0,
+        )
+    )
+    # Flush 2 min after the hour so the :00 capture has landed in the
+    # buffer first. The flush still fires hourly — the offset just
+    # ensures the buffer for that hour is complete before we post.
+    unsubs.append(
+        async_track_time_change(
+            hass, _flush_readings, minute=2, second=0
+        )
     )
 
     # Daily weather push at 03:30 UTC, just before the API's nightly
@@ -192,15 +210,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "Hungry Machines unsubscribe failed: %s", err
             )
     domain_data.pop(entry.entry_id, None)
-
-    readings_unsub = domain_data.pop("readings_unsub", None)
-    if readings_unsub is not None:
-        try:
-            readings_unsub()
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.warning(
-                "Hungry Machines readings unsubscribe failed: %s", err
-            )
+    # v2.1+: capture+flush timers live in entry_data['unsub'] above, so
+    # the legacy 'readings_unsub' key is no longer maintained.
+    domain_data.pop("readings_unsub", None)
 
     async_remove_panel(hass, PANEL_URL_PATH)
     return True

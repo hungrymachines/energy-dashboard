@@ -96,26 +96,35 @@ async def get_schedules(hass: HomeAssistant, entry: ConfigEntry) -> dict | None:
     return await _authenticated_request(hass, entry, "GET", "/api/v1/schedules")
 
 
-async def post_home_reading(
-    hass: HomeAssistant, entry: ConfigEntry, reading: dict
+async def post_home_readings(
+    hass: HomeAssistant, entry: ConfigEntry, readings: list[dict]
 ) -> bool:
-    """Post a single home sensor reading to /api/v1/readings (thermal model)."""
+    """POST a batch of home sensor readings to /api/v1/readings.
+
+    Used for HVAC thermal-model data. The API accepts up to 100 readings
+    per call (per app/routes/readings.py:46), so an hourly batch of 12 is
+    well within bounds.
+    """
+    if not readings:
+        return False
     body = await _authenticated_request(
-        hass, entry, "POST", "/api/v1/readings", json={"readings": [reading]}
+        hass, entry, "POST", "/api/v1/readings", json={"readings": readings}
     )
     return body is not None
 
 
-async def post_appliance_reading(
-    hass: HomeAssistant, entry: ConfigEntry, appliance_id: str, reading: dict
+async def post_appliance_readings(
+    hass: HomeAssistant, entry: ConfigEntry, appliance_id: str, readings: list[dict]
 ) -> bool:
-    """Post a single per-appliance reading to /api/v1/appliances/{id}/readings."""
+    """POST a batch of per-appliance readings to /api/v1/appliances/{id}/readings."""
+    if not readings:
+        return False
     body = await _authenticated_request(
         hass,
         entry,
         "POST",
         f"/api/v1/appliances/{appliance_id}/readings",
-        json={"readings": [reading]},
+        json={"readings": readings},
     )
     return body is not None
 
