@@ -192,6 +192,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/schedule/recompute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Recompute Schedule
+         * @description Run optimization synchronously for the authenticated user, then
+         *     return the freshly written schedules.
+         *
+         *     Used by the panel right after the user clicks "Save" on a constraint
+         *     editor — instead of waiting for the debounced background job and
+         *     polling, the frontend gets the new schedule inline and updates the
+         *     chart without a page reload.
+         *
+         *     Latency: typically 1-5 seconds (HVAC optimizer's bounded backtrack
+         *     finishes early when no better plan exists). Worst case the HVAC
+         *     optimizer's hard-coded 28-second budget plus a couple of fast
+         *     non-HVAC runs. The frontend should show an "Optimizing…" overlay
+         *     while this is in flight.
+         */
+        post: operations["recompute_schedule_api_v1_schedule_recompute_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/appliances": {
         parameters: {
             query?: never;
@@ -967,6 +999,26 @@ export interface operations {
         };
     };
     get_all_schedules_api_v1_schedules_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    recompute_schedule_api_v1_schedule_recompute_post: {
         parameters: {
             query?: never;
             header?: never;

@@ -399,6 +399,31 @@
         ]
       }
     },
+    "/api/v1/schedule/recompute": {
+      "post": {
+        "tags": [
+          "schedules"
+        ],
+        "summary": "Recompute Schedule",
+        "description": "Run optimization synchronously for the authenticated user, then\nreturn the freshly written schedules.\n\nUsed by the panel right after the user clicks \"Save\" on a constraint\neditor \u2014 instead of waiting for the debounced background job and\npolling, the frontend gets the new schedule inline and updates the\nchart without a page reload.\n\nLatency: typically 1-5 seconds (HVAC optimizer's bounded backtrack\nfinishes early when no better plan exists). Worst case the HVAC\noptimizer's hard-coded 28-second budget plus a couple of fast\nnon-HVAC runs. The frontend should show an \"Optimizing\u2026\" overlay\nwhile this is in flight.",
+        "operationId": "recompute_schedule_api_v1_schedule_recompute_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/appliances": {
       "get": {
         "tags": [

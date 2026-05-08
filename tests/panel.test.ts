@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { HungryMachinesPanel } from '../src/panel/hungry-machines-panel.js';
 import { HmLoginForm } from '../src/ui/login-form.js';
 import { HmApplianceForm } from '../src/ui/appliance-form.js';
+import type { SchedulesResponse } from '../src/api/schedules.js';
 import { authStore, type AuthState } from '../src/store.js';
 import { clearTokens, setApiBase, setTokens } from '../src/api/client.js';
 
@@ -205,7 +206,7 @@ describe('hungry-machines-panel', () => {
     expect(form!.open).toBe(true);
   });
 
-  it('appliance-created event causes the panel to re-fetch /api/v1/schedules', async () => {
+  it('appliance-created event triggers an immediate schedule recompute', async () => {
     setAuthState({
       access: 'ACCESS',
       refresh: 'REFRESH',
@@ -265,8 +266,95 @@ describe('hungry-machines-panel', () => {
       await Promise.resolve();
     }
 
-    const finalScheduleCalls = calls.filter((u) => u.endsWith('/api/v1/schedules')).length;
-    expect(finalScheduleCalls).toBeGreaterThan(initialScheduleCalls);
+    // Post-v2.4: instead of re-fetching /schedules, the panel POSTs to
+    // /schedule/recompute which both runs an optimization and returns the
+    // freshly written schedules in one round-trip.
+    const recomputeCalls = calls.filter((u) =>
+      u.endsWith('/api/v1/schedule/recompute'),
+    ).length;
+    expect(recomputeCalls).toBeGreaterThanOrEqual(1);
+  });
+
+  it('constraints-saved event POSTs to /schedule/recompute and replaces _schedules with the response', async () => {
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+    setTokens({ access: 'ACCESS', refresh: 'REFRESH' });
+
+    const calls: string[] = [];
+    const recomputed = {
+      date: '2026-05-08',
+      appliances: [
+        {
+          appliance_id: 'a-1',
+          appliance_type: 'hvac',
+          name: 'After-recompute',
+          schedule: {},
+          savings_pct: 42.0,
+          source: 'optimization',
+        },
+      ],
+    };
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        calls.push(url);
+        if (url.endsWith('/api/v1/schedule/recompute')) {
+          return new Response(JSON.stringify(recomputed), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({ date: 'today', appliances: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }),
+    );
+
+    const el = mountPanel();
+    for (let i = 0; i < 5; i++) {
+      await el.updateComplete;
+      await Promise.resolve();
+    }
+
+    // Fire the save event from the constraint editor.
+    const editor = el.shadowRoot!.querySelector('hm-constraint-editor');
+    expect(editor).not.toBeNull();
+    editor!.dispatchEvent(
+      new CustomEvent('constraints-saved', {
+        detail: { applianceId: 'a-1', payload: { base_temperature: 71 } },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+    for (let i = 0; i < 5; i++) {
+      await el.updateComplete;
+      await Promise.resolve();
+    }
+
+    // The panel hit the recompute endpoint and replaced its cached
+    // schedules with the response — that's how the dashboard chart
+    // updates inline without a page reload.
+    expect(
+      calls.filter((u) => u.endsWith('/api/v1/schedule/recompute')).length,
+    ).toBeGreaterThanOrEqual(1);
+    const finalSchedules = (el as unknown as {
+      _schedules: SchedulesResponse | null;
+    })._schedules;
+    expect(finalSchedules).not.toBeNull();
+    expect(finalSchedules!.appliances[0]?.savings_pct).toBe(42.0);
+    expect((el as unknown as { _recomputing: boolean })._recomputing).toBe(false);
   });
 
   it('shows a loading spinner when the auth store reports loading', async () => {
