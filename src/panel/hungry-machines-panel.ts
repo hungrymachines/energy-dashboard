@@ -142,33 +142,36 @@ export class HungryMachinesPanel extends LitElement {
     }
     .cards {
       display: grid;
-      gap: 16px;
-      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 24px;
+      /* Wide cards so the optimization chart has enough room for a
+         readable schedule + axis labels. Drops to a single-column
+         layout below ~640px viewport width. */
+      grid-template-columns: repeat(auto-fill, minmax(min(640px, 100%), 1fr));
     }
     .card {
       background: #ffffff;
       border: 1px solid rgba(100, 116, 139, 0.2);
-      border-radius: 10px;
-      padding: 16px;
+      border-radius: 14px;
+      padding: 24px;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 16px;
     }
     .card-head {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 14px;
     }
     .card-head .badge {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 34px;
-      height: 34px;
-      border-radius: 8px;
+      width: 52px;
+      height: 52px;
+      border-radius: 10px;
       background: var(--hm-primary, #1E3A8A);
       color: #ffffff;
-      font-size: 11px;
+      font-size: 15px;
       font-weight: 700;
       letter-spacing: 0.02em;
       flex-shrink: 0;
@@ -176,7 +179,7 @@ export class HungryMachinesPanel extends LitElement {
     .card-head .name {
       font-weight: 600;
       color: var(--hm-text, #0F172A);
-      font-size: 1rem;
+      font-size: 1.4rem;
       flex: 1;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -185,17 +188,17 @@ export class HungryMachinesPanel extends LitElement {
     .card .savings {
       color: var(--hm-secondary, #0F766E);
       font-weight: 600;
-      font-size: 0.95rem;
+      font-size: 1.3rem;
     }
     .card .edit-btn {
       align-self: flex-start;
       background: transparent;
       border: 1px solid var(--hm-primary, #1E3A8A);
       color: var(--hm-primary, #1E3A8A);
-      padding: 6px 12px;
-      border-radius: 6px;
+      padding: 10px 20px;
+      border-radius: 8px;
       font: inherit;
-      font-size: 13px;
+      font-size: 16px;
       cursor: pointer;
     }
     .comfort-legend {

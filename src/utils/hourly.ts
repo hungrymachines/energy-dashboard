@@ -37,3 +37,72 @@ export function hasHourlyComfortBands(prefs: {
 export function hasCustomRates(rates: { source: 'custom' | 'zone' }): boolean {
   return rates.source === 'custom';
 }
+
+// Mirrors `app/services/comfort.py: SAVINGS_OFFSETS` on the backend. When
+// the user is NOT using hourly overrides, the optimizer derives the
+// comfort band from base_temperature + savings_level + time_away/home,
+// and the constraint editor shows those derived values in the disabled
+// hourly table. Keep this map in sync with the backend's.
+const SAVINGS_OFFSETS: Record<number, number> = { 1: 2.0, 2: 6.0, 3: 12.0 };
+
+export type ComfortMode = 'cool' | 'heat' | 'auto';
+
+/** Parse "HH:MM" into a 0-23 hour index, clamped. Bad input → 0. */
+function timeStrToHour(time: string): number {
+  if (typeof time !== 'string' || !time.includes(':')) return 0;
+  const [hStr] = time.split(':');
+  const h = Number(hStr);
+  if (!Number.isFinite(h)) return 0;
+  return Math.max(0, Math.min(23, Math.floor(h)));
+}
+
+function isAwayHour(hour: number, awayHour: number, homeHour: number): boolean {
+  if (awayHour <= homeHour) return hour >= awayHour && hour < homeHour;
+  // Wrap past midnight (e.g. away 22:00, home 06:00).
+  return hour >= awayHour || hour < homeHour;
+}
+
+/**
+ * Derive a 24-hour comfort band from the legacy preference fields, in the
+ * same shape the constraint editor's hourly table renders. Used to
+ * populate the disabled table when the user has just unchecked
+ * "Use my hourly bands" — gives them a preview of what the optimizer
+ * will fall back to.
+ *
+ * Mirrors `app/services/comfort.py: build_comfort_band`. Returns one
+ * value per HOUR (24 elements), not per half-hour interval.
+ */
+export function deriveHourlyComfortBand(opts: {
+  base_temperature: number;
+  savings_level: number;
+  time_away: string;
+  time_home: string;
+  mode: ComfortMode;
+}): { high: number[]; low: number[] } {
+  const base = Number.isFinite(opts.base_temperature) ? opts.base_temperature : 72;
+  const offset = SAVINGS_OFFSETS[opts.savings_level] ?? 2.0;
+  const awayHour = timeStrToHour(opts.time_away);
+  const homeHour = timeStrToHour(opts.time_home);
+
+  const high: number[] = new Array(24);
+  const low: number[] = new Array(24);
+  for (let h = 0; h < 24; h++) {
+    const away = isAwayHour(h, awayHour, homeHour);
+    if (away) {
+      if (opts.mode === 'cool') {
+        high[h] = base + offset;
+        low[h] = base - 1.5;
+      } else if (opts.mode === 'heat') {
+        high[h] = base + 1.5;
+        low[h] = base - offset;
+      } else {
+        high[h] = base + offset / 2;
+        low[h] = base - offset / 2;
+      }
+    } else {
+      high[h] = base + 1.5;
+      low[h] = base - 1.5;
+    }
+  }
+  return { high, low };
+}

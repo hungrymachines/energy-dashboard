@@ -90,13 +90,24 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
     clearTokens();
   });
 
-  it('(a) renders Hourly bands section closed; clicking toggle reveals 24 default rows (low=68/high=76)', async () => {
+  it('(a) renders Hourly bands section closed; clicking toggle reveals 24 rows derived from base+savings+home/away', async () => {
     captureFetch(jsonResponse({}));
 
+    // Provide explicit prefs so the derived band is deterministic.
+    // base=72, savings=3 (offset 12), auto mode, away 08:00-17:00.
+    // Expected (auto mode):
+    //   away hour: high = base + offset/2 = 78, low = base - offset/2 = 66
+    //   home hour: high = base + 1.5      = 73.5, low = base - 1.5     = 70.5
     const el = mountEditor({
       applianceId: 'hvac-1',
       applianceType: 'hvac',
-      currentConstraints: undefined,
+      currentConstraints: {
+        base_temperature: 72,
+        savings_level: 3,
+        time_away: '08:00',
+        time_home: '17:00',
+        optimization_mode: 'auto',
+      },
       open: true,
     });
     await flush(el);
@@ -114,16 +125,18 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
     const rows = root.querySelectorAll<HTMLTableRowElement>('tr[data-row]');
     expect(rows.length).toBe(24);
 
+    // Hour 0 is HOME time (before 08:00) → tight band base ± 1.5.
     const low0 = root.querySelector<HTMLInputElement>('input[name="hourly_low_0"]')!;
     const high0 = root.querySelector<HTMLInputElement>('input[name="hourly_high_0"]')!;
-    expect(low0.value).toBe('68');
-    expect(high0.value).toBe('76');
-    const low23 = root.querySelector<HTMLInputElement>('input[name="hourly_low_23"]')!;
-    const high23 = root.querySelector<HTMLInputElement>('input[name="hourly_high_23"]')!;
-    expect(low23.value).toBe('68');
-    expect(high23.value).toBe('76');
+    expect(low0.value).toBe('70.5');
+    expect(high0.value).toBe('73.5');
+    // Hour 12 is AWAY (08:00-17:00) → widened by savings_offset/2 in auto mode.
+    const low12 = root.querySelector<HTMLInputElement>('input[name="hourly_low_12"]')!;
+    const high12 = root.querySelector<HTMLInputElement>('input[name="hourly_high_12"]')!;
+    expect(low12.value).toBe('66');
+    expect(high12.value).toBe('78');
 
-    // Checkbox is unchecked by default.
+    // Checkbox is unchecked by default — the user has not opted into hourly overrides.
     const checkbox = root.querySelector<HTMLInputElement>(
       'input[name="use_hourly_bands"]',
     )!;
@@ -147,6 +160,8 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
       currentConstraints: {
         base_temperature: 72,
         savings_level: 3,
+        time_away: '08:00',
+        time_home: '18:00',
         optimization_mode: 'auto',
       },
       open: true,
@@ -165,7 +180,7 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
     checkbox.dispatchEvent(new Event('change', { bubbles: true }));
     await flush(el);
 
-    // Modify row 0.
+    // Modify row 0 (a HOME hour given away=08:00, home=18:00).
     setRowInput(root, 'low', 0, '70');
     setRowInput(root, 'high', 0, '74');
     await flush(el);
@@ -192,10 +207,14 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
     expect(body.hourly_high_temps_f.length).toBe(24);
     expect(body.hourly_low_temps_f[0]).toBe(70);
     expect(body.hourly_high_temps_f[0]).toBe(74);
-    // Remaining rows stayed at defaults 68 / 76.
+    // Untouched rows now reflect the derived band (auto mode, savings=3,
+    // base=72, away 08:00-18:00). Home hours: 70.5 / 73.5; away: 66 / 78.
     for (let i = 1; i < 24; i++) {
-      expect(body.hourly_low_temps_f[i]).toBe(68);
-      expect(body.hourly_high_temps_f[i]).toBe(76);
+      const isAway = i >= 8 && i < 18;
+      const expectedLow = isAway ? 66 : 70.5;
+      const expectedHigh = isAway ? 78 : 73.5;
+      expect(body.hourly_low_temps_f[i]).toBe(expectedLow);
+      expect(body.hourly_high_temps_f[i]).toBe(expectedHigh);
     }
     // Legacy fields still submitted.
     expect(body.base_temperature).toBe(72);

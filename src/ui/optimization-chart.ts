@@ -63,69 +63,69 @@ export class HmOptimizationChart extends LitElement {
     }
     .grid {
       stroke: rgba(100, 116, 139, 0.18);
-      stroke-width: 0.5;
+      stroke-width: 1;
     }
     .axis-label {
       fill: var(--hm-muted, #64748B);
-      font-size: 10px;
+      font-size: 18px;
     }
     .axis-title {
       fill: var(--hm-muted, #64748B);
-      font-size: 10px;
+      font-size: 18px;
       font-weight: 600;
     }
     .high-limit {
       fill: none;
       stroke: var(--hm-error, #DC2626);
-      stroke-width: 1.5;
-      stroke-dasharray: 4 3;
+      stroke-width: 2.5;
+      stroke-dasharray: 6 4;
     }
     .low-limit {
       fill: none;
       stroke: var(--hm-secondary, #0F766E);
-      stroke-width: 1.5;
-      stroke-dasharray: 4 3;
+      stroke-width: 2.5;
+      stroke-dasharray: 6 4;
     }
     .target {
       fill: none;
       stroke: var(--hm-primary, #1E3A8A);
-      stroke-width: 2;
+      stroke-width: 3.5;
     }
     .marker-dot {
       fill: var(--hm-primary, #1E3A8A);
       stroke: var(--hm-bg, #FFFFFF);
-      stroke-width: 1.5;
+      stroke-width: 2.5;
     }
     .marker-line {
       stroke: var(--hm-primary, #1E3A8A);
-      stroke-width: 1;
-      stroke-dasharray: 2 2;
+      stroke-width: 1.5;
+      stroke-dasharray: 3 3;
       opacity: 0.6;
     }
     .marker-label {
       fill: var(--hm-primary, #1E3A8A);
-      font-size: 10px;
+      font-size: 18px;
       font-weight: 600;
     }
     .legend {
       display: flex;
       flex-wrap: wrap;
-      gap: 16px;
+      gap: 22px;
       justify-content: center;
-      margin-top: 8px;
-      font-size: 12px;
+      margin-top: 14px;
+      font-size: 16px;
       color: var(--hm-text, #0F172A);
     }
     .legend-item {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
     }
     .legend-swatch {
       display: inline-block;
-      width: 14px;
-      height: 4px;
-      border-radius: 1px;
+      width: 22px;
+      height: 6px;
+      border-radius: 2px;
     }
     .swatch-target {
       background: var(--hm-primary, #1E3A8A);
@@ -145,16 +145,16 @@ export class HmOptimizationChart extends LitElement {
       );
     }
     .swatch-price {
-      width: 14px;
-      height: 10px;
+      width: 22px;
+      height: 16px;
       background: var(--hm-accent, #F59E0B);
       opacity: 0.4;
-      border-radius: 2px;
+      border-radius: 3px;
     }
     .empty {
-      padding: 12px;
+      padding: 18px;
       color: var(--hm-muted, #64748B);
-      font-size: 13px;
+      font-size: 18px;
     }
   `;
 
@@ -243,12 +243,15 @@ export class HmOptimizationChart extends LitElement {
     }
 
     // SVG layout. Use a viewBox so the chart scales fluidly with the host.
+    // Tuned ~2x bigger than v2.4 (was 600x220 / pad 16/28/36/40) so the
+    // schedule trajectory is legible at typical card widths and the
+    // axis labels don't crowd each other.
     const width = 600;
-    const height = 220;
-    const padTop = 16;
-    const padBottom = 28;
-    const padLeft = 36;
-    const padRight = 40;
+    const height = 380;
+    const padTop = 24;
+    const padBottom = 56;
+    const padLeft = 64;
+    const padRight = 72;
     const plotWidth = width - padLeft - padRight;
     const plotHeight = height - padTop - padBottom;
 
