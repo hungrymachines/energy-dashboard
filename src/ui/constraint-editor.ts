@@ -2,7 +2,11 @@ import { LitElement, html, css } from 'lit';
 import { setConstraints } from '../api/appliances.js';
 import { update as updatePreferences } from '../api/preferences.js';
 import type { ApplianceType } from '../api/appliances.js';
-import { hasHourlyComfortBands } from '../utils/hourly.js';
+import {
+  deriveHourlyComfortBand,
+  hasHourlyComfortBands,
+  type ComfortMode,
+} from '../utils/hourly.js';
 
 type OptimizationMode = 'cool' | 'heat' | 'auto' | 'off';
 
@@ -275,9 +279,55 @@ export class HmConstraintEditor extends LitElement {
     } else {
       this._hourlyEnabled = false;
       this._hourlyOpen = false;
+      // Show the derived band the optimizer will fall back to instead of
+      // a flat 76/68 placeholder — keeps the disabled table consistent
+      // with what's actually being persisted.
+      this._loadDerivedHourlyBands();
+    }
+  }
+
+  /**
+   * Replace `_hourlyHigh` / `_hourlyLow` with the band derived from the
+   * legacy preference fields (base_temperature, savings_level, time_away,
+   * time_home, optimization_mode). Used when seeding a fresh editor and
+   * when the user unchecks the "use my hourly bands" override.
+   *
+   * Reads from the live `_values` so user edits already in the form
+   * (e.g. they bumped savings_level before unchecking) propagate
+   * immediately. Source-of-truth derivation lives in
+   * `app/services/comfort.py: build_comfort_band` on the backend; the
+   * frontend mirror is in `src/utils/hourly.ts: deriveHourlyComfortBand`.
+   */
+  private _loadDerivedHourlyBands(): void {
+    if (this.applianceType !== 'hvac') {
       this._hourlyHigh = Array.from({ length: 24 }, () => '76');
       this._hourlyLow = Array.from({ length: 24 }, () => '68');
+      return;
     }
+    const v = this._values;
+    const fallback = (this.currentConstraints ?? {}) as Record<string, unknown>;
+    const baseStr = (v['base_temperature'] ?? '').toString().trim();
+    const savingsStr = (v['savings_level'] ?? '').toString().trim();
+    const baseNum = baseStr === '' ? toNumber(fallback['base_temperature']) : Number(baseStr);
+    const savingsNum =
+      savingsStr === '' ? toNumber(fallback['savings_level']) : Number(savingsStr);
+    const modeStr =
+      (v['optimization_mode'] ?? toString(fallback['optimization_mode']) ?? 'auto').toString();
+    const timeAway = (v['time_away'] ?? toString(fallback['time_away']) ?? '08:00').toString() || '08:00';
+    const timeHome = (v['time_home'] ?? toString(fallback['time_home']) ?? '17:00').toString() || '17:00';
+    const mode: ComfortMode =
+      modeStr === 'cool' || modeStr === 'heat' || modeStr === 'auto'
+        ? (modeStr as ComfortMode)
+        : 'auto';
+    const { high, low } = deriveHourlyComfortBand({
+      base_temperature: Number.isFinite(baseNum as number) ? (baseNum as number) : 72,
+      savings_level: Number.isFinite(savingsNum as number) ? (savingsNum as number) : 3,
+      time_away: timeAway,
+      time_home: timeHome,
+      mode,
+    });
+    this._hourlyHigh = high.map((n) => String(n));
+    this._hourlyLow = low.map((n) => String(n));
   }
 
   private _seedValues(): Record<string, string> {
@@ -546,7 +596,16 @@ export class HmConstraintEditor extends LitElement {
       this._hourlyOpen = !this._hourlyOpen;
     };
     const onHourlyEnabled = (e: Event) => {
-      this._hourlyEnabled = (e.target as HTMLInputElement).checked;
+      const checked = (e.target as HTMLInputElement).checked;
+      this._hourlyEnabled = checked;
+      // When the user unchecks the override, refresh the displayed
+      // hourly table to mirror the band the optimizer will actually use
+      // (derived from base_temperature + savings_level + time_away/home).
+      // Without this the table sits with stale custom values and looks
+      // inconsistent with what's about to be saved.
+      if (!checked) {
+        this._loadDerivedHourlyBands();
+      }
       this._errors = this._validate(this._values);
     };
     const fmtHour = (i: number) =>
