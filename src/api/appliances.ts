@@ -1,6 +1,11 @@
 import { apiFetch } from './client.js';
 
-export type ApplianceType = 'hvac' | 'ev_charger' | 'home_battery' | 'water_heater';
+export type ApplianceType =
+  | 'hvac'
+  | 'ev_charger'
+  | 'home_battery'
+  | 'water_heater'
+  | 'solar';
 
 export interface Appliance {
   id: string;

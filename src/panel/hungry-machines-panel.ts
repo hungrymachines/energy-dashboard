@@ -36,6 +36,7 @@ const TYPE_LABELS: Record<ApplianceType, string> = {
   ev_charger: 'EV',
   home_battery: 'Battery',
   water_heater: 'Water',
+  solar: 'Solar',
 };
 
 function asNumberArray(value: unknown): number[] | undefined {
@@ -1152,6 +1153,10 @@ export class HungryMachinesPanel extends LitElement {
     const schedule = appliance.schedule ?? {};
     const savings = `${Math.round(appliance.savings_pct)}% savings today`;
 
+    if (type === 'solar') {
+      return this._renderSolarCard(appliance, label);
+    }
+
     // Every appliance type gets the same user-facing optimization chart:
     // background hourly price bars + up to three line series (high limit,
     // low limit, optimizer target). The data wired in differs by type.
@@ -1230,6 +1235,40 @@ export class HungryMachinesPanel extends LitElement {
         >
           Edit constraints
         </button>
+      </div>
+    `;
+  }
+
+  /**
+   * Compact informational tile for a solar appliance.
+   *
+   * Solar is forecast-only — there's no schedule to render and no
+   * constraints to edit. The tile shows the registered system size and
+   * a short note explaining how it influences the other appliances'
+   * schedules. Keeping it on the dashboard (rather than hiding it)
+   * gives the user a confirmation that solar is registered and feeding
+   * the optimizer.
+   */
+  private _renderSolarCard(
+    appliance: ApplianceScheduleEntry,
+    label: string,
+  ): TemplateResult {
+    const fullAppliance = this._appliancesById[appliance.appliance_id];
+    const config = (fullAppliance?.config ?? {}) as Record<string, unknown>;
+    const sizeRaw = config['system_size_kw'];
+    const sizeKw = typeof sizeRaw === 'number' && Number.isFinite(sizeRaw) ? sizeRaw : null;
+    const sizeText = sizeKw !== null ? `${sizeKw.toFixed(1)} kW system` : 'Solar PV';
+    return html`
+      <div class="card" data-appliance-type="solar">
+        <div class="card-head">
+          <span class="badge" aria-hidden="true">${label}</span>
+          <span class="name">${appliance.name}</span>
+        </div>
+        <div class="savings">${sizeText}</div>
+        <p style="margin: 8px 0 0; color: var(--hm-muted, #64748B); font-size: 14px;">
+          Generation forecast is folded into pricing for HVAC, EV, battery, and water-heater
+          schedules so they prefer daylight hours when possible.
+        </p>
       </div>
     `;
   }

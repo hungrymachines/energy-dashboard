@@ -86,16 +86,22 @@ describe('hm-appliance-form', () => {
     clearTokens();
   });
 
-  it('initial render shows step 1 with four type buttons', async () => {
+  it('initial render shows step 1 with all five type buttons', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
     const el = mountForm();
     await flush(el);
 
     const root = el.shadowRoot!;
     const typeButtons = root.querySelectorAll<HTMLButtonElement>('button.type-btn');
-    expect(typeButtons.length).toBe(4);
+    expect(typeButtons.length).toBe(5);
     const types = Array.from(typeButtons).map((b) => b.dataset.type);
-    expect(types.sort()).toEqual(['ev_charger', 'home_battery', 'hvac', 'water_heater']);
+    expect(types.sort()).toEqual([
+      'ev_charger',
+      'home_battery',
+      'hvac',
+      'solar',
+      'water_heater',
+    ]);
   });
 
   it("clicking 'HVAC' advances to step 2 with HVAC-specific fields", async () => {
@@ -379,7 +385,127 @@ describe('hm-appliance-form', () => {
     el.open = true;
     await flush(el);
     const root = el.shadowRoot!;
-    expect(root.querySelectorAll('button.type-btn').length).toBe(4);
+    expect(root.querySelectorAll('button.type-btn').length).toBe(5);
     expect(root.querySelector('input[name="name"]')).toBeNull();
+  });
+
+  // -----------------------------------------------------------------------
+  // Solar — forecast-only appliance, no entity_id, system size + orientation
+  // -----------------------------------------------------------------------
+
+  it("clicking 'Solar PV' advances to step 2 with system_size_kw / azimuth / tilt and NO entity picker", async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'solar')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(root.querySelector('input[name="system_size_kw"]')).not.toBeNull();
+    expect(root.querySelector('input[name="azimuth_degrees"]')).not.toBeNull();
+    expect(root.querySelector('input[name="tilt_degrees"]')).not.toBeNull();
+    // Solar is forecast-only — no Home Assistant control surface.
+    expect(root.querySelector('select[name="entity_id"]')).toBeNull();
+    // Orientation defaults: south-facing (180), 20° tilt.
+    expect(inputByName(root, 'azimuth_degrees').value).toBe('180');
+    expect(inputByName(root, 'tilt_degrees').value).toBe('20');
+  });
+
+  it('solar: submit posts the right config shape and dispatches appliance-created', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      calls.push({ url, init });
+      return jsonResponse({ appliance_id: 'app-solar-1' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const el = mountForm();
+    await flush(el);
+
+    let createdEvent: CustomEvent | null = null;
+    el.addEventListener('appliance-created', ((e: Event) => {
+      createdEvent = e as CustomEvent;
+    }) as EventListener);
+
+    buttonByDataType(el.shadowRoot!, 'solar')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Roof PV';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    inputByName(root, 'system_size_kw').value = '8.5';
+    inputByName(root, 'system_size_kw').dispatchEvent(new Event('input', { bubbles: true }));
+    // Leave azimuth and tilt at their defaults.
+    await flush(el);
+
+    const submitBtn = buttonByText(root, 'Add');
+    expect(submitBtn!.disabled).toBe(false);
+    submitBtn!.click();
+    await flush(el);
+
+    const postCall = calls.find(
+      (c) => c.url.endsWith('/api/v1/appliances') && c.init?.method === 'POST',
+    );
+    expect(postCall).toBeDefined();
+    const body = JSON.parse(String(postCall!.init!.body));
+    expect(body.appliance_type).toBe('solar');
+    expect(body.name).toBe('Roof PV');
+    expect(body.config).toEqual({
+      system_size_kw: 8.5,
+      azimuth_degrees: 180,
+      tilt_degrees: 20,
+    });
+    // The entity_id field must NOT be on the request.
+    expect(body.config.entity_id).toBeUndefined();
+
+    expect(createdEvent).not.toBeNull();
+    expect(el.open).toBe(false);
+  });
+
+  it('solar: empty system_size_kw blocks submit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'solar')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Roof PV';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    // system_size_kw left blank.
+    await flush(el);
+
+    const submitBtn = buttonByText(root, 'Add');
+    expect(submitBtn!.disabled).toBe(true);
+  });
+
+  it('solar: out-of-range tilt is rejected', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'solar')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Roof PV';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    inputByName(root, 'system_size_kw').value = '5';
+    inputByName(root, 'system_size_kw').dispatchEvent(new Event('input', { bubbles: true }));
+    inputByName(root, 'tilt_degrees').value = '120';
+    inputByName(root, 'tilt_degrees').dispatchEvent(new Event('input', { bubbles: true }));
+    await flush(el);
+
+    const errs = Array.from(root.querySelectorAll('.field-error')).map((e) => e.textContent);
+    expect(errs.some((t) => t?.includes('Must be 0-90°'))).toBe(true);
+    expect(buttonByText(root, 'Add')!.disabled).toBe(true);
   });
 });
