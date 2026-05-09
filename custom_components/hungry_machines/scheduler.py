@@ -18,17 +18,17 @@ Apply logic per type (called once on each :00 / :30 boundary):
 * `hvac` — read `schedule.setpoint_temps[slot]` (a single per-interval
   setpoint the backend's optimizer derived and clamped to the user's
   comfort band), then call `climate.set_temperature` with that value
-  regardless of HVAC mode. The mode only changes the service-call
-  shape, not the value:
+  regardless of HVAC mode. The physical thermostat applies its own
+  deadband around whatever value we send, so we do NOT wrap the
+  setpoint in another band on this side. The mode only changes the
+  service-call shape, not the value:
     - `heat_cool` / `auto` + range support → low = high = setpoint
-      (a degenerate band that forces the thermostat to maintain the
-      exact value with no deadband leeway)
     - `cool` / `heat` → `temperature` = setpoint
     - `heat_cool` / `auto` without range support → `temperature` = setpoint
     - `off` / unknown → skip
-  Legacy schedules without `setpoint_temps` fall back to the band
-  midpoint (`high_temps` + `low_temps` / 2) so the integration keeps
-  applying *something* during the rollover.
+  If `setpoint_temps` is missing from a schedule entry, the slot is
+  skipped — there is no fallback. The backend is the single source
+  of truth for the commanded setpoint.
 
   Until v2.4.2 we passed range params unconditionally and let the
   thermostat deadband-control within the comfort band. v2.4.3 moves
@@ -168,26 +168,19 @@ def _build_hvac_payload(
 def _resolve_setpoint(schedule: dict, slot: int) -> float | None:
     """Pull the slot's commanded setpoint from the schedule.
 
-    Prefers the v2.4.3+ `setpoint_temps[slot]` (the optimizer's clamped
-    target). Falls back to the `high_temps` / `low_temps` band midpoint
-    for legacy schedules that predate the field — which gives a sane
-    target without the per-mode dance the integration used to do.
+    The backend writes `setpoint_temps[48]` (the optimizer's clamped
+    target). This is the only source of truth — the physical thermostat
+    already applies its own deadband around whatever value we send, so
+    there's no need to invent a fallback or wrap the setpoint in our
+    own band on this side.
     """
     setpoints = schedule.get("setpoint_temps")
-    if isinstance(setpoints, list) and slot < len(setpoints):
-        try:
-            return float(setpoints[slot])
-        except (TypeError, ValueError):
-            pass
-
-    highs = schedule.get("high_temps") or []
-    lows = schedule.get("low_temps") or []
-    if slot < len(highs) and slot < len(lows):
-        try:
-            return round((float(highs[slot]) + float(lows[slot])) / 2, 2)
-        except (TypeError, ValueError):
-            return None
-    return None
+    if not isinstance(setpoints, list) or slot >= len(setpoints):
+        return None
+    try:
+        return float(setpoints[slot])
+    except (TypeError, ValueError):
+        return None
 
 
 async def _apply_hvac(

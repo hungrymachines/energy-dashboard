@@ -213,18 +213,20 @@ async def test_apply_hvac_skips_when_entity_state_missing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_hvac_falls_back_to_band_midpoint_when_setpoints_absent() -> None:
-    """Legacy schedule without `setpoint_temps` → midpoint of high/low band."""
+async def test_apply_hvac_skipped_when_setpoint_temps_missing() -> None:
+    """No `setpoint_temps` in the schedule → skip the apply.
+
+    The backend is the single source of truth for the commanded
+    setpoint; if it's not in the payload, the integration must not
+    invent one (a midpoint or otherwise) — quietly skipping is
+    safer than guessing wrong.
+    """
     hass = _hass(_climate_state("cool", supports_range=False))
     entry = _entry()
-    # high=74, low=70 → midpoint=72.
     hass.data[DOMAIN] = _hvac_cache(include_setpoints=False)
     with patch.object(scheduler, "_current_slot", return_value=28):
         await scheduler.apply_current_slot(hass, entry)
-
-    hass.services.async_call.assert_awaited_once()
-    payload = hass.services.async_call.await_args.args[2]
-    assert payload == {"entity_id": "climate.living_room", "temperature": 72.0}
+    hass.services.async_call.assert_not_awaited()
 
 
 @pytest.mark.asyncio
