@@ -97,28 +97,42 @@ async def test_fetch_caches_per_appliance_with_entity_id() -> None:
     assert ev["schedule"]["intervals"][2] is True
 
 
-def _hvac_cache(entity_id: str = "climate.living_room") -> dict:
+def _hvac_cache(
+    entity_id: str = "climate.living_room",
+    setpoint: float = 71.5,
+    include_setpoints: bool = True,
+) -> dict:
+    """Build a cached schedule for one HVAC appliance.
+
+    `setpoint` is the value at slot 28 (where each apply test reads).
+    When `include_setpoints` is False, only the legacy high/low band
+    is present so we can verify the fallback path.
+    """
+    schedule: dict = {
+        "high_temps": [74.0] * 48,
+        "low_temps": [70.0] * 48,
+    }
+    if include_setpoints:
+        # Constant setpoint across the day for test simplicity.
+        schedule["setpoint_temps"] = [setpoint] * 48
     return {
         "schedule": {
             "fetched_at": "2026-05-07T05:05:00+00:00",
             "hvac-1": {
                 "appliance_type": "hvac",
                 "entity_id": entity_id,
-                "schedule": {
-                    "high_temps": [74.0] * 48,
-                    "low_temps": [70.0] * 48,
-                },
+                "schedule": schedule,
             },
         }
     }
 
 
 @pytest.mark.asyncio
-async def test_apply_hvac_heat_cool_with_range_support_uses_target_temp_low_high() -> None:
-    """heat_cool mode + TARGET_TEMPERATURE_RANGE bit set → range payload."""
+async def test_apply_hvac_heat_cool_with_range_uses_degenerate_band_at_setpoint() -> None:
+    """heat_cool + range support → low = high = setpoint (no deadband leeway)."""
     hass = _hass(_climate_state("heat_cool", supports_range=True))
     entry = _entry()
-    hass.data[DOMAIN] = _hvac_cache()
+    hass.data[DOMAIN] = _hvac_cache(setpoint=71.5)
     with patch.object(scheduler, "_current_slot", return_value=28):
         await scheduler.apply_current_slot(hass, entry)
 
@@ -127,38 +141,39 @@ async def test_apply_hvac_heat_cool_with_range_support_uses_target_temp_low_high
     assert args[0] == "climate"
     assert args[1] == "set_temperature"
     payload = args[2]
-    assert payload["entity_id"] == "climate.living_room"
-    assert payload["target_temp_high"] == 74.0
-    assert payload["target_temp_low"] == 70.0
-    assert "temperature" not in payload
+    assert payload == {
+        "entity_id": "climate.living_room",
+        "target_temp_low": 71.5,
+        "target_temp_high": 71.5,
+    }
 
 
 @pytest.mark.asyncio
-async def test_apply_hvac_cool_mode_uses_single_temperature_at_high_limit() -> None:
-    """cool mode (single setpoint) → temperature = high (the cooling target)."""
+async def test_apply_hvac_cool_mode_uses_setpoint_directly() -> None:
+    """cool mode → temperature = setpoint (NOT the comfort high)."""
     hass = _hass(_climate_state("cool", supports_range=False))
     entry = _entry()
-    hass.data[DOMAIN] = _hvac_cache()
+    hass.data[DOMAIN] = _hvac_cache(setpoint=71.5)
     with patch.object(scheduler, "_current_slot", return_value=28):
         await scheduler.apply_current_slot(hass, entry)
 
     hass.services.async_call.assert_awaited_once()
     payload = hass.services.async_call.await_args.args[2]
-    assert payload == {"entity_id": "climate.living_room", "temperature": 74.0}
+    assert payload == {"entity_id": "climate.living_room", "temperature": 71.5}
 
 
 @pytest.mark.asyncio
-async def test_apply_hvac_heat_mode_uses_single_temperature_at_low_limit() -> None:
-    """heat mode (single setpoint) → temperature = low (the heating target)."""
+async def test_apply_hvac_heat_mode_uses_setpoint_directly() -> None:
+    """heat mode → temperature = setpoint (NOT the comfort low)."""
     hass = _hass(_climate_state("heat", supports_range=False))
     entry = _entry()
-    hass.data[DOMAIN] = _hvac_cache()
+    hass.data[DOMAIN] = _hvac_cache(setpoint=71.5)
     with patch.object(scheduler, "_current_slot", return_value=28):
         await scheduler.apply_current_slot(hass, entry)
 
     hass.services.async_call.assert_awaited_once()
     payload = hass.services.async_call.await_args.args[2]
-    assert payload == {"entity_id": "climate.living_room", "temperature": 70.0}
+    assert payload == {"entity_id": "climate.living_room", "temperature": 71.5}
 
 
 @pytest.mark.asyncio
@@ -173,17 +188,17 @@ async def test_apply_hvac_off_mode_skips_service_call() -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_hvac_auto_mode_without_range_falls_back_to_midpoint() -> None:
-    """auto mode but the entity doesn't expose range → midpoint single setpoint."""
+async def test_apply_hvac_auto_mode_without_range_uses_setpoint_as_single_temp() -> None:
+    """auto mode without range support → single temperature = setpoint."""
     hass = _hass(_climate_state("auto", supports_range=False))
     entry = _entry()
-    hass.data[DOMAIN] = _hvac_cache()
+    hass.data[DOMAIN] = _hvac_cache(setpoint=71.5)
     with patch.object(scheduler, "_current_slot", return_value=28):
         await scheduler.apply_current_slot(hass, entry)
 
     hass.services.async_call.assert_awaited_once()
     payload = hass.services.async_call.await_args.args[2]
-    assert payload == {"entity_id": "climate.living_room", "temperature": 72.0}
+    assert payload == {"entity_id": "climate.living_room", "temperature": 71.5}
 
 
 @pytest.mark.asyncio
@@ -195,6 +210,21 @@ async def test_apply_hvac_skips_when_entity_state_missing() -> None:
     with patch.object(scheduler, "_current_slot", return_value=28):
         await scheduler.apply_current_slot(hass, entry)
     hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_hvac_falls_back_to_band_midpoint_when_setpoints_absent() -> None:
+    """Legacy schedule without `setpoint_temps` → midpoint of high/low band."""
+    hass = _hass(_climate_state("cool", supports_range=False))
+    entry = _entry()
+    # high=74, low=70 → midpoint=72.
+    hass.data[DOMAIN] = _hvac_cache(include_setpoints=False)
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    hass.services.async_call.assert_awaited_once()
+    payload = hass.services.async_call.await_args.args[2]
+    assert payload == {"entity_id": "climate.living_room", "temperature": 72.0}
 
 
 @pytest.mark.asyncio
