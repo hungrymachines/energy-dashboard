@@ -16,8 +16,18 @@ Cache shape (`hass.data[DOMAIN]['schedule']`):
 Apply logic per type (called once on each :00 / :30 boundary):
 
 * `hvac` — read `schedule.high_temps[slot]` and `schedule.low_temps[slot]`,
-  call `climate.set_temperature` with `target_temp_high` /
-  `target_temp_low` on the appliance's `entity_id`.
+  then call `climate.set_temperature` in the shape the thermostat
+  actually accepts:
+    - `heat_cool` / `auto` mode WITH range support → `target_temp_low`
+      and `target_temp_high` (the comfort band)
+    - `cool` mode → `temperature` set to the HIGH limit (the temp at
+      which AC kicks on)
+    - `heat` mode → `temperature` set to the LOW limit (the temp at
+      which heat kicks on)
+    - `off` / unknown → skip
+  Until v2.4.2 we passed the range params unconditionally, which
+  raised `ServiceValidationError` on every single-setpoint thermostat
+  in cool or heat mode.
 * `ev_charger` / `home_battery` — read `schedule.intervals[slot]`
   (boolean), call `switch.turn_on` or `switch.turn_off` on the entity.
 * `water_heater` — same boolean → switch service mapping.
@@ -87,6 +97,67 @@ def _current_slot(now: datetime | None = None) -> int:
     return (now.hour * 2) + (1 if now.minute >= 30 else 0)
 
 
+# homeassistant.components.climate.const.ClimateEntityFeature bitmasks.
+# Hard-coded to avoid importing climate (keeps this module light + lets
+# tests run against a stubbed homeassistant package without pulling in
+# the climate platform).
+_FEATURE_TARGET_TEMPERATURE = 1
+_FEATURE_TARGET_TEMPERATURE_RANGE = 2
+
+# HA HVACMode string values that accept range setpoints (low + high).
+# Single-setpoint modes (`cool`, `heat`) require `temperature` instead.
+_RANGE_HVAC_MODES = frozenset({"heat_cool", "auto"})
+
+
+def _build_hvac_payload(
+    entity_id: str,
+    state: object | None,
+    high: float,
+    low: float,
+) -> dict | None:
+    """Pick the climate.set_temperature payload shape for this thermostat.
+
+    Returns the kwargs dict, or None when the entity is missing / off /
+    in an unknown mode (caller skips the service call).
+    """
+    if state is None:
+        _LOGGER.info(
+            "Hungry Machines HVAC: entity %s not found, skipping", entity_id
+        )
+        return None
+    raw_state = getattr(state, "state", None) or ""
+    hvac_mode = str(raw_state).lower()
+    attrs = getattr(state, "attributes", None) or {}
+    try:
+        features = int(attrs.get("supported_features", 0))
+    except (TypeError, ValueError):
+        features = 0
+    supports_range = bool(features & _FEATURE_TARGET_TEMPERATURE_RANGE)
+
+    base = {"entity_id": entity_id}
+    if hvac_mode in _RANGE_HVAC_MODES and supports_range:
+        return {**base, "target_temp_low": low, "target_temp_high": high}
+    if hvac_mode == "cool":
+        # AC kicks on above setpoint — keep home AT OR BELOW the high
+        # comfort limit by setting the cooling target to high.
+        return {**base, "temperature": high}
+    if hvac_mode == "heat":
+        # Heat kicks on below setpoint — keep home AT OR ABOVE the low
+        # comfort limit by setting the heating target to low.
+        return {**base, "temperature": low}
+    if hvac_mode in _RANGE_HVAC_MODES:
+        # Range mode but entity doesn't expose range support — fall back
+        # to a single setpoint at the band midpoint. Not ideal, but it
+        # keeps a deadband-style thermostat hovering inside the band.
+        return {**base, "temperature": round((high + low) / 2, 2)}
+    _LOGGER.info(
+        "Hungry Machines HVAC: %s is in mode '%s', skipping setpoint apply",
+        entity_id,
+        hvac_mode or "(unknown)",
+    )
+    return None
+
+
 async def _apply_hvac(
     hass: HomeAssistant, entity_id: str, schedule: dict, slot: int
 ) -> None:
@@ -101,15 +172,17 @@ async def _apply_hvac(
             entity_id,
         )
         return
+
+    state = hass.states.get(entity_id) if hass.states else None
+    payload = _build_hvac_payload(entity_id, state, highs[slot], lows[slot])
+    if payload is None:
+        return
+
     try:
         await hass.services.async_call(
             "climate",
             "set_temperature",
-            {
-                "entity_id": entity_id,
-                "target_temp_low": lows[slot],
-                "target_temp_high": highs[slot],
-            },
+            payload,
             blocking=False,
         )
     except Exception as err:  # noqa: BLE001
