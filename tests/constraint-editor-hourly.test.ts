@@ -93,11 +93,10 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
   it('(a) renders Hourly bands section closed; clicking toggle reveals 24 rows derived from base+savings+home/away', async () => {
     captureFetch(jsonResponse({}));
 
-    // Provide explicit prefs so the derived band is deterministic.
-    // base=72, savings=3 (offset 12), auto mode, away 08:00-17:00.
-    // Expected (auto mode):
-    //   away hour: high = base + offset/2 = 78, low = base - offset/2 = 66
-    //   home hour: high = base + 1.5      = 73.5, low = base - 1.5     = 70.5
+    // base=72, savings=3 (offset 12), away 08:00-17:00.
+    // The band is symmetric and mode-independent:
+    //   home hour: base ± 1.0 → 71 / 73
+    //   away hour: base ± 12  → 60 / 84
     const el = mountEditor({
       applianceId: 'hvac-1',
       applianceType: 'hvac',
@@ -125,16 +124,16 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
     const rows = root.querySelectorAll<HTMLTableRowElement>('tr[data-row]');
     expect(rows.length).toBe(24);
 
-    // Hour 0 is HOME time (before 08:00) → tight band base ± 1.5.
+    // Hour 0 is HOME time (before 08:00) → tight ±1.0 band.
     const low0 = root.querySelector<HTMLInputElement>('input[name="hourly_low_0"]')!;
     const high0 = root.querySelector<HTMLInputElement>('input[name="hourly_high_0"]')!;
-    expect(low0.value).toBe('70.5');
-    expect(high0.value).toBe('73.5');
-    // Hour 12 is AWAY (08:00-17:00) → widened by savings_offset/2 in auto mode.
+    expect(low0.value).toBe('71');
+    expect(high0.value).toBe('73');
+    // Hour 12 is AWAY (08:00-17:00) → wide ±12 band (savings level 3).
     const low12 = root.querySelector<HTMLInputElement>('input[name="hourly_low_12"]')!;
     const high12 = root.querySelector<HTMLInputElement>('input[name="hourly_high_12"]')!;
-    expect(low12.value).toBe('66');
-    expect(high12.value).toBe('78');
+    expect(low12.value).toBe('60');
+    expect(high12.value).toBe('84');
 
     // Checkbox is unchecked by default — the user has not opted into hourly overrides.
     const checkbox = root.querySelector<HTMLInputElement>(
@@ -207,12 +206,14 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
     expect(body.hourly_high_temps_f.length).toBe(24);
     expect(body.hourly_low_temps_f[0]).toBe(70);
     expect(body.hourly_high_temps_f[0]).toBe(74);
-    // Untouched rows now reflect the derived band (auto mode, savings=3,
-    // base=72, away 08:00-18:00). Home hours: 70.5 / 73.5; away: 66 / 78.
+    // Untouched rows reflect the symmetric mode-independent band
+    // (savings=3, base=72, away 08:00-18:00):
+    //   home hours → 71 / 73 (base ± 1.0)
+    //   away hours → 60 / 84 (base ± 12)
     for (let i = 1; i < 24; i++) {
       const isAway = i >= 8 && i < 18;
-      const expectedLow = isAway ? 66 : 70.5;
-      const expectedHigh = isAway ? 78 : 73.5;
+      const expectedLow = isAway ? 60 : 71;
+      const expectedHigh = isAway ? 84 : 73;
       expect(body.hourly_low_temps_f[i]).toBe(expectedLow);
       expect(body.hourly_high_temps_f[i]).toBe(expectedHigh);
     }

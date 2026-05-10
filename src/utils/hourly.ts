@@ -38,12 +38,17 @@ export function hasCustomRates(rates: { source: 'custom' | 'zone' }): boolean {
   return rates.source === 'custom';
 }
 
-// Mirrors `app/services/comfort.py: SAVINGS_OFFSETS` on the backend. When
-// the user is NOT using hourly overrides, the optimizer derives the
-// comfort band from base_temperature + savings_level + time_away/home,
+// Mirrors `app/services/comfort.py: SAVINGS_OFFSETS` on the backend.
+// When the user is NOT using hourly overrides, the optimizer derives
+// the comfort band from base_temperature + savings_level + time_away/home,
 // and the constraint editor shows those derived values in the disabled
 // hourly table. Keep this map in sync with the backend's.
 const SAVINGS_OFFSETS: Record<number, number> = { 1: 2.0, 2: 6.0, 3: 12.0 };
+
+// Tight tolerance (°F) when the user is at home — applied symmetrically
+// to high and low limits regardless of mode. Keep in sync with
+// `app/services/comfort.py: HOME_BAND_OFFSET`.
+const HOME_BAND_OFFSET = 1.0;
 
 export type ComfortMode = 'cool' | 'heat' | 'auto';
 
@@ -63,46 +68,40 @@ function isAwayHour(hour: number, awayHour: number, homeHour: number): boolean {
 }
 
 /**
- * Derive a 24-hour comfort band from the legacy preference fields, in the
- * same shape the constraint editor's hourly table renders. Used to
+ * Derive a 24-hour comfort band from the legacy preference fields, in
+ * the same shape the constraint editor's hourly table renders. Used to
  * populate the disabled table when the user has just unchecked
  * "Use my hourly bands" — gives them a preview of what the optimizer
  * will fall back to.
  *
  * Mirrors `app/services/comfort.py: build_comfort_band`. Returns one
  * value per HOUR (24 elements), not per half-hour interval.
+ *
+ * Band shape is symmetric and mode-independent:
+ *   home hours → base ± HOME_BAND_OFFSET (tight, user is present)
+ *   away hours → base ± SAVINGS_OFFSETS[level] (wide, lets the
+ *                 optimizer pre-cool OR pre-heat depending on prices)
  */
 export function deriveHourlyComfortBand(opts: {
   base_temperature: number;
   savings_level: number;
   time_away: string;
   time_home: string;
+  // Kept for callsite compatibility — the mode no longer changes the
+  // band shape (the optimizer uses it separately to choose actions).
   mode: ComfortMode;
 }): { high: number[]; low: number[] } {
   const base = Number.isFinite(opts.base_temperature) ? opts.base_temperature : 72;
-  const offset = SAVINGS_OFFSETS[opts.savings_level] ?? 2.0;
+  const awayOffset = SAVINGS_OFFSETS[opts.savings_level] ?? 2.0;
   const awayHour = timeStrToHour(opts.time_away);
   const homeHour = timeStrToHour(opts.time_home);
 
   const high: number[] = new Array(24);
   const low: number[] = new Array(24);
   for (let h = 0; h < 24; h++) {
-    const away = isAwayHour(h, awayHour, homeHour);
-    if (away) {
-      if (opts.mode === 'cool') {
-        high[h] = base + offset;
-        low[h] = base - 1.5;
-      } else if (opts.mode === 'heat') {
-        high[h] = base + 1.5;
-        low[h] = base - offset;
-      } else {
-        high[h] = base + offset / 2;
-        low[h] = base - offset / 2;
-      }
-    } else {
-      high[h] = base + 1.5;
-      low[h] = base - 1.5;
-    }
+    const offset = isAwayHour(h, awayHour, homeHour) ? awayOffset : HOME_BAND_OFFSET;
+    high[h] = base + offset;
+    low[h] = base - offset;
   }
   return { high, low };
 }

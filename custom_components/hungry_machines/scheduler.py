@@ -15,9 +15,25 @@ Cache shape (`hass.data[DOMAIN]['schedule']`):
 
 Apply logic per type (called once on each :00 / :30 boundary):
 
-* `hvac` — read `schedule.high_temps[slot]` and `schedule.low_temps[slot]`,
-  call `climate.set_temperature` with `target_temp_high` /
-  `target_temp_low` on the appliance's `entity_id`.
+* `hvac` — read `schedule.setpoint_temps[slot]` (a single per-interval
+  setpoint the backend's optimizer derived and clamped to the user's
+  comfort band), then call `climate.set_temperature` with that value
+  regardless of HVAC mode. The physical thermostat applies its own
+  deadband around whatever value we send, so we do NOT wrap the
+  setpoint in another band on this side. The mode only changes the
+  service-call shape, not the value:
+    - `heat_cool` / `auto` + range support → low = high = setpoint
+    - `cool` / `heat` → `temperature` = setpoint
+    - `heat_cool` / `auto` without range support → `temperature` = setpoint
+    - `off` / unknown → skip
+  If `setpoint_temps` is missing from a schedule entry, the slot is
+  skipped — there is no fallback. The backend is the single source
+  of truth for the commanded setpoint.
+
+  Until v2.4.2 we passed range params unconditionally and let the
+  thermostat deadband-control within the comfort band. v2.4.3 moves
+  the control authority into the backend so the home tracks the
+  optimizer's plan tightly.
 * `ev_charger` / `home_battery` — read `schedule.intervals[slot]`
   (boolean), call `switch.turn_on` or `switch.turn_off` on the entity.
 * `water_heater` — same boolean → switch service mapping.
@@ -87,29 +103,108 @@ def _current_slot(now: datetime | None = None) -> int:
     return (now.hour * 2) + (1 if now.minute >= 30 else 0)
 
 
+# homeassistant.components.climate.const.ClimateEntityFeature bitmasks.
+# Hard-coded to avoid importing climate (keeps this module light + lets
+# tests run against a stubbed homeassistant package without pulling in
+# the climate platform).
+_FEATURE_TARGET_TEMPERATURE = 1
+_FEATURE_TARGET_TEMPERATURE_RANGE = 2
+
+# HA HVACMode string values that accept range setpoints (low + high).
+# Single-setpoint modes (`cool`, `heat`) require `temperature` instead.
+_RANGE_HVAC_MODES = frozenset({"heat_cool", "auto"})
+
+
+def _build_hvac_payload(
+    entity_id: str,
+    state: object | None,
+    setpoint: float,
+) -> dict | None:
+    """Build the climate.set_temperature payload for a single setpoint.
+
+    The backend computes the optimal setpoint per 30-min interval and
+    clamps it to the user's comfort band, so the integration's job is
+    just to push that exact value to the thermostat — no deadband
+    leeway, no per-mode high/low band. Service-call shape still depends
+    on what the entity accepts:
+
+      heat_cool / auto + range support → low = high = setpoint
+      cool / heat                      → temperature = setpoint
+      heat_cool / auto, no range       → temperature = setpoint
+      off / unknown                    → skip (no setpoint applied)
+
+    Returns the kwargs dict, or None when the entity is missing / off /
+    in an unknown mode.
+    """
+    if state is None:
+        _LOGGER.info(
+            "Hungry Machines HVAC: entity %s not found, skipping", entity_id
+        )
+        return None
+    raw_state = getattr(state, "state", None) or ""
+    hvac_mode = str(raw_state).lower()
+    attrs = getattr(state, "attributes", None) or {}
+    try:
+        features = int(attrs.get("supported_features", 0))
+    except (TypeError, ValueError):
+        features = 0
+    supports_range = bool(features & _FEATURE_TARGET_TEMPERATURE_RANGE)
+
+    base = {"entity_id": entity_id}
+    if hvac_mode in _RANGE_HVAC_MODES and supports_range:
+        # Tight degenerate band — same value for both sides forces the
+        # thermostat to maintain the exact setpoint.
+        return {**base, "target_temp_low": setpoint, "target_temp_high": setpoint}
+    if hvac_mode in ("cool", "heat") or hvac_mode in _RANGE_HVAC_MODES:
+        return {**base, "temperature": setpoint}
+    _LOGGER.info(
+        "Hungry Machines HVAC: %s is in mode '%s', skipping setpoint apply",
+        entity_id,
+        hvac_mode or "(unknown)",
+    )
+    return None
+
+
+def _resolve_setpoint(schedule: dict, slot: int) -> float | None:
+    """Pull the slot's commanded setpoint from the schedule.
+
+    The backend writes `setpoint_temps[48]` (the optimizer's clamped
+    target). This is the only source of truth — the physical thermostat
+    already applies its own deadband around whatever value we send, so
+    there's no need to invent a fallback or wrap the setpoint in our
+    own band on this side.
+    """
+    setpoints = schedule.get("setpoint_temps")
+    if not isinstance(setpoints, list) or slot >= len(setpoints):
+        return None
+    try:
+        return float(setpoints[slot])
+    except (TypeError, ValueError):
+        return None
+
+
 async def _apply_hvac(
     hass: HomeAssistant, entity_id: str, schedule: dict, slot: int
 ) -> None:
-    highs = schedule.get("high_temps") or []
-    lows = schedule.get("low_temps") or []
-    if slot >= len(highs) or slot >= len(lows):
+    setpoint = _resolve_setpoint(schedule, slot)
+    if setpoint is None:
         _LOGGER.warning(
-            "Hungry Machines HVAC slot %s out of range (high=%d low=%d) for %s",
+            "Hungry Machines HVAC slot %s: no setpoint available for %s",
             slot,
-            len(highs),
-            len(lows),
             entity_id,
         )
         return
+
+    state = hass.states.get(entity_id) if hass.states else None
+    payload = _build_hvac_payload(entity_id, state, setpoint)
+    if payload is None:
+        return
+
     try:
         await hass.services.async_call(
             "climate",
             "set_temperature",
-            {
-                "entity_id": entity_id,
-                "target_temp_low": lows[slot],
-                "target_temp_high": highs[slot],
-            },
+            payload,
             blocking=False,
         )
     except Exception as err:  # noqa: BLE001
