@@ -1,13 +1,19 @@
 """Tests for custom_components.hungry_machines.scheduler (v2.0)."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from hungry_machines import scheduler
 from hungry_machines.const import DOMAIN
+
+
+def _fresh_ts() -> str:
+    """ISO8601 timestamp recent enough that the cache won't be flagged
+    as stale by `_cache_age_seconds` / `_CACHE_MAX_AGE_SECONDS`."""
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _hass(climate_state: object | None = None) -> MagicMock:
@@ -117,7 +123,7 @@ def _hvac_cache(
         schedule["setpoint_temps"] = [setpoint] * 48
     return {
         "schedule": {
-            "fetched_at": "2026-05-07T05:05:00+00:00",
+            "fetched_at": _fresh_ts(),
             "hvac-1": {
                 "appliance_type": "hvac",
                 "entity_id": entity_id,
@@ -235,7 +241,7 @@ async def test_apply_switch_calls_turn_on_when_interval_true() -> None:
     entry = _entry()
     hass.data[DOMAIN] = {
         "schedule": {
-            "fetched_at": "x",
+            "fetched_at": _fresh_ts(),
             "ev-1": {
                 "appliance_type": "ev_charger",
                 "entity_id": "switch.tesla",
@@ -259,7 +265,7 @@ async def test_apply_switch_calls_turn_off_when_interval_false() -> None:
     entry = _entry()
     hass.data[DOMAIN] = {
         "schedule": {
-            "fetched_at": "x",
+            "fetched_at": _fresh_ts(),
             "ev-1": {
                 "appliance_type": "ev_charger",
                 "entity_id": "switch.tesla",
@@ -280,7 +286,7 @@ async def test_apply_skipped_when_entity_id_missing() -> None:
     entry = _entry()
     hass.data[DOMAIN] = {
         "schedule": {
-            "fetched_at": "x",
+            "fetched_at": _fresh_ts(),
             "broken-1": {
                 "appliance_type": "hvac",
                 "entity_id": None,
@@ -300,7 +306,7 @@ async def test_apply_skipped_when_schedule_empty() -> None:
     entry = _entry()
     hass.data[DOMAIN] = {
         "schedule": {
-            "fetched_at": "x",
+            "fetched_at": _fresh_ts(),
             "hvac-1": {
                 "appliance_type": "hvac",
                 "entity_id": "climate.test",
@@ -314,12 +320,172 @@ async def test_apply_skipped_when_schedule_empty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_no_cache_skipped() -> None:
+async def test_apply_no_cache_triggers_refresh_then_skips_when_api_returns_nothing() -> None:
+    """No cache → try refresh; refresh returns None → skip.
+
+    The self-heal logic always attempts a fetch before giving up; it
+    only skips after the refresh leaves the cache empty.
+    """
     hass = _hass()
     entry = _entry()
     hass.data[DOMAIN] = {}  # no 'schedule' key
-    await scheduler.apply_current_slot(hass, entry)
+    with patch.object(scheduler.api, "get_schedules", AsyncMock(return_value=None)):
+        await scheduler.apply_current_slot(hass, entry)
     hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_refreshes_when_cache_lacks_setpoint_temps() -> None:
+    """Cache has an HVAC schedule but no setpoint_temps → refresh, then apply.
+
+    Simulates the post-deploy state where the integration was upgraded
+    before the API caught up: the cached schedule is the API's old
+    shape. After the refresh sees the new shape, apply proceeds.
+    """
+    hass = _hass(_climate_state("cool", supports_range=False))
+    entry = _entry()
+    # Pre-populate cache WITHOUT setpoint_temps (the stale state).
+    hass.data[DOMAIN] = _hvac_cache(include_setpoints=False)
+
+    # Refreshed body now carries setpoint_temps.
+    refreshed_body = {
+        "date": "2026-05-09",
+        "appliances": [
+            {
+                "appliance_id": "hvac-1",
+                "appliance_type": "hvac",
+                "name": "AC",
+                "schedule": {
+                    "intervals": list(range(48)),
+                    "high_temps": [74.0] * 48,
+                    "low_temps": [70.0] * 48,
+                    "setpoint_temps": [72.0] * 48,
+                    "mode": "cool",
+                },
+                "savings_pct": 18.5,
+                "source": "optimization",
+                "entities": {"entity_id": "climate.living_room"},
+            },
+        ],
+    }
+    with (
+        patch.object(scheduler.api, "get_schedules", AsyncMock(return_value=refreshed_body)),
+        patch.object(scheduler, "_current_slot", return_value=28),
+    ):
+        await scheduler.apply_current_slot(hass, entry)
+
+    # After refresh the cache has setpoint_temps and the apply lands.
+    hass.services.async_call.assert_awaited_once()
+    payload = hass.services.async_call.await_args.args[2]
+    assert payload == {"entity_id": "climate.living_room", "temperature": 72.0}
+
+
+@pytest.mark.asyncio
+async def test_apply_refreshes_when_cache_is_old() -> None:
+    """Cache `fetched_at` older than _CACHE_MAX_AGE_SECONDS → refresh."""
+    hass = _hass(_climate_state("cool", supports_range=False))
+    entry = _entry()
+    stale_ts = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
+    cache = _hvac_cache()
+    cache["schedule"]["fetched_at"] = stale_ts
+    hass.data[DOMAIN] = cache
+
+    fresh_body = {
+        "date": "2026-05-09",
+        "appliances": [
+            {
+                "appliance_id": "hvac-1",
+                "appliance_type": "hvac",
+                "name": "AC",
+                "schedule": {
+                    "intervals": list(range(48)),
+                    "high_temps": [74.0] * 48,
+                    "low_temps": [70.0] * 48,
+                    "setpoint_temps": [69.0] * 48,
+                    "mode": "cool",
+                },
+                "savings_pct": 22.0,
+                "source": "optimization",
+                "entities": {"entity_id": "climate.living_room"},
+            },
+        ],
+    }
+    fetch_spy = AsyncMock(return_value=fresh_body)
+    with (
+        patch.object(scheduler.api, "get_schedules", fetch_spy),
+        patch.object(scheduler, "_current_slot", return_value=28),
+    ):
+        await scheduler.apply_current_slot(hass, entry)
+
+    fetch_spy.assert_awaited_once()
+    # Apply uses the refreshed cache's setpoint (69.0), not the stale cache's (71.5).
+    payload = hass.services.async_call.await_args.args[2]
+    assert payload == {"entity_id": "climate.living_room", "temperature": 69.0}
+
+
+@pytest.mark.asyncio
+async def test_apply_does_not_refresh_when_cache_is_fresh_and_complete() -> None:
+    """Fresh cache + setpoint_temps present → no refresh fetch."""
+    hass = _hass(_climate_state("cool", supports_range=False))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(setpoint=71.5)
+
+    fetch_spy = AsyncMock()
+    with (
+        patch.object(scheduler.api, "get_schedules", fetch_spy),
+        patch.object(scheduler, "_current_slot", return_value=28),
+    ):
+        await scheduler.apply_current_slot(hass, entry)
+
+    fetch_spy.assert_not_awaited()
+    hass.services.async_call.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_apply_logs_warning_when_setpoints_still_missing_after_refresh(caplog) -> None:
+    """If refresh returns a schedule that STILL lacks setpoint_temps —
+    the API hasn't been deployed with the setpoint emission yet —
+    log a warning that points at the version mismatch."""
+    import logging
+    caplog.set_level(logging.WARNING, logger="custom_components.hungry_machines.scheduler")
+
+    hass = _hass(_climate_state("cool", supports_range=False))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(include_setpoints=False)
+
+    # Refresh returns a body that still lacks setpoint_temps.
+    stale_body = {
+        "date": "2026-05-09",
+        "appliances": [
+            {
+                "appliance_id": "hvac-1",
+                "appliance_type": "hvac",
+                "name": "AC",
+                "schedule": {
+                    "intervals": list(range(48)),
+                    "high_temps": [74.0] * 48,
+                    "low_temps": [70.0] * 48,
+                    "mode": "cool",
+                },
+                "savings_pct": 18.5,
+                "source": "optimization",
+                "entities": {"entity_id": "climate.living_room"},
+            },
+        ],
+    }
+    with (
+        patch.object(scheduler.api, "get_schedules", AsyncMock(return_value=stale_body)),
+        patch.object(scheduler, "_current_slot", return_value=28),
+    ):
+        await scheduler.apply_current_slot(hass, entry)
+
+    # Apply skips (no setpoint), AND a clear warning is emitted.
+    hass.services.async_call.assert_not_awaited()
+    assert any(
+        "older version" in rec.message
+        for rec in caplog.records
+        if rec.levelno >= logging.WARNING
+    )
 
 
 def test_current_slot_at_midnight_is_zero() -> None:
