@@ -241,11 +241,89 @@ async def _apply_switch(
         )
 
 
+# Re-fetch the schedule cache when it gets older than this. Picks up
+# fresh nightly runs without waiting for the daily 05:05-local refresh,
+# and recovers from cases where the integration was upgraded before the
+# API caught up. 90 minutes is short enough to self-heal within ~3 apply
+# cycles, long enough to keep the API call rate ~1/hr per user.
+_CACHE_MAX_AGE_SECONDS = 90 * 60
+
+
+def _cache_age_seconds(cache: dict) -> float | None:
+    """How old is the cached schedule, in seconds. None if unparseable."""
+    raw = cache.get("fetched_at")
+    if not raw:
+        return None
+    try:
+        if isinstance(raw, datetime):
+            fetched_at = raw
+        else:
+            fetched_at = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if fetched_at.tzinfo is None:
+            fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    return (datetime.now(timezone.utc) - fetched_at).total_seconds()
+
+
+def _cache_lacks_setpoints(cache: dict) -> bool:
+    """True iff any HVAC appliance in the cache has a non-empty schedule
+    that is missing the `setpoint_temps` array.
+
+    This signals stale data — the cache predates the backend deploy
+    that started writing setpoint_temps. An empty schedule (source
+    `defaults`) does NOT trigger a refresh; it's already handled
+    further down by the empty-schedule skip.
+    """
+    for aid, info in cache.items():
+        if aid == "fetched_at" or not isinstance(info, dict):
+            continue
+        if info.get("appliance_type") != "hvac":
+            continue
+        schedule = info.get("schedule") or {}
+        if not schedule:
+            continue
+        if not isinstance(schedule.get("setpoint_temps"), list):
+            return True
+    return False
+
+
 async def apply_current_slot(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> None:
     """Walk the cached schedule and apply each appliance's current-slot value."""
     cache = _domain_data(hass).get("schedule")
+
+    # Self-heal: refresh the cache when it's missing, stale, or doesn't
+    # carry setpoint_temps for an HVAC appliance. Avoids waiting for
+    # the once-a-day refresh after a nightly run finishes or the API
+    # gets a new version.
+    needs_refresh = False
+    if not cache:
+        needs_refresh = True
+    else:
+        age = _cache_age_seconds(cache)
+        if age is None or age > _CACHE_MAX_AGE_SECONDS:
+            needs_refresh = True
+        elif _cache_lacks_setpoints(cache):
+            _LOGGER.info(
+                "Hungry Machines: cached HVAC schedule lacks setpoint_temps; "
+                "refreshing before apply"
+            )
+            needs_refresh = True
+
+    if needs_refresh:
+        await fetch_today_schedule(hass, entry)
+        cache = _domain_data(hass).get("schedule")
+        if cache and _cache_lacks_setpoints(cache):
+            _LOGGER.warning(
+                "Hungry Machines: HVAC schedule still has no setpoint_temps "
+                "after refresh — the API may be running an older version that "
+                "predates per-interval setpoint emission. Trigger a "
+                "re-optimization (edit + Save any constraint) once the API is "
+                "updated, or wait for tonight's nightly run."
+            )
+
     if not cache:
         _LOGGER.info(
             "Hungry Machines: no schedule cached, skipping apply"
