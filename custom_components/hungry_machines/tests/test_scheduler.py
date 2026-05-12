@@ -103,6 +103,35 @@ async def test_fetch_caches_per_appliance_with_entity_id() -> None:
     assert ev["schedule"]["intervals"][2] is True
 
 
+@pytest.mark.asyncio
+async def test_fetch_publishes_schedule_states_for_dev_tools() -> None:
+    """Each appliance gets a `sensor.hungry_machines_<slug>_schedule`
+    state with the full schedule in attributes, so users can see the
+    full 48-slot plan in HA Dev Tools → States."""
+    hass = _hass()
+    entry = _entry()
+    with patch.object(
+        scheduler.api, "get_schedules", AsyncMock(return_value=_schedules_body())
+    ):
+        await scheduler.fetch_today_schedule(hass, entry)
+
+    calls = hass.states.async_set.call_args_list
+    # One state per appliance.
+    entity_ids = [call.args[0] for call in calls]
+    assert any(e.startswith("sensor.hungry_machines_") and e.endswith("_schedule") for e in entity_ids)
+    # Find the HVAC one and assert its attributes carry the 48-slot arrays.
+    hvac_call = next(
+        c for c in calls if c.args[2].get("appliance_id") == "hvac-1"
+    )
+    attrs = hvac_call.args[2]
+    assert attrs["appliance_type"] == "hvac"
+    assert attrs["target_entity"] == "climate.living_room"
+    assert attrs["mode"] == "cool"
+    assert len(attrs["high_temps"]) == 48
+    assert len(attrs["low_temps"]) == 48
+    assert "current_slot" in attrs
+
+
 def _hvac_cache(
     entity_id: str = "climate.living_room",
     setpoint: float = 71.5,
