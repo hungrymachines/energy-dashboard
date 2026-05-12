@@ -1,0 +1,10 @@
+apply_now:
+  name: Apply schedule now
+  description: >-
+    Re-fetch today's optimized schedule from the Hungry Machines API and
+    immediately apply the current 30-minute slot's setpoint to each
+    registered appliance (climate.set_temperature for HVAC, switch on/off
+    for EV/battery/water heater). The Hungry Machines panel calls this
+    after a constraint save so the AC sees the new schedule without
+    waiting for the next :00/:30 boundary; it is also safe to call
+    manually from Developer Tools → Services.
