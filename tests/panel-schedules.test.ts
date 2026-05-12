@@ -541,6 +541,100 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
   });
 });
 
+describe('hungry-machines-panel HVAC chart target line source (v2.5.1)', () => {
+  beforeEach(() => {
+    setApiBase('https://api.example.test');
+    localStorage.clear();
+    clearTokens();
+    setAuthState({});
+    vi.spyOn(authStore, 'hydrate').mockImplementation(async () => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    document.body.innerHTML = '';
+    localStorage.clear();
+    clearTokens();
+    setAuthState({});
+  });
+
+  it('prefers schedule.setpoint_temps over temp_trajectory for the HVAC chart target line', async () => {
+    const setpoints = Array<number>(48).fill(72);
+    const trajectory = Array<number>(48).fill(99); // sentinel
+    const hvacWithBoth = {
+      ...HVAC_SCHEDULE,
+      schedule: {
+        ...HVAC_SCHEDULE.schedule,
+        setpoint_temps: setpoints,
+        temp_trajectory: trajectory,
+      },
+    };
+    installFetchStub({
+      '/api/v1/schedules': {
+        date: '2025-11-18',
+        appliances: [hvacWithBoth],
+      },
+      '/api/v1/rates': RATES_RESPONSE,
+      '/api/v1/preferences': PREFS_DEFAULT,
+    });
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+
+    const el = mountPanel();
+    el._view = 'dashboard';
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const hvacCard = root.querySelector('.card[data-appliance-type="hvac"]')!;
+    const hvacChart = hvacCard.querySelector<
+      HTMLElement & { targetValues?: number[] }
+    >('hm-optimization-chart')!;
+    expect(hvacChart.targetValues).toEqual(setpoints);
+  });
+
+  it('falls back to temp_trajectory when setpoint_temps is missing', async () => {
+    const trajectory = Array<number>(48).fill(73);
+    const hvacWithoutSetpoints = {
+      ...HVAC_SCHEDULE,
+      schedule: {
+        ...HVAC_SCHEDULE.schedule,
+        temp_trajectory: trajectory,
+        // setpoint_temps deliberately absent
+      },
+    };
+    installFetchStub({
+      '/api/v1/schedules': {
+        date: '2025-11-18',
+        appliances: [hvacWithoutSetpoints],
+      },
+      '/api/v1/rates': RATES_RESPONSE,
+      '/api/v1/preferences': PREFS_DEFAULT,
+    });
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+
+    const el = mountPanel();
+    el._view = 'dashboard';
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const hvacCard = root.querySelector('.card[data-appliance-type="hvac"]')!;
+    const hvacChart = hvacCard.querySelector<
+      HTMLElement & { targetValues?: number[] }
+    >('hm-optimization-chart')!;
+    expect(hvacChart.targetValues).toEqual(trajectory);
+  });
+});
+
 describe('hungry-machines-panel chart-size toggle (v2.5)', () => {
   beforeEach(() => {
     setApiBase('https://api.example.test');
