@@ -38,6 +38,45 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 _VALID_HVAC_STATES = ("HEAT", "COOL", "OFF", "FAN")
+
+
+def _resolve_hvac_state(state: Any) -> str:
+    """Map an HA climate entity to one of HEAT/COOL/OFF/FAN.
+
+    Prefers the `hvac_action` attribute (what the unit is DOING right now —
+    `cooling`, `heating`, `idle`, `fan`, `off`) over `state` (what mode the
+    user has SET — `cool`, `heat`, `heat_cool`, `auto`, `fan_only`, etc.).
+    A `heat_cool`-mode thermostat that's currently cooling reports
+    `state="heat_cool"` and `hvac_action="cooling"` — we want the latter
+    so the model fitter sees a COOL sample, not OFF.
+
+    Falls back to the mode string when no `hvac_action` is exposed
+    (older entities, integrations that don't report action). Anything
+    unrecognized is bucketed as OFF — safer than guessing.
+    """
+    action = str(state.attributes.get("hvac_action") or "").lower()
+    if action in ("cooling", "cool"):
+        return "COOL"
+    if action in ("heating", "heat"):
+        return "HEAT"
+    if action in ("fan", "fan_only"):
+        return "FAN"
+    if action in ("off", "idle"):
+        return "OFF"
+
+    # No hvac_action exposed — fall back to set mode.
+    mode = str(state.state or "").lower()
+    if mode == "cool":
+        return "COOL"
+    if mode == "heat":
+        return "HEAT"
+    if mode in ("fan", "fan_only"):
+        return "FAN"
+    # off, heat_cool, auto, dry, or anything else → OFF. heat_cool/auto
+    # without an hvac_action attribute is genuinely ambiguous; treating
+    # it as OFF biases conservatively (won't manufacture COOL samples
+    # the model fitter would later trust).
+    return "OFF"
 _HOME_BUCKET = "home"
 _BUFFER_KEY = "readings_buffer"
 
@@ -74,12 +113,10 @@ def _build_hvac_home_reading(state: Any) -> dict | None:
             state.state,
         )
         return None
-    raw_state = (state.state or "").upper()
-    hvac_state = raw_state if raw_state in _VALID_HVAC_STATES else "OFF"
     reading: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "indoor_temp": indoor_temp,
-        "hvac_state": hvac_state,
+        "hvac_state": _resolve_hvac_state(state),
     }
     target_temp = state.attributes.get("temperature")
     if target_temp is not None:
@@ -87,6 +124,12 @@ def _build_hvac_home_reading(state: Any) -> dict | None:
     indoor_humidity = state.attributes.get("current_humidity")
     if indoor_humidity is not None:
         reading["indoor_humidity"] = indoor_humidity
+    # Fan speed string ("low", "medium", "high", "auto", etc.). Per-
+    # manufacturer string; recorded verbatim so the analyst can group by
+    # observed values. NULL if the entity doesn't expose it.
+    fan_mode = state.attributes.get("fan_mode")
+    if fan_mode is not None:
+        reading["fan_mode"] = str(fan_mode)
     return reading
 
 
