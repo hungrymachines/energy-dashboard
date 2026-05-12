@@ -148,10 +148,10 @@ async def test_capture_hvac_uses_hvac_action_over_mode() -> None:
 
 
 @pytest.mark.asyncio
-async def test_capture_hvac_window_ac_eco_mode_records_cool() -> None:
-    """Window ACs commonly have Cool / Fan / Eco modes. Eco runs the
-    compressor at reduced capacity for cooling, so it should be
-    recorded as COOL for the model fitter."""
+async def test_capture_hvac_window_ac_eco_mode_records_eco() -> None:
+    """Window ACs commonly have Cool / Fan / Eco modes. ECO is recorded
+    distinctly from COOL — reduced-duty compressor means a different
+    cooling rate; the fitter can combine them later if useful."""
     appliance = {
         "id": "a-1",
         "appliance_type": "hvac",
@@ -174,17 +174,16 @@ async def test_capture_hvac_window_ac_eco_mode_records_cool() -> None:
         await readings.capture_readings(hass, entry)
 
     posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
-    assert posted["hvac_state"] == "COOL"
+    assert posted["hvac_state"] == "ECO"
     assert posted["fan_mode"] == "Low"
 
 
 @pytest.mark.asyncio
-async def test_capture_hvac_dry_mode_records_cool() -> None:
-    """Dry/dehumidify mode runs the compressor — record as COOL.
-
-    A future analysis may justify a separate DRY bucket (requires a
-    DB migration to widen the CHECK constraint), but for now grouping
-    compressor-cooling modes is fine for the model fitter."""
+async def test_capture_hvac_dry_mode_records_dry() -> None:
+    """Dry/dehumidify mode is recorded as DRY (distinct from COOL).
+    The compressor runs intermittently for moisture removal rather
+    than temperature targeting — the thermal effect differs enough
+    from full COOL to warrant a separate sample bucket."""
     appliance = {
         "id": "a-1",
         "appliance_type": "hvac",
@@ -203,7 +202,37 @@ async def test_capture_hvac_dry_mode_records_cool() -> None:
         await readings.capture_readings(hass, entry)
 
     posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
-    assert posted["hvac_state"] == "COOL"
+    assert posted["hvac_state"] == "DRY"
+
+
+@pytest.mark.asyncio
+async def test_capture_eco_mode_with_idle_action_records_off() -> None:
+    """A unit in ECO mode but currently idle (compressor off) should
+    record OFF, not ECO. The mode-specific label only applies when
+    the unit is actively engaged."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    state = _state(
+        "eco",
+        {
+            "current_temperature": 72.0,
+            "temperature": 72.0,
+            "hvac_action": "idle",
+        },
+    )
+    hass = _hass({"climate.living_room": state})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["hvac_state"] == "OFF"
 
 
 @pytest.mark.asyncio
