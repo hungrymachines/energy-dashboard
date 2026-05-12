@@ -1432,7 +1432,17 @@ export class HungryMachinesPanel extends LitElement {
     if (type === 'hvac') {
       const highTemps = asNumberArray(sched['high_temps']);
       const lowTemps = asNumberArray(sched['low_temps']);
-      targetValues = asNumberArray(sched['temp_trajectory']);
+      // Prefer the backend's clamped per-interval setpoints (what the
+      // thermostat is actually commanded to). `temp_trajectory` is the
+      // raw, unclamped simulator prediction kept alongside it for
+      // diagnostics — that's what the chart used to show, but it can
+      // dip outside the comfort band when the thermal model is off,
+      // which confuses users. Falling back to temp_trajectory if a
+      // schedule somehow lacks setpoint_temps is safe (it just shows
+      // the older, unclamped value).
+      targetValues =
+        asNumberArray(sched['setpoint_temps']) ??
+        asNumberArray(sched['temp_trajectory']);
       const prefs = this._preferences;
       // The user's saved comfort band wins over whatever the nightly job
       // happened to bake into this row, so live edits don't wait until
