@@ -92,10 +92,87 @@ async def fetch_today_schedule(
         cache[aid] = {
             "appliance_type": entry_data.get("appliance_type"),
             "entity_id": entity_id,
+            "name": entry_data.get("name"),
             "schedule": entry_data.get("schedule") or {},
         }
     _domain_data(hass)["schedule"] = cache
+    _publish_schedule_states(hass, cache)
     return cache
+
+
+def _slug(value: str) -> str:
+    """Tiny entity-id slugger; HA does this more thoroughly via slugify,
+    but importing it pulls extra deps the test stub doesn't provide."""
+    cleaned = "".join(
+        c.lower() if c.isalnum() else "_" for c in (value or "")
+    )
+    while "__" in cleaned:
+        cleaned = cleaned.replace("__", "_")
+    return cleaned.strip("_") or "appliance"
+
+
+def _publish_schedule_states(hass: HomeAssistant, cache: dict[str, Any]) -> None:
+    """Mirror the cached schedule into HA states so users can see the
+    full 48-slot plan in Dev Tools → States.
+
+    One state per appliance, named `sensor.hungry_machines_<slug>_schedule`.
+    `state` is the current-slot setpoint (HVAC) or boolean (switch-driven
+    appliances); `attributes` carry the full 48-slot arrays for charts and
+    automations to consume. Pure read-only mirror — apply still goes
+    through `climate.set_temperature` / `switch.turn_on`.
+    """
+    if hass.states is None:
+        return
+    slot = _current_slot()
+    for aid, info in cache.items():
+        if aid == "fetched_at" or not isinstance(info, dict):
+            continue
+        atype = info.get("appliance_type")
+        schedule = info.get("schedule") or {}
+        name = info.get("name") or aid
+        entity_id = f"sensor.hungry_machines_{_slug(str(name))}_schedule"
+
+        attributes: dict[str, Any] = {
+            "appliance_id": aid,
+            "appliance_type": atype,
+            "friendly_name": f"Hungry Machines {name} schedule",
+            "current_slot": slot,
+            "target_entity": info.get("entity_id"),
+            "fetched_at": cache.get("fetched_at"),
+            "generated_at": schedule.get("generated_at"),
+            "mode": schedule.get("mode"),
+        }
+        for key in (
+            "setpoint_temps",
+            "high_temps",
+            "low_temps",
+            "temp_trajectory",
+            "intervals",
+        ):
+            value = schedule.get(key)
+            if isinstance(value, list):
+                attributes[key] = value
+
+        state_value: Any = "unknown"
+        if atype == "hvac":
+            sp = _resolve_setpoint(schedule, slot)
+            if sp is not None:
+                state_value = sp
+                attributes["unit_of_measurement"] = "°F"
+                attributes["device_class"] = "temperature"
+        elif atype in ("ev_charger", "home_battery", "water_heater"):
+            intervals = schedule.get("intervals") or []
+            if slot < len(intervals):
+                state_value = "on" if bool(intervals[slot]) else "off"
+
+        try:
+            hass.states.async_set(entity_id, state_value, attributes)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug(
+                "Hungry Machines: failed to publish schedule state for %s: %s",
+                entity_id,
+                err,
+            )
 
 
 def _current_slot(now: datetime | None = None) -> int:
@@ -200,6 +277,16 @@ async def _apply_hvac(
     if payload is None:
         return
 
+    raw_state = getattr(state, "state", None) or "unknown" if state else "missing"
+    _LOGGER.info(
+        "Hungry Machines HVAC apply: entity=%s slot=%d mode=%s setpoint=%.1f payload=%s",
+        entity_id,
+        slot,
+        raw_state,
+        setpoint,
+        payload,
+    )
+
     try:
         await hass.services.async_call(
             "climate",
@@ -241,12 +328,13 @@ async def _apply_switch(
         )
 
 
-# Re-fetch the schedule cache when it gets older than this. Picks up
-# fresh nightly runs without waiting for the daily 05:05-local refresh,
-# and recovers from cases where the integration was upgraded before the
-# API caught up. 90 minutes is short enough to self-heal within ~3 apply
-# cycles, long enough to keep the API call rate ~1/hr per user.
-_CACHE_MAX_AGE_SECONDS = 90 * 60
+# Re-fetch the schedule cache when it gets older than this. Apply runs
+# every 30 min on the :00/:30 boundary, so a 5-min TTL means *every*
+# apply pulls the freshest schedule from the API. That makes
+# user-triggered recomputes (PUT /preferences, constraint edits) visible
+# at the thermostat on the next half-hour boundary instead of waiting
+# 90 min for self-heal.
+_CACHE_MAX_AGE_SECONDS = 5 * 60
 
 
 def _cache_age_seconds(cache: dict) -> float | None:
@@ -329,6 +417,11 @@ async def apply_current_slot(
             "Hungry Machines: no schedule cached, skipping apply"
         )
         return
+
+    # Keep the dev-tools sensors in sync with the current slot even if
+    # the cache itself didn't change (the slot index advances every
+    # 30 min and we want the `state` value to reflect that).
+    _publish_schedule_states(hass, cache)
 
     slot = _current_slot()
     for aid, info in cache.items():
