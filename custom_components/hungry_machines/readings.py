@@ -40,42 +40,55 @@ _LOGGER = logging.getLogger(__name__)
 _VALID_HVAC_STATES = ("HEAT", "COOL", "OFF", "FAN")
 
 
+# Maps lowercased HA mode / hvac_action strings to our canonical four.
+# Compressor-cooling family (cool, eco, dry, dehumidify) all collapse
+# to COOL — their thermal impact on indoor temperature is similar
+# enough for the model fitter. Window AC vocabularies (Cool / Fan / Eco)
+# slot cleanly into this map.
+_HVAC_ACTION_MAP: dict[str, str] = {
+    # Active cooling family.
+    "cool": "COOL", "cooling": "COOL",
+    "eco": "COOL", "eco_cool": "COOL",
+    "dry": "COOL", "drying": "COOL",
+    "dehumidify": "COOL", "dehumidifying": "COOL",
+    # Active heating family.
+    "heat": "HEAT", "heating": "HEAT", "preheating": "HEAT",
+    # Fan only.
+    "fan": "FAN", "fan_only": "FAN", "fan only": "FAN",
+    # Off / idle / non-thermal cycles.
+    "off": "OFF", "idle": "OFF", "defrosting": "OFF",
+}
+
+
 def _resolve_hvac_state(state: Any) -> str:
     """Map an HA climate entity to one of HEAT/COOL/OFF/FAN.
 
-    Prefers the `hvac_action` attribute (what the unit is DOING right now —
-    `cooling`, `heating`, `idle`, `fan`, `off`) over `state` (what mode the
-    user has SET — `cool`, `heat`, `heat_cool`, `auto`, `fan_only`, etc.).
-    A `heat_cool`-mode thermostat that's currently cooling reports
-    `state="heat_cool"` and `hvac_action="cooling"` — we want the latter
-    so the model fitter sees a COOL sample, not OFF.
+    Prefers the `hvac_action` attribute (what the unit is DOING right
+    now: `cooling`, `heating`, `idle`, `drying`, etc.) over `state`
+    (what mode the user has SET: `cool`, `heat`, `heat_cool`, `auto`,
+    `fan_only`, `eco`, `dry`, etc.). A `heat_cool`-mode thermostat that's
+    currently cooling reports `state="heat_cool"` and
+    `hvac_action="cooling"` — we want the latter so the model fitter
+    sees a COOL sample, not OFF.
 
-    Falls back to the mode string when no `hvac_action` is exposed
-    (older entities, integrations that don't report action). Anything
-    unrecognized is bucketed as OFF — safer than guessing.
+    Falls back to the mode string for older entities that don't expose
+    `hvac_action`. Window AC vocabularies (Cool / Fan / Eco) and
+    multi-mode mini-splits (heat_cool with hvac_action='cooling')
+    both work. Anything unrecognized buckets to OFF — conservative so
+    we don't manufacture phantom COOL/HEAT samples.
     """
-    action = str(state.attributes.get("hvac_action") or "").lower()
-    if action in ("cooling", "cool"):
-        return "COOL"
-    if action in ("heating", "heat"):
-        return "HEAT"
-    if action in ("fan", "fan_only"):
-        return "FAN"
-    if action in ("off", "idle"):
-        return "OFF"
+    action = str(state.attributes.get("hvac_action") or "").strip().lower()
+    if action in _HVAC_ACTION_MAP:
+        return _HVAC_ACTION_MAP[action]
 
     # No hvac_action exposed — fall back to set mode.
-    mode = str(state.state or "").lower()
-    if mode == "cool":
-        return "COOL"
-    if mode == "heat":
-        return "HEAT"
-    if mode in ("fan", "fan_only"):
-        return "FAN"
-    # off, heat_cool, auto, dry, or anything else → OFF. heat_cool/auto
-    # without an hvac_action attribute is genuinely ambiguous; treating
-    # it as OFF biases conservatively (won't manufacture COOL samples
-    # the model fitter would later trust).
+    mode = str(state.state or "").strip().lower()
+    if mode in _HVAC_ACTION_MAP:
+        return _HVAC_ACTION_MAP[mode]
+
+    # heat_cool / auto without hvac_action is genuinely ambiguous;
+    # OFF is the safest bucket so the model fitter doesn't see fake
+    # cooling or heating samples.
     return "OFF"
 _HOME_BUCKET = "home"
 _BUFFER_KEY = "readings_buffer"

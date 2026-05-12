@@ -148,6 +148,65 @@ async def test_capture_hvac_uses_hvac_action_over_mode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_capture_hvac_window_ac_eco_mode_records_cool() -> None:
+    """Window ACs commonly have Cool / Fan / Eco modes. Eco runs the
+    compressor at reduced capacity for cooling, so it should be
+    recorded as COOL for the model fitter."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.window_unit"},
+    }
+    state = _state(
+        "eco",
+        {
+            "current_temperature": 73.0,
+            "temperature": 72.0,
+            "fan_mode": "Low",
+        },
+    )
+    hass = _hass({"climate.window_unit": state})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["hvac_state"] == "COOL"
+    assert posted["fan_mode"] == "Low"
+
+
+@pytest.mark.asyncio
+async def test_capture_hvac_dry_mode_records_cool() -> None:
+    """Dry/dehumidify mode runs the compressor — record as COOL.
+
+    A future analysis may justify a separate DRY bucket (requires a
+    DB migration to widen the CHECK constraint), but for now grouping
+    compressor-cooling modes is fine for the model fitter."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    state = _state(
+        "dry",
+        {"current_temperature": 75.0, "temperature": 72.0},
+    )
+    hass = _hass({"climate.living_room": state})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["hvac_state"] == "COOL"
+
+
+@pytest.mark.asyncio
 async def test_capture_hvac_action_idle_records_off() -> None:
     """heat_cool mode + hvac_action='idle' means unit is on but not
     actively heating or cooling at this moment → record OFF."""
