@@ -23,7 +23,10 @@ import {
 } from '../data/pricing-zones.js';
 
 type HassStateLike = { entity_id?: string; state?: unknown; attributes?: Record<string, unknown> };
-type HassLike = { states?: Record<string, HassStateLike> };
+type HassLike = {
+  states?: Record<string, HassStateLike>;
+  callService?: (domain: string, service: string, data?: Record<string, unknown>) => Promise<unknown> | unknown;
+};
 
 const PRICING_ZONES = Object.keys(PRICING_ZONE_LABELS)
   .map((k) => Number(k) as PricingZone)
@@ -1150,6 +1153,13 @@ export class HungryMachinesPanel extends LitElement {
       const fresh = await recomputeSchedule();
       this._schedules = fresh;
       this._schedulesFetched = true;
+      // Ask the integration to refetch + apply immediately so the
+      // thermostat reflects the new schedule on the next service call
+      // instead of waiting for the next :00/:30 boundary (up to 30 min).
+      // The API write already landed; this just shortens the loop on
+      // the HA side. Failures here are non-fatal — the apply still
+      // happens at the next tick.
+      void this._triggerImmediateApply();
     } catch (err) {
       this._recomputeError =
         err instanceof Error
@@ -1157,6 +1167,18 @@ export class HungryMachinesPanel extends LitElement {
           : 'Could not refresh schedule — your changes were saved, the next nightly run will pick them up.';
     } finally {
       this._recomputing = false;
+    }
+  }
+
+  private async _triggerImmediateApply(): Promise<void> {
+    const hass = this.hass as HassLike | undefined;
+    if (!hass || typeof hass.callService !== 'function') return;
+    try {
+      await hass.callService('hungry_machines', 'apply_now', {});
+    } catch {
+      // Service may not be registered yet (older integration version);
+      // the next :00/:30 tick will pick up the new schedule via the
+      // 5-min cache TTL. No user-facing error needed.
     }
   }
 

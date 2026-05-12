@@ -139,6 +139,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry_data = domain_data.setdefault(entry.entry_id, {})
     unsubs: list = entry_data.setdefault("unsub", [])
 
+    # Register `hungry_machines.apply_now` service. The panel calls this
+    # right after `POST /api/v1/schedule/recompute` returns — we fetch
+    # the freshly-written schedule and apply the current slot to the
+    # thermostat immediately, instead of waiting for the next :00/:30
+    # tick (up to 30 min latency). Idempotent — safe to call multiple
+    # times back-to-back; the latest schedule wins.
+    async def _apply_now_service(_call) -> None:
+        _LOGGER.info("Hungry Machines: apply_now service triggered")
+        await fetch_today_schedule(hass, entry)
+        await apply_current_slot(hass, entry)
+
+    if not hass.services.has_service(DOMAIN, "apply_now"):
+        hass.services.async_register(DOMAIN, "apply_now", _apply_now_service)
+
     await fetch_today_schedule(hass, entry)
 
     async def _refresh_schedule(_now) -> None:
@@ -215,4 +229,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     domain_data.pop("readings_unsub", None)
 
     async_remove_panel(hass, PANEL_URL_PATH)
+    # Remove the apply_now service so a re-add of the integration
+    # re-registers a fresh handler bound to the new entry.
+    if hass.services.has_service(DOMAIN, "apply_now"):
+        hass.services.async_remove(DOMAIN, "apply_now")
     return True
