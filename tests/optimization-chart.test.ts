@@ -182,4 +182,65 @@ describe('hm-optimization-chart', () => {
     await flush(el);
     expect(el.shadowRoot!.querySelector('circle.marker-dot')).toBeNull();
   });
+
+  // --- v2.5 size prop ----------------------------------------------------
+
+  function viewBoxOf(el: ChartEl): { width: number; height: number } | null {
+    const svg = el.shadowRoot!.querySelector('svg');
+    const vb = svg?.getAttribute('viewBox');
+    if (!vb) return null;
+    const [, , w, h] = vb.split(' ').map(Number);
+    return { width: w, height: h };
+  }
+
+  it('defaults to size="large" with the v2.4.1 baseline viewBox', async () => {
+    const el = mount();
+    el.rates = RATES_48;
+    el.targetValues = Array<number>(48).fill(72);
+    el.highLimits = Array<number>(48).fill(74);
+    el.lowLimits = Array<number>(48).fill(70);
+    await flush(el);
+    expect(el.size).toBe('large');
+    expect(viewBoxOf(el)).toEqual({ width: 600, height: 380 });
+    expect(el.getAttribute('size')).toBe('large');
+  });
+
+  it('size="medium" produces an intermediate viewBox height', async () => {
+    const el = mount();
+    el.size = 'medium';
+    el.rates = RATES_48;
+    el.targetValues = Array<number>(48).fill(72);
+    el.highLimits = Array<number>(48).fill(74);
+    el.lowLimits = Array<number>(48).fill(70);
+    await flush(el);
+    expect(viewBoxOf(el)).toEqual({ width: 600, height: 290 });
+    expect(el.getAttribute('size')).toBe('medium');
+  });
+
+  it('size="small" produces the shortest viewBox', async () => {
+    const el = mount();
+    el.size = 'small';
+    el.rates = RATES_48;
+    el.targetValues = Array<number>(48).fill(72);
+    el.highLimits = Array<number>(48).fill(74);
+    el.lowLimits = Array<number>(48).fill(70);
+    await flush(el);
+    expect(viewBoxOf(el)).toEqual({ width: 600, height: 190 });
+    expect(el.getAttribute('size')).toBe('small');
+  });
+
+  it('switching size live re-renders with the new viewBox', async () => {
+    const el = mount();
+    el.size = 'large';
+    el.rates = RATES_48;
+    el.targetValues = Array<number>(48).fill(72);
+    el.highLimits = Array<number>(48).fill(74);
+    el.lowLimits = Array<number>(48).fill(70);
+    await flush(el);
+    expect(viewBoxOf(el)).toEqual({ width: 600, height: 380 });
+
+    el.size = 'small';
+    await flush(el);
+    expect(viewBoxOf(el)).toEqual({ width: 600, height: 190 });
+  });
 });

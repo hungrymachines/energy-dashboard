@@ -57,6 +57,117 @@ function constantArray(value: number, length = 48): number[] {
   return new Array(length).fill(value);
 }
 
+type ChartSize = 'small' | 'medium' | 'large';
+const CHART_SIZES: ReadonlyArray<ChartSize> = ['small', 'medium', 'large'];
+const CHART_SIZE_STORAGE_KEY = 'hm-panel-chart-size';
+
+function _loadChartSize(): ChartSize {
+  try {
+    const raw = globalThis.localStorage?.getItem(CHART_SIZE_STORAGE_KEY);
+    if (raw && (CHART_SIZES as ReadonlyArray<string>).includes(raw)) {
+      return raw as ChartSize;
+    }
+  } catch {
+    // happy-dom + private browsing both throw on localStorage — fall through
+  }
+  return 'large';
+}
+
+function _saveChartSize(size: ChartSize): void {
+  try {
+    globalThis.localStorage?.setItem(CHART_SIZE_STORAGE_KEY, size);
+  } catch {
+    // best-effort persistence
+  }
+}
+
+/**
+ * Synthetic schedule used for the "Not Connected" example cards on the
+ * dashboard. Every appliance type the user hasn't registered yet still
+ * renders a card so they can see what the chart will look like once
+ * the appliance is added; the overlay above the chart blocks
+ * interaction.
+ */
+function _exampleScheduleFor(type: ApplianceType): Record<string, unknown> {
+  switch (type) {
+    case 'hvac': {
+      const high = constantArray(74);
+      const low = constantArray(70);
+      // Trajectory hovers within band with a mid-day dip suggesting
+      // pre-cooling ahead of peak hours.
+      const setpoints = Array.from({ length: 48 }, (_, i) => {
+        const t = i / 48;
+        return Math.round((72 - Math.sin(t * Math.PI * 2) * 1.5) * 10) / 10;
+      });
+      return {
+        intervals: Array.from({ length: 48 }, (_, i) => i),
+        high_temps: high,
+        low_temps: low,
+        setpoint_temps: setpoints,
+        temp_trajectory: setpoints,
+        mode: 'cool',
+      };
+    }
+    case 'ev_charger':
+    case 'home_battery': {
+      // Charge sits at 30% overnight, ramps up to ~80% by 07:00.
+      const trajectory = Array.from({ length: 48 }, (_, i) => {
+        if (i < 8) return 30;
+        if (i < 16) return 30 + (i - 8) * 6.25;
+        return 80;
+      });
+      const intervals = Array.from({ length: 48 }, (_, i) => i >= 8 && i < 16);
+      return {
+        intervals,
+        value_trajectory: trajectory,
+        unit: 'percent',
+        min_value: 20,
+        target_value: 80,
+        deadline_interval: 14,
+      };
+    }
+    case 'water_heater': {
+      const high = constantArray(140);
+      const low = constantArray(110);
+      const trajectory = Array.from({ length: 48 }, (_, i) => {
+        const t = i / 48;
+        return Math.round((125 + Math.sin(t * Math.PI * 2) * 8) * 10) / 10;
+      });
+      return {
+        intervals: Array.from({ length: 48 }, (_, i) => i % 4 === 0),
+        high_temps: high,
+        low_temps: low,
+        temp_trajectory: trajectory,
+        unit: 'fahrenheit',
+      };
+    }
+    case 'solar':
+    default:
+      return {};
+  }
+}
+
+function _exampleApplianceEntry(type: ApplianceType): ApplianceScheduleEntry {
+  return {
+    appliance_id: `__example_${type}`,
+    appliance_type: type,
+    name: _exampleNameFor(type),
+    schedule: _exampleScheduleFor(type),
+    savings_pct: 0,
+    source: 'defaults',
+  };
+}
+
+function _exampleNameFor(type: ApplianceType): string {
+  switch (type) {
+    case 'hvac': return 'HVAC';
+    case 'ev_charger': return 'EV charger';
+    case 'home_battery': return 'Home battery';
+    case 'water_heater': return 'Water heater';
+    case 'solar': return 'Solar PV';
+  }
+}
+
 export class HungryMachinesPanel extends LitElement {
   static override styles = css`
     :host {
@@ -140,6 +251,48 @@ export class HungryMachinesPanel extends LitElement {
       color: var(--hm-muted, #64748B);
       margin: 0;
     }
+    .dashboard-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+    .size-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px;
+      background: var(--hm-bg, #F8FAFC);
+      border: 1px solid rgba(100, 116, 139, 0.25);
+      border-radius: 10px;
+      font-size: 14px;
+    }
+    .size-toggle-label {
+      color: var(--hm-muted, #64748B);
+      font-size: 12px;
+      padding: 0 6px 0 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .size-btn {
+      background: transparent;
+      border: none;
+      color: var(--hm-text, #0F172A);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font: inherit;
+      cursor: pointer;
+    }
+    .size-btn:hover {
+      background: rgba(30, 58, 138, 0.08);
+    }
+    .size-btn.active {
+      background: var(--hm-primary, #1E3A8A);
+      color: #ffffff;
+      font-weight: 600;
+    }
     .cards {
       display: grid;
       gap: 24px;
@@ -147,6 +300,51 @@ export class HungryMachinesPanel extends LitElement {
          readable schedule + axis labels. Drops to a single-column
          layout below ~640px viewport width. */
       grid-template-columns: repeat(auto-fill, minmax(min(640px, 100%), 1fr));
+    }
+    /* Example "Not Connected" cards: greyed-out version of a real
+       appliance card with an interactive overlay that opens the
+       Add Appliance flow when the user clicks. */
+    .card-shell {
+      position: relative;
+    }
+    .card-shell.example > .card {
+      opacity: 0.45;
+      pointer-events: none;
+      filter: grayscale(35%);
+    }
+    .not-connected-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      border-radius: 14px;
+      background: rgba(15, 23, 42, 0.05);
+    }
+    .not-connected-badge {
+      background: rgba(15, 23, 42, 0.82);
+      color: #ffffff;
+      padding: 8px 18px;
+      border-radius: 999px;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .not-connected-cta {
+      background: var(--hm-primary, #1E3A8A);
+      color: #ffffff;
+      border: none;
+      padding: 10px 18px;
+      border-radius: 8px;
+      font: inherit;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .not-connected-cta:hover {
+      background: #16306d;
     }
     .card {
       background: #ffffff;
@@ -610,6 +808,7 @@ export class HungryMachinesPanel extends LitElement {
     _customRatesSaveError: { state: true },
     _recomputing: { state: true },
     _recomputeError: { state: true },
+    _chartSize: { state: true },
   };
 
   hass: unknown = undefined;
@@ -636,6 +835,10 @@ export class HungryMachinesPanel extends LitElement {
   _customRatesInputs: string[] = Array.from({ length: 24 }, () => '');
   _customRatesSaving = false;
   _customRatesSaveError: string | null = null;
+  // User-selected chart size for the dashboard. Persisted to
+  // localStorage so the choice survives panel reloads. Defaults to
+  // 'large' for first-time users — the v2.4.1 baseline.
+  _chartSize: 'small' | 'medium' | 'large' = _loadChartSize();
   // Inline recompute state. `_recomputing` drives the "Optimizing…"
   // overlay shown over the dashboard while the backend reruns the
   // optimizer for this user; `_recomputeError` surfaces a failure as a
@@ -1078,27 +1281,26 @@ export class HungryMachinesPanel extends LitElement {
     }
 
     const appliances = this._schedules?.appliances ?? [];
-    if (appliances.length === 0) {
-      return html`
-        <h2>Dashboard</h2>
-        <div class="empty">
-          <p>No appliances registered yet. Add one to start optimizing.</p>
-          <button
-            class="add-btn"
-            type="button"
-            @click=${this._openAddAppliance}
-          >
-            Add appliance
-          </button>
-        </div>
-      `;
-    }
-
     const rates = this._rates?.rates_cents_per_kwh ?? [];
+
+    // Build a list of appliance types the user has NOT yet registered.
+    // Each one becomes a greyed-out "Not Connected" example card so the
+    // user can see what their dashboard would look like with that
+    // device added, without us hiding the option from them.
+    const registeredTypes = new Set(appliances.map((a) => a.appliance_type));
+    const ALL_TYPES: ReadonlyArray<ApplianceType> = [
+      'hvac', 'ev_charger', 'home_battery', 'water_heater', 'solar',
+    ];
+    const missingTypes = ALL_TYPES.filter((t) => !registeredTypes.has(t));
+
     return html`
-      <h2>Dashboard</h2>
+      <div class="dashboard-head">
+        <h2>Dashboard</h2>
+        ${this._renderChartSizeToggle()}
+      </div>
       <div class="cards">
         ${appliances.map((a) => this._renderApplianceCard(a, rates))}
+        ${missingTypes.map((t) => this._renderExampleApplianceCard(t, rates))}
       </div>
       <div class="dashboard-actions">
         <button
@@ -1106,8 +1308,63 @@ export class HungryMachinesPanel extends LitElement {
           type="button"
           @click=${this._openAddAppliance}
         >
-          Add another appliance
+          ${appliances.length === 0 ? 'Add appliance' : 'Add another appliance'}
         </button>
+      </div>
+    `;
+  }
+
+  private _renderChartSizeToggle(): TemplateResult {
+    return html`
+      <div
+        class="size-toggle"
+        role="group"
+        aria-label="Chart size"
+      >
+        <span class="size-toggle-label">Chart size</span>
+        ${(['small', 'medium', 'large'] as const).map(
+          (s) => html`
+            <button
+              type="button"
+              class="size-btn ${this._chartSize === s ? 'active' : ''}"
+              aria-pressed=${this._chartSize === s ? 'true' : 'false'}
+              @click=${() => this._setChartSize(s)}
+            >
+              ${s[0].toUpperCase() + s.slice(1)}
+            </button>
+          `,
+        )}
+      </div>
+    `;
+  }
+
+  private _setChartSize(size: ChartSize): void {
+    if (this._chartSize === size) return;
+    this._chartSize = size;
+    _saveChartSize(size);
+  }
+
+  private _renderExampleApplianceCard(
+    type: ApplianceType,
+    rates: number[],
+  ): TemplateResult {
+    const entry = _exampleApplianceEntry(type);
+    const inner = type === 'solar'
+      ? this._renderSolarCard(entry, TYPE_LABELS[type])
+      : this._renderApplianceCard(entry, rates);
+    return html`
+      <div class="card-shell example" data-appliance-type=${type}>
+        ${inner}
+        <div class="not-connected-overlay" aria-hidden="false">
+          <div class="not-connected-badge">Not Connected</div>
+          <button
+            type="button"
+            class="not-connected-cta"
+            @click=${this._openAddAppliance}
+          >
+            Add ${_exampleNameFor(type)}
+          </button>
+        </div>
       </div>
     `;
   }
@@ -1230,6 +1487,7 @@ export class HungryMachinesPanel extends LitElement {
           .targetValues=${targetValues}
           .targetMarker=${marker}
           .unit=${chartUnit}
+          .size=${this._chartSize}
         ></hm-optimization-chart>
         <button
           class="edit-btn"

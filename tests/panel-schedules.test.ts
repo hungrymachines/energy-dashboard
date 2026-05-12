@@ -180,9 +180,15 @@ describe('hungry-machines-panel dashboard (US-FE-07)', () => {
     await flush(el);
 
     const root = el.shadowRoot!;
-    // v2.3: every appliance card renders hm-optimization-chart with the
-    // appropriate unit + line series.
-    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(2);
+    // v2.5: the dashboard renders the user's 2 real appliances + an
+    // example card for every appliance type they haven't registered yet
+    // ("Not Connected" placeholders). The fixture registers hvac +
+    // ev_charger, so the dashboard adds home_battery + water_heater +
+    // solar examples. Solar uses a chart-less tile, so the optimization
+    // chart count is 2 (real) + 2 (battery, water_heater example) = 4.
+    expect(root.querySelectorAll('.cards > .card[data-appliance-type]').length).toBe(2);
+    expect(root.querySelectorAll('.cards > .card-shell.example').length).toBe(3);
+    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(4);
     expect(root.querySelectorAll('hm-schedule-chart').length).toBe(0);
 
     const content = root.querySelector('section.content')!;
@@ -190,9 +196,11 @@ describe('hungry-machines-panel dashboard (US-FE-07)', () => {
     expect(content.textContent).toContain('Tesla Model 3');
     expect(content.textContent).toMatch(/19%\s+savings today/);
     expect(content.textContent).toMatch(/32%\s+savings today/);
+    // Example cards announce themselves with the Not Connected badge.
+    expect(content.textContent).toContain('Not Connected');
   });
 
-  it('renders the empty state when no appliances are registered', async () => {
+  it('renders example cards for every appliance type when none are registered', async () => {
     installFetchStub({
       '/api/v1/schedules': { date: '2025-11-18', appliances: [] },
       '/api/v1/rates': RATES_RESPONSE,
@@ -208,10 +216,18 @@ describe('hungry-machines-panel dashboard (US-FE-07)', () => {
     el._view = 'dashboard';
     await flush(el);
 
-    const content = el.shadowRoot!.querySelector('section.content')!;
-    expect(content.textContent).toContain('No appliances registered yet');
-    expect(el.shadowRoot!.querySelectorAll('hm-optimization-chart').length).toBe(0);
-    expect(el.shadowRoot!.querySelectorAll('hm-schedule-chart').length).toBe(0);
+    const root = el.shadowRoot!;
+    const content = root.querySelector('section.content')!;
+    // v2.5: with zero registered appliances we render the full
+    // 5-type set as example "Not Connected" cards so the user can see
+    // each option. Solar uses a chart-less tile (just text + size),
+    // so optimization charts = 4 (hvac, ev_charger, home_battery,
+    // water_heater).
+    expect(root.querySelectorAll('.cards > .card-shell.example').length).toBe(5);
+    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(4);
+    expect(root.querySelectorAll('hm-schedule-chart').length).toBe(0);
+    expect(content.textContent).toContain('Not Connected');
+    expect(content.textContent).toContain('Add appliance');
   });
 
   it('renders an error with a Retry button when /schedules fails and retry re-fetches', async () => {
@@ -261,8 +277,12 @@ describe('hungry-machines-panel dashboard (US-FE-07)', () => {
     await flush(el);
 
     expect(root.querySelector('.error')).toBeNull();
-    // Every appliance now renders an hm-optimization-chart.
-    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(2);
+    // After retry: 2 registered (hvac + ev_charger) + 3 example types
+    // (home_battery + water_heater + solar). Solar has no chart, so
+    // total optimization charts = 4.
+    expect(root.querySelectorAll('.cards > .card[data-appliance-type]').length).toBe(2);
+    expect(root.querySelectorAll('.cards > .card-shell.example').length).toBe(3);
+    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(4);
     expect(root.querySelectorAll('hm-schedule-chart').length).toBe(0);
   });
 });
@@ -475,8 +495,10 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
 
     const root = el.shadowRoot!;
     expect(root.querySelector('.error')).toBeNull();
-    // Every appliance card uses hm-optimization-chart.
-    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(2);
+    // 2 real (hvac + ev_charger) + 3 example types (home_battery,
+    // water_heater, solar). Solar has no chart, so total = 4.
+    expect(root.querySelectorAll('.cards > .card[data-appliance-type]').length).toBe(2);
+    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(4);
     expect(root.querySelectorAll('hm-schedule-chart').length).toBe(0);
   });
 
@@ -516,5 +538,116 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
     expect(whChart.highLimits).toEqual(Array<number>(48).fill(140));
     expect(whChart.lowLimits).toEqual(Array<number>(48).fill(110));
     expect(whChart.targetValues!.length).toBe(48);
+  });
+});
+
+describe('hungry-machines-panel chart-size toggle (v2.5)', () => {
+  beforeEach(() => {
+    setApiBase('https://api.example.test');
+    localStorage.clear();
+    clearTokens();
+    setAuthState({});
+    vi.spyOn(authStore, 'hydrate').mockImplementation(async () => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    document.body.innerHTML = '';
+    localStorage.clear();
+    clearTokens();
+    setAuthState({});
+  });
+
+  it('renders 3 size buttons with Large active by default', async () => {
+    installFetchStub({
+      '/api/v1/schedules': SCHEDULES_RESPONSE,
+      '/api/v1/rates': RATES_RESPONSE,
+      '/api/v1/preferences': PREFS_DEFAULT,
+    });
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+
+    const el = mountPanel();
+    el._view = 'dashboard';
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const buttons = Array.from(
+      root.querySelectorAll<HTMLButtonElement>('.size-toggle button.size-btn'),
+    );
+    expect(buttons.length).toBe(3);
+    expect(buttons.map((b) => b.textContent?.trim())).toEqual([
+      'Small', 'Medium', 'Large',
+    ]);
+    const active = buttons.find((b) => b.classList.contains('active'));
+    expect(active?.textContent?.trim()).toBe('Large');
+
+    // The size prop is forwarded to every optimization chart.
+    const charts = root.querySelectorAll<HTMLElement & { size?: string }>(
+      'hm-optimization-chart',
+    );
+    expect(charts.length).toBeGreaterThan(0);
+    charts.forEach((c) => expect(c.size).toBe('large'));
+  });
+
+  it('clicking Small switches every chart to size="small" and persists', async () => {
+    installFetchStub({
+      '/api/v1/schedules': SCHEDULES_RESPONSE,
+      '/api/v1/rates': RATES_RESPONSE,
+      '/api/v1/preferences': PREFS_DEFAULT,
+    });
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+
+    const el = mountPanel();
+    el._view = 'dashboard';
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const small = Array.from(
+      root.querySelectorAll<HTMLButtonElement>('.size-btn'),
+    ).find((b) => b.textContent?.trim() === 'Small')!;
+    small.click();
+    await flush(el);
+
+    const charts = root.querySelectorAll<HTMLElement & { size?: string }>(
+      'hm-optimization-chart',
+    );
+    charts.forEach((c) => expect(c.size).toBe('small'));
+    expect(localStorage.getItem('hm-panel-chart-size')).toBe('small');
+  });
+
+  it('loads the saved size from localStorage on mount', async () => {
+    localStorage.setItem('hm-panel-chart-size', 'medium');
+    installFetchStub({
+      '/api/v1/schedules': SCHEDULES_RESPONSE,
+      '/api/v1/rates': RATES_RESPONSE,
+      '/api/v1/preferences': PREFS_DEFAULT,
+    });
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+
+    const el = mountPanel();
+    el._view = 'dashboard';
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const active = Array.from(
+      root.querySelectorAll<HTMLButtonElement>('.size-btn'),
+    ).find((b) => b.classList.contains('active'));
+    expect(active?.textContent?.trim()).toBe('Medium');
   });
 });

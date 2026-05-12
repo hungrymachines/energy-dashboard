@@ -65,6 +65,10 @@ export class HmOptimizationChart extends LitElement {
       stroke: rgba(100, 116, 139, 0.18);
       stroke-width: 1;
     }
+    /* SVG text + line sizing scales with the host's size attribute.
+       Large is the v2.4.1 baseline; medium and small are roughly
+       70% and 50% linear scaling so the chart still reads cleanly on
+       a smaller card. */
     .axis-label {
       fill: var(--hm-muted, #64748B);
       font-size: 18px;
@@ -74,11 +78,27 @@ export class HmOptimizationChart extends LitElement {
       font-size: 18px;
       font-weight: 600;
     }
+    :host([size='medium']) .axis-label,
+    :host([size='medium']) .axis-title {
+      font-size: 14px;
+    }
+    :host([size='small']) .axis-label,
+    :host([size='small']) .axis-title {
+      font-size: 10px;
+    }
     .high-limit {
       fill: none;
       stroke: var(--hm-error, #DC2626);
       stroke-width: 2.5;
       stroke-dasharray: 6 4;
+    }
+    :host([size='medium']) .high-limit {
+      stroke-width: 2;
+      stroke-dasharray: 5 3;
+    }
+    :host([size='small']) .high-limit {
+      stroke-width: 1.5;
+      stroke-dasharray: 4 3;
     }
     .low-limit {
       fill: none;
@@ -86,15 +106,35 @@ export class HmOptimizationChart extends LitElement {
       stroke-width: 2.5;
       stroke-dasharray: 6 4;
     }
+    :host([size='medium']) .low-limit {
+      stroke-width: 2;
+      stroke-dasharray: 5 3;
+    }
+    :host([size='small']) .low-limit {
+      stroke-width: 1.5;
+      stroke-dasharray: 4 3;
+    }
     .target {
       fill: none;
       stroke: var(--hm-primary, #1E3A8A);
       stroke-width: 3.5;
     }
+    :host([size='medium']) .target {
+      stroke-width: 2.6;
+    }
+    :host([size='small']) .target {
+      stroke-width: 2;
+    }
     .marker-dot {
       fill: var(--hm-primary, #1E3A8A);
       stroke: var(--hm-bg, #FFFFFF);
       stroke-width: 2.5;
+    }
+    :host([size='medium']) .marker-dot {
+      stroke-width: 2;
+    }
+    :host([size='small']) .marker-dot {
+      stroke-width: 1.5;
     }
     .marker-line {
       stroke: var(--hm-primary, #1E3A8A);
@@ -102,10 +142,19 @@ export class HmOptimizationChart extends LitElement {
       stroke-dasharray: 3 3;
       opacity: 0.6;
     }
+    :host([size='small']) .marker-line {
+      stroke-width: 1;
+    }
     .marker-label {
       fill: var(--hm-primary, #1E3A8A);
       font-size: 18px;
       font-weight: 600;
+    }
+    :host([size='medium']) .marker-label {
+      font-size: 14px;
+    }
+    :host([size='small']) .marker-label {
+      font-size: 10px;
     }
     .legend {
       display: flex;
@@ -115,6 +164,16 @@ export class HmOptimizationChart extends LitElement {
       margin-top: 14px;
       font-size: 16px;
       color: var(--hm-text, #0F172A);
+    }
+    :host([size='medium']) .legend {
+      gap: 16px;
+      margin-top: 10px;
+      font-size: 13px;
+    }
+    :host([size='small']) .legend {
+      gap: 12px;
+      margin-top: 6px;
+      font-size: 11px;
     }
     .legend-item {
       display: flex;
@@ -165,6 +224,9 @@ export class HmOptimizationChart extends LitElement {
     targetValues: { attribute: false },
     targetMarker: { attribute: false },
     unit: { attribute: false },
+    // `size` reflects to the host attribute so CSS attribute-selectors
+    // can switch font / stroke scales without re-rendering the SVG.
+    size: { type: String, reflect: true },
   };
 
   rates: number[] = [];
@@ -173,6 +235,33 @@ export class HmOptimizationChart extends LitElement {
   targetValues: number[] | undefined = undefined;
   targetMarker: OptimizationChartMarker | undefined = undefined;
   unit: OptimizationChartUnit = 'fahrenheit';
+  size: 'small' | 'medium' | 'large' = 'large';
+
+  /**
+   * Per-size SVG layout. Width is kept constant so the host can stretch
+   * to its container; only the viewBox height (and the padding that
+   * lives inside it) changes, which produces a proportionally shorter
+   * chart at smaller sizes. Padding is tuned to leave room for the
+   * size-scaled axis labels defined in CSS.
+   */
+  private _dimensionsForSize(): {
+    width: number;
+    height: number;
+    padTop: number;
+    padBottom: number;
+    padLeft: number;
+    padRight: number;
+  } {
+    switch (this.size) {
+      case 'small':
+        return { width: 600, height: 190, padTop: 14, padBottom: 28, padLeft: 36, padRight: 42 };
+      case 'medium':
+        return { width: 600, height: 290, padTop: 20, padBottom: 42, padLeft: 50, padRight: 58 };
+      case 'large':
+      default:
+        return { width: 600, height: 380, padTop: 24, padBottom: 56, padLeft: 64, padRight: 72 };
+    }
+  }
 
   override render() {
     const isPercent = this.unit === 'percent';
@@ -243,15 +332,12 @@ export class HmOptimizationChart extends LitElement {
     }
 
     // SVG layout. Use a viewBox so the chart scales fluidly with the host.
-    // Tuned ~2x bigger than v2.4 (was 600x220 / pad 16/28/36/40) so the
-    // schedule trajectory is legible at typical card widths and the
-    // axis labels don't crowd each other.
-    const width = 600;
-    const height = 380;
-    const padTop = 24;
-    const padBottom = 56;
-    const padLeft = 64;
-    const padRight = 72;
+    // Three presets driven by the `size` property — `large` matches the
+    // v2.4.1 baseline, the other two trade chart real estate for screen
+    // density. CSS attribute-selectors above scale the SVG font + stroke
+    // weights in parallel so the chart reads cleanly at every size.
+    const { width, height, padTop, padBottom, padLeft, padRight } =
+      this._dimensionsForSize();
     const plotWidth = width - padLeft - padRight;
     const plotHeight = height - padTop - padBottom;
 
