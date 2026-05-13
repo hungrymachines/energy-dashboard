@@ -192,6 +192,50 @@ _FEATURE_TARGET_TEMPERATURE_RANGE = 2
 _RANGE_HVAC_MODES = frozenset({"heat_cool", "auto"})
 
 
+def _clamp_to_entity_range(entity_id: str, attrs: dict, setpoint: float) -> float:
+    """Constrain the setpoint to the climate entity's hardware range.
+
+    HA climate entities expose `min_temp` and `max_temp` attributes
+    that represent what the AC itself will accept — e.g. a window AC
+    typically reports min_temp=64°F, max_temp=86°F. The user's
+    Hungry Machines comfort band might extend below or above that
+    (e.g. configured low=60°F for aggressive pre-cooling), and the
+    backend trajectory can dip outside the configured band on cool
+    days. Sending a value outside the entity's hardware range
+    surfaces as `ServiceValidationError: Provided temperature X is not
+    valid. Accepted range is Y to Z` and aborts the service call.
+
+    Defensive: pull min_temp / max_temp from the entity, fall back to
+    HA's defaults (45..95 °F) if either is missing or unparseable, and
+    clamp the setpoint into that range. Log the clamp at INFO so the
+    operator can see when the AC's hardware limit is stricter than the
+    user's configured band.
+    """
+    # HA climate defaults (homeassistant.components.climate.const).
+    DEFAULT_MIN, DEFAULT_MAX = 45.0, 95.0
+    try:
+        entity_min = float(attrs.get("min_temp")) if attrs.get("min_temp") is not None else DEFAULT_MIN
+    except (TypeError, ValueError):
+        entity_min = DEFAULT_MIN
+    try:
+        entity_max = float(attrs.get("max_temp")) if attrs.get("max_temp") is not None else DEFAULT_MAX
+    except (TypeError, ValueError):
+        entity_max = DEFAULT_MAX
+
+    clamped = max(entity_min, min(setpoint, entity_max))
+    if clamped != setpoint:
+        _LOGGER.info(
+            "Hungry Machines HVAC %s: setpoint %.1f outside entity range "
+            "[%.1f, %.1f]; clamped to %.1f",
+            entity_id,
+            setpoint,
+            entity_min,
+            entity_max,
+            clamped,
+        )
+    return clamped
+
+
 def _build_hvac_payload(
     entity_id: str,
     state: object | None,
@@ -210,6 +254,10 @@ def _build_hvac_payload(
       heat_cool / auto, no range       → temperature = setpoint
       off / unknown                    → skip (no setpoint applied)
 
+    Setpoint is additionally clamped to the entity's own min_temp /
+    max_temp attributes so a backend value outside the AC's hardware
+    range doesn't trigger a ServiceValidationError abort.
+
     Returns the kwargs dict, or None when the entity is missing / off /
     in an unknown mode.
     """
@@ -227,13 +275,22 @@ def _build_hvac_payload(
         features = 0
     supports_range = bool(features & _FEATURE_TARGET_TEMPERATURE_RANGE)
 
+    # Last-mile defense: never send a value outside the entity's own
+    # accepted range. Logs the clamp so operators can see when the
+    # backend's value collides with the AC's hardware limits.
+    safe_setpoint = _clamp_to_entity_range(entity_id, attrs, setpoint)
+
     base = {"entity_id": entity_id}
     if hvac_mode in _RANGE_HVAC_MODES and supports_range:
         # Tight degenerate band — same value for both sides forces the
         # thermostat to maintain the exact setpoint.
-        return {**base, "target_temp_low": setpoint, "target_temp_high": setpoint}
+        return {
+            **base,
+            "target_temp_low": safe_setpoint,
+            "target_temp_high": safe_setpoint,
+        }
     if hvac_mode in ("cool", "heat") or hvac_mode in _RANGE_HVAC_MODES:
-        return {**base, "temperature": setpoint}
+        return {**base, "temperature": safe_setpoint}
     _LOGGER.info(
         "Hungry Machines HVAC: %s is in mode '%s', skipping setpoint apply",
         entity_id,
