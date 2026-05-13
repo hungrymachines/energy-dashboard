@@ -38,6 +38,87 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 _VALID_HVAC_STATES = ("HEAT", "COOL", "OFF", "FAN")
+
+
+# Mode → canonical recorded state. The mode tells us WHICH variety of
+# cooling/heating the user has selected; ECO and DRY are distinct from
+# COOL because their compressor duty and target outcomes differ enough
+# to warrant separate samples in the model fitter (combined later in
+# analysis if useful). 
+_MODE_TO_STATE: dict[str, str] = {
+    "cool": "COOL",
+    "eco": "ECO", "eco_cool": "ECO", "ecocool": "ECO", "energy_saver": "ECO",
+    "dry": "DRY", "dehumidify": "DRY",
+    "heat": "HEAT",
+    "fan": "FAN", "fan_only": "FAN", "fan only": "FAN",
+    "off": "OFF",
+}
+
+# Action → canonical recorded state, used when no mode-specific
+# distinction is available (e.g. older entities, single-mode units).
+# `hvac_action` is what the unit is DOING right now: `cooling`,
+# `heating`, `drying`, `fan`, `idle`, `off`.
+_ACTION_TO_STATE: dict[str, str] = {
+    "cooling": "COOL",
+    "heating": "HEAT", "preheating": "HEAT",
+    "drying": "DRY", "dehumidifying": "DRY",
+    "fan": "FAN",
+    "off": "OFF", "idle": "OFF", "defrosting": "OFF",
+}
+
+
+def _resolve_hvac_state(state: Any) -> str:
+    """Map an HA climate entity to one of HEAT/COOL/ECO/DRY/FAN/OFF.
+
+    Combines two HA attributes:
+      * `state.state` is the SET mode (cool, heat, heat_cool, auto,
+        eco, dry, fan_only, off, …).
+      * `state.attributes["hvac_action"]` is what the unit is DOING
+        right now (cooling, heating, drying, idle, fan, off).
+
+    Strategy:
+      1. If the action is `idle` or `off`, the unit isn't doing anything
+         thermal regardless of mode → OFF.
+      2. If the mode is a specific sub-mode (eco, dry, etc.) AND the
+         action is active (cooling / drying / etc.), record the
+         mode-specific state (ECO, DRY) so the fitter can later
+         distinguish them.
+      3. Otherwise fall back to mapping the action by itself
+         (cooling→COOL, heating→HEAT, drying→DRY, fan→FAN).
+      4. If no action is exposed, trust the mode alone — recording
+         the user's selected sub-mode is better than collapsing all
+         compressor activity to plain COOL.
+
+    Anything unrecognized → OFF (conservative).
+    """
+    action = str(state.attributes.get("hvac_action") or "").strip().lower()
+    mode = str(state.state or "").strip().lower()
+
+    # Unit is explicitly idle or off → OFF regardless of selected mode.
+    if action in ("off", "idle"):
+        return "OFF"
+
+    # If the mode is a sub-cooling type (eco, dry), prefer that label
+    # when the action is active. action="cooling" + mode="eco" → ECO,
+    # not COOL.
+    if mode in ("eco", "eco_cool", "ecocool", "energy_saver") and action in (
+        "cooling", "drying", "", "fan"
+    ):
+        return "ECO"
+    if mode in ("dry", "dehumidify") and action in (
+        "cooling", "drying", "dehumidifying", "", "fan"
+    ):
+        return "DRY"
+
+    # heat_cool / auto with an active action: trust the action.
+    if action in _ACTION_TO_STATE:
+        return _ACTION_TO_STATE[action]
+
+    # No (useful) hvac_action exposed — trust the mode directly.
+    if mode in _MODE_TO_STATE:
+        return _MODE_TO_STATE[mode]
+
+    return "OFF"
 _HOME_BUCKET = "home"
 _BUFFER_KEY = "readings_buffer"
 
@@ -74,12 +155,10 @@ def _build_hvac_home_reading(state: Any) -> dict | None:
             state.state,
         )
         return None
-    raw_state = (state.state or "").upper()
-    hvac_state = raw_state if raw_state in _VALID_HVAC_STATES else "OFF"
     reading: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "indoor_temp": indoor_temp,
-        "hvac_state": hvac_state,
+        "hvac_state": _resolve_hvac_state(state),
     }
     target_temp = state.attributes.get("temperature")
     if target_temp is not None:
@@ -87,6 +166,12 @@ def _build_hvac_home_reading(state: Any) -> dict | None:
     indoor_humidity = state.attributes.get("current_humidity")
     if indoor_humidity is not None:
         reading["indoor_humidity"] = indoor_humidity
+    # Fan speed string ("low", "medium", "high", "auto", etc.). Per-
+    # manufacturer string; recorded verbatim so the analyst can group by
+    # observed values. NULL if the entity doesn't expose it.
+    fan_mode = state.attributes.get("fan_mode")
+    if fan_mode is not None:
+        reading["fan_mode"] = str(fan_mode)
     return reading
 
 

@@ -82,6 +82,189 @@ async def test_capture_hvac_appends_to_home_bucket() -> None:
 
 
 @pytest.mark.asyncio
+async def test_capture_hvac_records_fan_mode() -> None:
+    """Regression: fan_mode was accepted by the API but the integration
+    never read state.attributes["fan_mode"], so every sensor_readings
+    row had fan_mode=NULL. Now the captured reading carries it."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    state = _state(
+        "cool",
+        {
+            "current_temperature": 72.5,
+            "temperature": 72.0,
+            "current_humidity": 44,
+            "fan_mode": "low",
+        },
+    )
+    hass = _hass({"climate.living_room": state})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["fan_mode"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_capture_hvac_uses_hvac_action_over_mode() -> None:
+    """A heat_cool-mode thermostat that's currently cooling reports
+    state='heat_cool' and hvac_action='cooling'. We must capture COOL,
+    not OFF (which would happen if we only looked at the mode string).
+
+    Regression: the previous logic uppercased state.state and checked
+    membership in (HEAT, COOL, OFF, FAN); heat_cool fell through to OFF
+    even when the unit was actively cooling, poisoning the model fitter
+    with fake OFF samples during heat_cool/auto operation."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    state = _state(
+        "heat_cool",
+        {
+            "current_temperature": 72.5,
+            "temperature": 72.0,
+            "hvac_action": "cooling",
+        },
+    )
+    hass = _hass({"climate.living_room": state})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["hvac_state"] == "COOL"
+
+
+@pytest.mark.asyncio
+async def test_capture_hvac_window_ac_eco_mode_records_eco() -> None:
+    """Window ACs commonly have Cool / Fan / Eco modes. ECO is recorded
+    distinctly from COOL — reduced-duty compressor means a different
+    cooling rate; the fitter can combine them later if useful."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.window_unit"},
+    }
+    state = _state(
+        "eco",
+        {
+            "current_temperature": 73.0,
+            "temperature": 72.0,
+            "fan_mode": "Low",
+        },
+    )
+    hass = _hass({"climate.window_unit": state})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["hvac_state"] == "ECO"
+    assert posted["fan_mode"] == "Low"
+
+
+@pytest.mark.asyncio
+async def test_capture_hvac_dry_mode_records_dry() -> None:
+    """Dry/dehumidify mode is recorded as DRY (distinct from COOL).
+    The compressor runs intermittently for moisture removal rather
+    than temperature targeting — the thermal effect differs enough
+    from full COOL to warrant a separate sample bucket."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    state = _state(
+        "dry",
+        {"current_temperature": 75.0, "temperature": 72.0},
+    )
+    hass = _hass({"climate.living_room": state})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["hvac_state"] == "DRY"
+
+
+@pytest.mark.asyncio
+async def test_capture_eco_mode_with_idle_action_records_off() -> None:
+    """A unit in ECO mode but currently idle (compressor off) should
+    record OFF, not ECO. The mode-specific label only applies when
+    the unit is actively engaged."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    state = _state(
+        "eco",
+        {
+            "current_temperature": 72.0,
+            "temperature": 72.0,
+            "hvac_action": "idle",
+        },
+    )
+    hass = _hass({"climate.living_room": state})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["hvac_state"] == "OFF"
+
+
+@pytest.mark.asyncio
+async def test_capture_hvac_action_idle_records_off() -> None:
+    """heat_cool mode + hvac_action='idle' means unit is on but not
+    actively heating or cooling at this moment → record OFF."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    state = _state(
+        "heat_cool",
+        {
+            "current_temperature": 72.0,
+            "temperature": 72.0,
+            "hvac_action": "idle",
+        },
+    )
+    hass = _hass({"climate.living_room": state})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["hvac_state"] == "OFF"
+
+
+@pytest.mark.asyncio
 async def test_capture_ev_appends_to_appliance_bucket() -> None:
     appliance = {
         "id": "ev-1",

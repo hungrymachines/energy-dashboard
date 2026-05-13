@@ -26,15 +26,27 @@ def _hass(climate_state: object | None = None) -> MagicMock:
     return hass
 
 
-def _climate_state(mode: str, supports_range: bool = True) -> MagicMock:
+def _climate_state(
+    mode: str,
+    supports_range: bool = True,
+    min_temp: float | None = None,
+    max_temp: float | None = None,
+) -> MagicMock:
     """Build a hass.states.get(...) return value matching a climate entity.
 
     `supports_range` toggles the TARGET_TEMPERATURE_RANGE bit on
     `supported_features`. The state value is the HVAC mode string.
+    Optional min_temp/max_temp simulate a real AC's hardware limits
+    (e.g. window units typically report 64..86 °F).
     """
     state = MagicMock()
     state.state = mode
-    state.attributes = {"supported_features": 2 if supports_range else 1}
+    attrs: dict = {"supported_features": 2 if supports_range else 1}
+    if min_temp is not None:
+        attrs["min_temp"] = min_temp
+    if max_temp is not None:
+        attrs["max_temp"] = max_temp
+    state.attributes = attrs
     return state
 
 
@@ -209,6 +221,58 @@ async def test_apply_hvac_heat_mode_uses_setpoint_directly() -> None:
     hass.services.async_call.assert_awaited_once()
     payload = hass.services.async_call.await_args.args[2]
     assert payload == {"entity_id": "climate.living_room", "temperature": 71.5}
+
+
+@pytest.mark.asyncio
+async def test_apply_hvac_clamps_setpoint_below_entity_min() -> None:
+    """Regression: backend trajectory could dip below the AC's hardware
+    min_temp (e.g. 59 °F sent to a window unit with min_temp=64). HA
+    raised ServiceValidationError and the service call aborted. The
+    integration now clamps the setpoint to the entity's accepted range
+    so the call always lands."""
+    hass = _hass(_climate_state(
+        "cool", supports_range=False, min_temp=64.0, max_temp=86.0,
+    ))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(setpoint=59.0)  # below AC min
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    hass.services.async_call.assert_awaited_once()
+    payload = hass.services.async_call.await_args.args[2]
+    assert payload["temperature"] == 64.0, (
+        f"setpoint=59 should clamp to entity min_temp=64, got {payload}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_hvac_clamps_setpoint_above_entity_max() -> None:
+    """Mirror — setpoint above the entity's max_temp clamps to max."""
+    hass = _hass(_climate_state(
+        "heat", supports_range=False, min_temp=64.0, max_temp=86.0,
+    ))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(setpoint=92.0)  # above AC max
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    hass.services.async_call.assert_awaited_once()
+    payload = hass.services.async_call.await_args.args[2]
+    assert payload["temperature"] == 86.0
+
+
+@pytest.mark.asyncio
+async def test_apply_hvac_setpoint_within_range_passes_through() -> None:
+    """Setpoint inside the entity range is sent unmodified."""
+    hass = _hass(_climate_state(
+        "cool", supports_range=False, min_temp=64.0, max_temp=86.0,
+    ))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(setpoint=72.5)
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+    payload = hass.services.async_call.await_args.args[2]
+    assert payload["temperature"] == 72.5
 
 
 @pytest.mark.asyncio
