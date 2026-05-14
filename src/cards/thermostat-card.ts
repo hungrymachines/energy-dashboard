@@ -27,38 +27,127 @@ type HassLike = { states?: Record<string, HassStateLike> };
 const SCHEDULE_TTL_MS = 5 * 60 * 1000;
 const PREFERENCES_DEBOUNCE_MS = 500;
 
+/**
+ * Lovelace card on the HA Overview that mirrors the per-appliance card
+ * from the Hungry Machines dashboard panel — same `.card` chrome,
+ * badge + name header, savings line, and the rich
+ * `<hm-optimization-chart>` (price bars + comfort band + setpoint line).
+ *
+ * Adds two affordances the panel card doesn't have, since this lives on
+ * the user's main HA Overview where their actual indoor/outdoor sensors
+ * are reachable through `hass.states`:
+ *   * Current indoor / outdoor temperature readout (live, not from the
+ *     schedule), pulled from `config.entities.indoor_temp` /
+ *     `config.entities.outdoor_temp`.
+ *   * In-place "Savings level" slider that PUTs `/api/v1/preferences`
+ *     on debounce — the panel exposes the same control inside the
+ *     constraint editor, but jumping to the panel from the overview
+ *     would be heavy for a 1-tap change.
+ */
 export class HmThermostatCard extends LitElement {
   static override styles = css`
     :host {
       display: block;
-      font-family: var(--hm-font-body, sans-serif);
+      font-family: var(--hm-font-body, system-ui, sans-serif);
       color: var(--hm-text, #0F172A);
-      background: var(--hm-bg, #F8FAFC);
-      border-radius: 10px;
-      padding: 16px;
-      box-sizing: border-box;
     }
     .stub {
-      padding: 12px;
+      padding: 24px;
       color: var(--hm-muted, #64748B);
       font-size: 14px;
+      background: #ffffff;
+      border: 1px solid rgba(100, 116, 139, 0.2);
+      border-radius: 14px;
     }
-    .temps {
+    /* Matches .card from hungry-machines-panel.ts so the overview card
+       and the panel card read as siblings. */
+    .card {
+      background: #ffffff;
+      border: 1px solid rgba(100, 116, 139, 0.2);
+      border-radius: 14px;
+      padding: 20px;
       display: flex;
-      align-items: baseline;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .card-head {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .card-head .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      background: var(--hm-primary, #1E3A8A);
+      color: #ffffff;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      flex-shrink: 0;
+    }
+    .card-head .name {
+      font-family: var(--hm-font-heading, Lora, serif);
+      font-weight: 600;
+      color: var(--hm-text, #0F172A);
+      font-size: 1.15rem;
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .card-head .mode-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      background: var(--hm-muted, #64748B);
+      color: #ffffff;
+    }
+    .card-head .mode-badge[data-mode='cool'] {
+      background: var(--hm-secondary, #0F766E);
+    }
+    .card-head .mode-badge[data-mode='heat'] {
+      background: var(--hm-error, #DC2626);
+    }
+    .card-head .mode-badge[data-mode='off'] {
+      background: var(--hm-muted, #64748B);
+    }
+    /* Current temp + savings row, two metrics side-by-side. */
+    .metrics {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: end;
       gap: 16px;
-      margin-bottom: 10px;
+    }
+    .indoor-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
     }
     .indoor {
-      font-family: var(--hm-font-heading, serif);
-      font-size: 2.5rem;
+      font-family: var(--hm-font-heading, Lora, serif);
+      font-size: 2.2rem;
       font-weight: 600;
       color: var(--hm-primary, #1E3A8A);
       line-height: 1;
     }
     .outdoor {
-      font-size: 0.95rem;
+      font-size: 0.85rem;
       color: var(--hm-muted, #64748B);
+    }
+    .savings {
+      color: var(--hm-secondary, #0F766E);
+      font-weight: 600;
+      font-size: 1.1rem;
+      text-align: right;
     }
     .missing-entity {
       font-size: 13px;
@@ -68,63 +157,34 @@ export class HmThermostatCard extends LitElement {
       color: var(--hm-primary, #1E3A8A);
       text-decoration: underline;
     }
-    .mode-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 12px;
-    }
-    .mode-badge {
-      display: inline-flex;
-      align-items: center;
-      padding: 4px 10px;
-      border-radius: 999px;
-      font-size: 12px;
-      font-weight: 600;
-      text-transform: capitalize;
-      background: var(--hm-primary, #1E3A8A);
-      color: #ffffff;
-    }
-    .mode-badge[data-mode='heat'] {
-      background: var(--hm-error, #DC2626);
-    }
-    .mode-badge[data-mode='cool'] {
-      background: var(--hm-secondary, #0F766E);
-    }
-    .mode-badge[data-mode='off'] {
-      background: var(--hm-muted, #64748B);
-    }
-    .chart-row {
-      margin-bottom: 12px;
-    }
     .chart-error {
       color: var(--hm-error, #DC2626);
       font-size: 12px;
+      padding: 12px;
+      background: rgba(220, 38, 38, 0.06);
+      border-radius: 8px;
     }
     .slider-row {
       display: flex;
       align-items: center;
       gap: 10px;
-      padding-top: 8px;
-      border-top: 1px solid rgba(100, 116, 139, 0.25);
+      padding-top: 10px;
+      border-top: 1px solid rgba(100, 116, 139, 0.2);
     }
     .slider-row label {
       font-size: 13px;
       color: var(--hm-text, #0F172A);
+      font-weight: 600;
     }
     .slider-row input[type='range'] {
       flex: 1;
+      accent-color: var(--hm-primary, #1E3A8A);
     }
     .slider-value {
-      width: 24px;
+      width: 20px;
       text-align: center;
-      font-weight: 600;
+      font-weight: 700;
       color: var(--hm-primary, #1E3A8A);
-    }
-    .unit {
-      font-size: 0.9rem;
-      color: var(--hm-muted, #64748B);
-      margin-left: 4px;
     }
   `;
 
@@ -155,7 +215,7 @@ export class HmThermostatCard extends LitElement {
   }
 
   getCardSize(): number {
-    return 4;
+    return 5;
   }
 
   override connectedCallback(): void {
@@ -282,55 +342,90 @@ export class HmThermostatCard extends LitElement {
       Array.isArray(ratesArr) && ratesArr.length === 48
         ? ratesArr
         : new Array(48).fill(0);
-    const highTemps = this._schedule?.schedule?.high_temps;
-    const lowTemps = this._schedule?.schedule?.low_temps;
+    const sched = (this._schedule?.schedule ?? {}) as Record<string, unknown>;
+    const highLimits = this._asNumberArray(sched['high_temps']);
+    const lowLimits = this._asNumberArray(sched['low_temps']);
+    // Prefer the backend's clamped per-interval setpoints. Falls back to
+    // temp_trajectory for legacy schedule rows.
+    const targetValues =
+      this._asNumberArray(sched['setpoint_temps']) ??
+      this._asNumberArray(sched['temp_trajectory']);
+
+    const savingsPct = this._schedule?.estimated_savings_pct;
+    const savingsText =
+      typeof savingsPct === 'number'
+        ? `${Math.round(savingsPct)}% savings today`
+        : '';
 
     return html`
-      <div class="temps">
-        ${indoorConfigured
-          ? html`<span class="indoor">${this._formatTemp(indoorRaw)}</span>`
-          : html`<span class="missing-entity">
-              Indoor temperature entity not set.
-              <a href="#hm-panel">Configure in HM panel</a>
-            </span>`}
-        ${entities.outdoor_temp
-          ? html`<span class="outdoor">
-              Outside ${this._formatTemp(outdoorRaw)}
-            </span>`
-          : null}
-      </div>
-      <div class="mode-row">
-        <span class="mode-badge" data-mode=${mode}>${mode}</span>
-        ${this._schedule?.estimated_savings_pct !== undefined
-          ? html`<span class="unit">
-              ${Math.round(this._schedule.estimated_savings_pct)}% savings today
-            </span>`
-          : null}
-      </div>
-      <div class="chart-row">
+      <div class="card" data-appliance-type="hvac">
+        <div class="card-head">
+          <span class="badge" aria-hidden="true">HVAC</span>
+          <span class="name">Thermostat</span>
+          <span class="mode-badge" data-mode=${mode}>${mode}</span>
+        </div>
+        <div class="metrics">
+          <div class="indoor-wrap">
+            ${indoorConfigured
+              ? html`<span class="indoor">${this._formatTemp(indoorRaw)}</span>`
+              : html`<span class="missing-entity">
+                  Indoor temperature entity not set.
+                  <a href="#hm-panel">Configure in HM panel</a>
+                </span>`}
+            ${entities.outdoor_temp
+              ? html`<span class="outdoor">
+                  Outside ${this._formatTemp(outdoorRaw)}
+                </span>`
+              : null}
+          </div>
+          ${savingsText
+            ? html`<div class="savings">${savingsText}</div>`
+            : null}
+        </div>
         ${this._scheduleError
           ? html`<div class="chart-error">${this._scheduleError}</div>`
-          : html`<hm-schedule-chart
+          : html`<hm-optimization-chart
               .rates=${rates}
-              .highTemps=${highTemps}
-              .lowTemps=${lowTemps}
-              unit="fahrenheit"
-            ></hm-schedule-chart>`}
-      </div>
-      <div class="slider-row">
-        <label for="hm-savings-level">Savings level</label>
-        <input
-          id="hm-savings-level"
-          name="savings_level"
-          type="range"
-          min="1"
-          max="3"
-          step="1"
-          .value=${String(this._savingsLevel)}
-          @input=${(e: Event) => this._onSavingsInput(e)}
-        />
-        <span class="slider-value">${this._savingsLevel}</span>
+              .highLimits=${highLimits}
+              .lowLimits=${lowLimits}
+              .targetValues=${targetValues}
+              .unit=${'fahrenheit'}
+              .yMin=${40}
+              .yMax=${100}
+              .size=${'medium'}
+            ></hm-optimization-chart>`}
+        <div class="slider-row">
+          <label for="hm-savings-level">Savings level</label>
+          <input
+            id="hm-savings-level"
+            name="savings_level"
+            type="range"
+            min="1"
+            max="3"
+            step="1"
+            .value=${String(this._savingsLevel)}
+            @input=${(e: Event) => this._onSavingsInput(e)}
+          />
+          <span class="slider-value">${this._savingsLevel}</span>
+        </div>
       </div>
     `;
+  }
+
+  /**
+   * Convert an unknown schedule field into a length-48 number array.
+   * Returns undefined when the field isn't an array, has the wrong
+   * length, or any element fails Number.isFinite — the chart's own
+   * empty-state then renders instead of a misshapen plot.
+   */
+  private _asNumberArray(v: unknown): number[] | undefined {
+    if (!Array.isArray(v) || v.length !== 48) return undefined;
+    const out: number[] = [];
+    for (const x of v) {
+      const n = Number(x);
+      if (!Number.isFinite(n)) return undefined;
+      out.push(n);
+    }
+    return out;
   }
 }
