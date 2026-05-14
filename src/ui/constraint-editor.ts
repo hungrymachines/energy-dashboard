@@ -909,8 +909,9 @@ export class HmConstraintEditor extends LitElement {
                         )}
                     />
                     <span>
-                      <strong>HVAC mode</strong> — pick eco/cool/off per
-                      slot based on cooling load.
+                      <strong>On / off control</strong> — turn the unit
+                      on when cooling or heating is needed and off when
+                      it isn't.
                     </span>
                   </label>
                 </fieldset>

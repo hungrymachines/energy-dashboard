@@ -470,28 +470,28 @@ async def _maybe_set_hvac_mode(
     """Issue `climate.set_hvac_mode` if the entity supports the
     canonical mode AND it differs from the entity's current mode.
 
-    Canonical values from the optimizer are uppercase HVAC actions
-    (`COOL`, `ECO`, `DRY`, `HEAT`, `OFF`). HA `hvac_modes` are
-    lowercase (`cool`, `heat`, `heat_cool`, `auto`, `dry`, `fan_only`,
-    `off`). ECO doesn't have a direct HA hvac_mode equivalent — most
-    units expose ECO via `preset_mode` rather than `hvac_mode`. For
-    now we treat ECO as "stay in cool but flag the canonical for
-    diagnostics"; a future enhancement could call
-    `climate.set_preset_mode(preset='eco')` when the entity advertises
-    it in `preset_modes`.
+    Canonical values from the optimizer are the HA-universal HVAC
+    modes — `COOL`, `HEAT`, `OFF` — which every climate entity
+    supports. ECO/DRY were considered but dropped: HA exposes those
+    as `preset_mode` not `hvac_mode`, and preset support varies too
+    much across vendors to recommend universally. Defensive ECO/DRY
+    fallback below catches old cached schedules from a prior version
+    of the backend that may still contain those values; they're
+    mapped to the closest hvac_mode equivalent so a stale cache
+    doesn't crash an apply.
     """
     available = attrs.get("hvac_modes") or []
     if not isinstance(available, list):
         return
     needle = canonical.strip().lower()
 
-    # ECO maps to the underlying COOL mode for the actual
-    # set_hvac_mode call — the preset is a separate axis we don't
-    # touch yet. The optimizer's ECO recommendation still feeds the
-    # apply log so we can track when ECO would have been preferred.
-    if needle == "eco":
+    # Defensive: ECO/DRY only show up here if a stale schedule from
+    # an older backend version is still cached. Map both to plain
+    # cool so the apply still lands; once the user's backend writes
+    # a fresh schedule those values won't appear at all.
+    if needle in ("eco", "dry"):
         target = "cool"
-    elif needle in ("cool", "heat", "off", "dry", "fan_only"):
+    elif needle in ("cool", "heat", "off", "fan_only"):
         target = needle
     else:
         return

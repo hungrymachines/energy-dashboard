@@ -392,11 +392,12 @@ async def test_apply_hvac_skips_set_hvac_mode_when_already_in_target_mode() -> N
 
 
 @pytest.mark.asyncio
-async def test_apply_hvac_eco_canonical_falls_back_to_cool_for_set_hvac_mode() -> None:
-    """ECO is a preset (`preset_mode`), not an HVAC mode, on most
-    units. When the schedule recommends ECO we still need to ensure
-    the unit is in cool mode so the setpoint applies correctly; ECO
-    selection itself is a future enhancement (preset_mode service)."""
+async def test_apply_hvac_legacy_eco_in_cache_falls_back_to_cool() -> None:
+    """The current backend doesn't recommend ECO any more (preset
+    coverage is too vendor-specific to deliver universally), but a
+    schedule cached from an older backend version may still contain
+    ECO values. The integration must safely degrade ECO → set
+    hvac_mode='cool' so a stale cache doesn't block the apply."""
     hass = _hass(_climate_state(
         "off", supports_range=False,
         hvac_modes=["off", "cool", "heat"],
