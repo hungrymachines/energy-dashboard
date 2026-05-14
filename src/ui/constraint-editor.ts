@@ -184,6 +184,41 @@ export class HmConstraintEditor extends LitElement {
       width: auto;
       margin-top: 3px;
     }
+    fieldset.opt-toggles {
+      border: 1px solid rgba(100, 116, 139, 0.3);
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin: 0;
+    }
+    fieldset.opt-toggles legend {
+      padding: 0 6px;
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--hm-text, #0F172A);
+    }
+    .opt-toggles-help {
+      margin: 0 0 10px 0;
+      font-size: 12px;
+      color: var(--hm-muted, #64748B);
+    }
+    label.opt-toggle {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      font-size: 13px;
+      margin-bottom: 8px;
+      cursor: pointer;
+    }
+    label.opt-toggle:last-child {
+      margin-bottom: 0;
+    }
+    label.opt-toggle input {
+      width: auto;
+      margin-top: 3px;
+    }
+    label.opt-toggle span {
+      line-height: 1.4;
+    }
     table.hourly-table {
       width: 100%;
       border-collapse: collapse;
@@ -363,6 +398,10 @@ export class HmConstraintEditor extends LitElement {
         const mode = toString((c as Record<string, unknown>)['optimization_mode']);
         const timeAway = toString((c as Record<string, unknown>)['time_away']);
         const timeHome = toString((c as Record<string, unknown>)['time_home']);
+        // Phase C/D opt-ins. Default both off so existing users see no
+        // behavior change unless they explicitly tick the box.
+        const optFan = (c as Record<string, unknown>)['optimize_hvac_fan'];
+        const optMode = (c as Record<string, unknown>)['optimize_hvac_mode'];
         return {
           base_temperature: base === null ? '72' : String(base),
           savings_level: savings === null ? '3' : String(savings),
@@ -371,6 +410,8 @@ export class HmConstraintEditor extends LitElement {
             : 'auto',
           time_away: timeAway,
           time_home: timeHome,
+          optimize_hvac_fan: optFan === true ? '1' : '',
+          optimize_hvac_mode: optMode === true ? '1' : '',
         };
       }
     }
@@ -516,6 +557,8 @@ export class HmConstraintEditor extends LitElement {
           base_temperature: Number(v['base_temperature']),
           savings_level: Number(v['savings_level']),
           optimization_mode: (v['optimization_mode'] ?? 'auto') as OptimizationMode,
+          optimize_hvac_fan: v['optimize_hvac_fan'] === '1',
+          optimize_hvac_mode: v['optimize_hvac_mode'] === '1',
         };
         const timeAway = v['time_away'] ?? '';
         if (timeAway !== '') payload['time_away'] = timeAway;
@@ -831,6 +874,46 @@ export class HmConstraintEditor extends LitElement {
                     ? html`<div class="field-error">${errs['optimization_mode']}</div>`
                     : null}
                 </label>
+                <fieldset class="opt-toggles">
+                  <legend>What can we optimize?</legend>
+                  <p class="opt-toggles-help">
+                    Temperature setpoints are always optimized within
+                    your comfort band. Turn these on to let the
+                    optimizer also pick fan speed and HVAC mode.
+                  </p>
+                  <label class="opt-toggle">
+                    <input
+                      name="optimize_hvac_fan"
+                      type="checkbox"
+                      .checked=${v['optimize_hvac_fan'] === '1'}
+                      @change=${(e: Event) =>
+                        this._setValue(
+                          'optimize_hvac_fan',
+                          (e.target as HTMLInputElement).checked ? '1' : '',
+                        )}
+                    />
+                    <span>
+                      <strong>Fan speed</strong> — high during pre-cool
+                      bursts, low during maintenance.
+                    </span>
+                  </label>
+                  <label class="opt-toggle">
+                    <input
+                      name="optimize_hvac_mode"
+                      type="checkbox"
+                      .checked=${v['optimize_hvac_mode'] === '1'}
+                      @change=${(e: Event) =>
+                        this._setValue(
+                          'optimize_hvac_mode',
+                          (e.target as HTMLInputElement).checked ? '1' : '',
+                        )}
+                    />
+                    <span>
+                      <strong>HVAC mode</strong> — pick eco/cool/off per
+                      slot based on cooling load.
+                    </span>
+                  </label>
+                </fieldset>
                 <div class="time-fields">
                   ${this._hourlyEnabled
                     ? null

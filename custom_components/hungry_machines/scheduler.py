@@ -317,6 +317,67 @@ def _resolve_setpoint(schedule: dict, slot: int) -> float | None:
         return None
 
 
+def _resolve_canonical(schedule: dict, key: str, slot: int) -> str | None:
+    """Pull a canonical-string per-slot value (`fan_mode_schedule` or
+    `hvac_mode_schedule`) from the schedule.
+
+    The presence of the key in the JSONB is itself the user opt-in
+    signal: the backend only writes these arrays when the user has
+    enabled the corresponding optimizer toggle in their preferences.
+    Returns None when the key is missing entirely (= temperature-only
+    mode), when the slot index is out of range, or when the entry
+    isn't a non-empty string.
+    """
+    arr = schedule.get(key)
+    if not isinstance(arr, list) or slot >= len(arr):
+        return None
+    val = arr[slot]
+    if not isinstance(val, str) or not val.strip():
+        return None
+    return val.strip()
+
+
+def _match_entity_option(
+    canonical: str,
+    available: list[str] | None,
+) -> str | None:
+    """Map a canonical optimizer string (e.g. 'high', 'COOL') to the
+    actual label the user's climate entity exposes.
+
+    HA climate entities advertise their accepted vocabulary via the
+    `fan_modes` and `hvac_modes` attributes. The labels vary by brand:
+    a window AC might offer `["Low", "Medium", "High", "Auto"]`; a
+    central thermostat might offer `["Auto Low", "Circulation",
+    "Turbo"]`. We do a case-insensitive substring match — first
+    canonical-in-option (e.g. 'high' matches 'High Speed'), then
+    option-in-canonical as a fallback (e.g. 'Auto Low' matches 'low').
+
+    Returns the matched entity-side label verbatim, or None when no
+    plausible match exists. The caller skips the service call rather
+    than send a value the entity will reject.
+    """
+    if not available or not canonical:
+        return None
+    needle = canonical.strip().lower()
+    if not needle:
+        return None
+    options = [o for o in available if isinstance(o, str)]
+    # Exact match wins.
+    for opt in options:
+        if opt.strip().lower() == needle:
+            return opt
+    # Canonical inside option (e.g. 'high' matches 'High Speed').
+    for opt in options:
+        if needle in opt.strip().lower():
+            return opt
+    # Option inside canonical (e.g. entity offers 'Auto Low' for our
+    # 'auto low' or 'low' canonical).
+    for opt in options:
+        if opt.strip().lower() in needle:
+            return opt
+    return None
+
+
 async def _apply_hvac(
     hass: HomeAssistant, entity_id: str, schedule: dict, slot: int
 ) -> None:
@@ -330,17 +391,46 @@ async def _apply_hvac(
         return
 
     state = hass.states.get(entity_id) if hass.states else None
+    attrs = getattr(state, "attributes", None) or {} if state else {}
+
+    # Phase D — HVAC mode change. Sequence matters: switch the mode
+    # FIRST so the temperature command applies to the new mode. Skip
+    # silently when the schedule didn't include a mode (= user opted
+    # out) or when the requested mode isn't in the entity's
+    # `hvac_modes` list (= incompatible unit).
+    mode_canonical = _resolve_canonical(schedule, "hvac_mode_schedule", slot)
+    if mode_canonical is not None:
+        await _maybe_set_hvac_mode(hass, entity_id, attrs, mode_canonical, slot)
+        # Re-read state after a mode change so the payload builder sees
+        # the freshly-set mode (the next service call's payload shape
+        # depends on whether the unit is in heat_cool/auto vs. cool/heat).
+        state = hass.states.get(entity_id) if hass.states else state
+        attrs = getattr(state, "attributes", None) or {} if state else {}
+
     payload = _build_hvac_payload(entity_id, state, setpoint)
     if payload is None:
         return
 
     raw_state = getattr(state, "state", None) or "unknown" if state else "missing"
+
+    # Phase C — fan-mode change. Issued in parallel with the
+    # temperature setpoint; fan and temperature are independent service
+    # calls on the climate domain. Same opt-in / vocabulary-match
+    # discipline as the mode change above.
+    fan_canonical = _resolve_canonical(schedule, "fan_mode_schedule", slot)
+    fan_label = _match_entity_option(
+        fan_canonical, attrs.get("fan_modes") if fan_canonical else None,
+    )
+
     _LOGGER.info(
-        "Hungry Machines HVAC apply: entity=%s slot=%d mode=%s setpoint=%.1f payload=%s",
+        "Hungry Machines HVAC apply: entity=%s slot=%d mode=%s setpoint=%.1f"
+        "%s%s payload=%s",
         entity_id,
         slot,
         raw_state,
         setpoint,
+        f" fan={fan_label}" if fan_label else "",
+        f" hvac_mode_canonical={mode_canonical}" if mode_canonical else "",
         payload,
     )
 
@@ -354,6 +444,89 @@ async def _apply_hvac(
     except Exception as err:  # noqa: BLE001
         _LOGGER.warning(
             "Hungry Machines HVAC apply failed for %s: %s", entity_id, err
+        )
+
+    if fan_label is not None:
+        try:
+            await hass.services.async_call(
+                "climate",
+                "set_fan_mode",
+                {"entity_id": entity_id, "fan_mode": fan_label},
+                blocking=False,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "Hungry Machines HVAC fan apply failed for %s: %s", entity_id, err
+            )
+
+
+async def _maybe_set_hvac_mode(
+    hass: HomeAssistant,
+    entity_id: str,
+    attrs: dict,
+    canonical: str,
+    slot: int,
+) -> None:
+    """Issue `climate.set_hvac_mode` if the entity supports the
+    canonical mode AND it differs from the entity's current mode.
+
+    Canonical values from the optimizer are uppercase HVAC actions
+    (`COOL`, `ECO`, `DRY`, `HEAT`, `OFF`). HA `hvac_modes` are
+    lowercase (`cool`, `heat`, `heat_cool`, `auto`, `dry`, `fan_only`,
+    `off`). ECO doesn't have a direct HA hvac_mode equivalent — most
+    units expose ECO via `preset_mode` rather than `hvac_mode`. For
+    now we treat ECO as "stay in cool but flag the canonical for
+    diagnostics"; a future enhancement could call
+    `climate.set_preset_mode(preset='eco')` when the entity advertises
+    it in `preset_modes`.
+    """
+    available = attrs.get("hvac_modes") or []
+    if not isinstance(available, list):
+        return
+    needle = canonical.strip().lower()
+
+    # ECO maps to the underlying COOL mode for the actual
+    # set_hvac_mode call — the preset is a separate axis we don't
+    # touch yet. The optimizer's ECO recommendation still feeds the
+    # apply log so we can track when ECO would have been preferred.
+    if needle == "eco":
+        target = "cool"
+    elif needle in ("cool", "heat", "off", "dry", "fan_only"):
+        target = needle
+    else:
+        return
+
+    matched = _match_entity_option(target, [str(m) for m in available])
+    if matched is None:
+        _LOGGER.info(
+            "Hungry Machines HVAC mode skip slot=%d: entity %s does not "
+            "advertise mode '%s' (available=%s)",
+            slot,
+            entity_id,
+            target,
+            available,
+        )
+        return
+
+    # No-op if already in that mode.
+    state = hass.states.get(entity_id) if hass.states else None
+    if state is not None:
+        current = str(getattr(state, "state", "")).strip().lower()
+        if current == matched.strip().lower():
+            return
+
+    try:
+        await hass.services.async_call(
+            "climate",
+            "set_hvac_mode",
+            {"entity_id": entity_id, "hvac_mode": matched},
+            blocking=False,
+        )
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning(
+            "Hungry Machines HVAC mode apply failed for %s: %s",
+            entity_id,
+            err,
         )
 
 

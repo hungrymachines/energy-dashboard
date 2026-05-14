@@ -8,6 +8,10 @@ export interface Preferences {
   optimization_mode: string;
   hourly_high_temps_f?: number[] | null;
   hourly_low_temps_f?: number[] | null;
+  /** Phase C — let the optimizer pick fan speed per slot. */
+  optimize_hvac_fan?: boolean;
+  /** Phase D — let the optimizer pick HVAC mode (cool/eco/off) per slot. */
+  optimize_hvac_mode?: boolean;
 }
 
 export interface UpdatePreferencesBody {
@@ -18,6 +22,8 @@ export interface UpdatePreferencesBody {
   optimization_mode?: string;
   hourly_high_temps_f?: number[] | null;
   hourly_low_temps_f?: number[] | null;
+  optimize_hvac_fan?: boolean;
+  optimize_hvac_mode?: boolean;
 }
 
 export function get(): Promise<Preferences> {

@@ -31,6 +31,8 @@ def _climate_state(
     supports_range: bool = True,
     min_temp: float | None = None,
     max_temp: float | None = None,
+    fan_modes: list[str] | None = None,
+    hvac_modes: list[str] | None = None,
 ) -> MagicMock:
     """Build a hass.states.get(...) return value matching a climate entity.
 
@@ -38,6 +40,8 @@ def _climate_state(
     `supported_features`. The state value is the HVAC mode string.
     Optional min_temp/max_temp simulate a real AC's hardware limits
     (e.g. window units typically report 64..86 °F).
+    Optional fan_modes / hvac_modes lists simulate the entity's
+    advertised vocabulary so Phase C/D apply paths can vocab-match.
     """
     state = MagicMock()
     state.state = mode
@@ -46,6 +50,10 @@ def _climate_state(
         attrs["min_temp"] = min_temp
     if max_temp is not None:
         attrs["max_temp"] = max_temp
+    if fan_modes is not None:
+        attrs["fan_modes"] = fan_modes
+    if hvac_modes is not None:
+        attrs["hvac_modes"] = hvac_modes
     state.attributes = attrs
     return state
 
@@ -148,12 +156,17 @@ def _hvac_cache(
     entity_id: str = "climate.living_room",
     setpoint: float = 71.5,
     include_setpoints: bool = True,
+    fan_mode_schedule: list[str] | None = None,
+    hvac_mode_schedule: list[str] | None = None,
 ) -> dict:
     """Build a cached schedule for one HVAC appliance.
 
     `setpoint` is the value at slot 28 (where each apply test reads).
     When `include_setpoints` is False, only the legacy high/low band
     is present so we can verify the fallback path.
+    Optional fan_mode_schedule / hvac_mode_schedule simulate the
+    Phase C/D opt-in arrays the backend writes when the user enables
+    fan or mode optimization.
     """
     schedule: dict = {
         "high_temps": [74.0] * 48,
@@ -162,6 +175,10 @@ def _hvac_cache(
     if include_setpoints:
         # Constant setpoint across the day for test simplicity.
         schedule["setpoint_temps"] = [setpoint] * 48
+    if fan_mode_schedule is not None:
+        schedule["fan_mode_schedule"] = fan_mode_schedule
+    if hvac_mode_schedule is not None:
+        schedule["hvac_mode_schedule"] = hvac_mode_schedule
     return {
         "schedule": {
             "fetched_at": _fresh_ts(),
@@ -273,6 +290,130 @@ async def test_apply_hvac_setpoint_within_range_passes_through() -> None:
         await scheduler.apply_current_slot(hass, entry)
     payload = hass.services.async_call.await_args.args[2]
     assert payload["temperature"] == 72.5
+
+
+@pytest.mark.asyncio
+async def test_apply_hvac_calls_set_fan_mode_when_schedule_includes_fan() -> None:
+    """Phase C: when the schedule carries `fan_mode_schedule`, the
+    integration calls `climate.set_fan_mode` alongside the temperature
+    setpoint, mapping the canonical 'high'/'low'/'auto' label to the
+    entity's actual fan_modes vocabulary."""
+    hass = _hass(_climate_state(
+        "cool", supports_range=False,
+        fan_modes=["Low", "Medium", "High", "Auto"],
+    ))
+    entry = _entry()
+    fan_sched = ["high"] * 48
+    hass.data[DOMAIN] = _hvac_cache(
+        setpoint=71.5, fan_mode_schedule=fan_sched,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    # Two service calls expected: set_temperature + set_fan_mode.
+    assert hass.services.async_call.await_count == 2
+    services = [c.args[1] for c in hass.services.async_call.await_args_list]
+    assert "set_temperature" in services
+    assert "set_fan_mode" in services
+    fan_call = next(
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_fan_mode"
+    )
+    # Canonical 'high' must map to the entity's 'High' label exactly.
+    assert fan_call.args[2]["fan_mode"] == "High"
+
+
+@pytest.mark.asyncio
+async def test_apply_hvac_skips_fan_when_label_unmatched() -> None:
+    """If the entity's fan_modes list doesn't contain anything
+    matching the canonical, skip the fan service call rather than
+    sending a value the entity will reject."""
+    hass = _hass(_climate_state(
+        "cool", supports_range=False,
+        # No 'high'-equivalent label.
+        fan_modes=["Quiet", "Sleep", "Turbo"],
+    ))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(
+        setpoint=71.5, fan_mode_schedule=["high"] * 48,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    # Only the temperature call landed.
+    services = [c.args[1] for c in hass.services.async_call.await_args_list]
+    assert services == ["set_temperature"]
+
+
+@pytest.mark.asyncio
+async def test_apply_hvac_calls_set_hvac_mode_when_schedule_changes_mode() -> None:
+    """Phase D: when `hvac_mode_schedule[slot]` differs from the
+    entity's current mode, call `climate.set_hvac_mode` BEFORE the
+    setpoint so the temperature applies in the right mode."""
+    hass = _hass(_climate_state(
+        "off",  # currently off — schedule wants COOL
+        supports_range=False,
+        hvac_modes=["off", "cool", "heat", "fan_only"],
+    ))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(
+        setpoint=71.5, hvac_mode_schedule=["COOL"] * 48,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    services = [c.args[1] for c in hass.services.async_call.await_args_list]
+    assert "set_hvac_mode" in services
+    mode_call = next(
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_hvac_mode"
+    )
+    assert mode_call.args[2]["hvac_mode"] == "cool"
+
+
+@pytest.mark.asyncio
+async def test_apply_hvac_skips_set_hvac_mode_when_already_in_target_mode() -> None:
+    """Mode change is a no-op when the entity is already in the target
+    mode — no point re-issuing the same command every 30 minutes."""
+    hass = _hass(_climate_state(
+        "cool", supports_range=False,
+        hvac_modes=["off", "cool", "heat"],
+    ))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(
+        setpoint=71.5, hvac_mode_schedule=["COOL"] * 48,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    services = [c.args[1] for c in hass.services.async_call.await_args_list]
+    assert "set_hvac_mode" not in services
+    assert services == ["set_temperature"]
+
+
+@pytest.mark.asyncio
+async def test_apply_hvac_eco_canonical_falls_back_to_cool_for_set_hvac_mode() -> None:
+    """ECO is a preset (`preset_mode`), not an HVAC mode, on most
+    units. When the schedule recommends ECO we still need to ensure
+    the unit is in cool mode so the setpoint applies correctly; ECO
+    selection itself is a future enhancement (preset_mode service)."""
+    hass = _hass(_climate_state(
+        "off", supports_range=False,
+        hvac_modes=["off", "cool", "heat"],
+    ))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(
+        setpoint=71.5, hvac_mode_schedule=["ECO"] * 48,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    mode_call = next(
+        (c for c in hass.services.async_call.await_args_list
+         if c.args[1] == "set_hvac_mode"), None,
+    )
+    assert mode_call is not None
+    assert mode_call.args[2]["hvac_mode"] == "cool"
 
 
 @pytest.mark.asyncio
