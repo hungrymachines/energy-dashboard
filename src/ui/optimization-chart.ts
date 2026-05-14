@@ -224,6 +224,8 @@ export class HmOptimizationChart extends LitElement {
     targetValues: { attribute: false },
     targetMarker: { attribute: false },
     unit: { attribute: false },
+    yMin: { attribute: false },
+    yMax: { attribute: false },
     // `size` reflects to the host attribute so CSS attribute-selectors
     // can switch font / stroke scales without re-rendering the SVG.
     size: { type: String, reflect: true },
@@ -235,6 +237,13 @@ export class HmOptimizationChart extends LitElement {
   targetValues: number[] | undefined = undefined;
   targetMarker: OptimizationChartMarker | undefined = undefined;
   unit: OptimizationChartUnit = 'fahrenheit';
+  // Caller-supplied fixed Y-axis range. When both are set, the chart
+  // uses them verbatim and skips the auto-derive logic. Useful for
+  // pinning per-appliance scales (HVAC 40–100 °F, water heater 50–150
+  // °F) so charts read consistently across the dashboard regardless
+  // of the day's actual data range.
+  yMin: number | undefined = undefined;
+  yMax: number | undefined = undefined;
   size: 'small' | 'medium' | 'large' = 'large';
 
   /**
@@ -252,14 +261,17 @@ export class HmOptimizationChart extends LitElement {
     padLeft: number;
     padRight: number;
   } {
+    // padTop is sized to fit the axis title (e.g. `°F`, `$/kWh`) above
+    // the top tick label without either clipping against the SVG edge
+    // or overlapping the tick. Title baseline sits at `padTop - 12`.
     switch (this.size) {
       case 'small':
-        return { width: 600, height: 190, padTop: 14, padBottom: 28, padLeft: 36, padRight: 42 };
+        return { width: 600, height: 198, padTop: 22, padBottom: 28, padLeft: 36, padRight: 42 };
       case 'medium':
-        return { width: 600, height: 290, padTop: 20, padBottom: 42, padLeft: 50, padRight: 58 };
+        return { width: 600, height: 298, padTop: 28, padBottom: 42, padLeft: 50, padRight: 58 };
       case 'large':
       default:
-        return { width: 600, height: 380, padTop: 24, padBottom: 56, padLeft: 64, padRight: 72 };
+        return { width: 600, height: 388, padTop: 32, padBottom: 56, padLeft: 64, padRight: 72 };
     }
   }
 
@@ -354,12 +366,26 @@ export class HmOptimizationChart extends LitElement {
     svg.setAttribute('xmlns', SVG_NS);
 
     // --- Y-axis ranges --------------------------------------------------
-    // For percent: pin to [0, 100] so charge curves are interpretable
-    // across appliances. For fahrenheit: derive from the union of all
-    // plotted line values, padded ±2°F.
+    // Resolution order, most specific first:
+    //   1. Caller-supplied `yMin` / `yMax` — used verbatim for per-
+    //      appliance fixed scales (HVAC 40–100 °F, water heater 50–150
+    //      °F). Both must be finite numbers AND yMax > yMin.
+    //   2. `'percent'` unit — pin to [0, 100] so charge curves are
+    //      interpretable across appliances.
+    //   3. `'fahrenheit'` default — derive from the union of all
+    //      plotted line values, padded ±2 °F.
     let yMin: number;
     let yMax: number;
-    if (this.unit === 'percent') {
+    if (
+      typeof this.yMin === 'number' &&
+      typeof this.yMax === 'number' &&
+      Number.isFinite(this.yMin) &&
+      Number.isFinite(this.yMax) &&
+      this.yMax > this.yMin
+    ) {
+      yMin = this.yMin;
+      yMax = this.yMax;
+    } else if (this.unit === 'percent') {
       yMin = 0;
       yMax = 100;
     } else {
@@ -484,6 +510,8 @@ export class HmOptimizationChart extends LitElement {
     }
 
     // --- X axis: hour labels every 4 hours -----------------------------
+    // Compact two-digit hour (`00`, `04`, …, `24`) — the trailing `:00`
+    // was visual noise since every tick is on the hour anyway.
     for (const h of [0, 4, 8, 12, 16, 20, 24]) {
       const x = padLeft + (h / 24) * plotWidth;
       const lbl = document.createElementNS(SVG_NS, 'text');
@@ -491,7 +519,7 @@ export class HmOptimizationChart extends LitElement {
       lbl.setAttribute('x', String(x));
       lbl.setAttribute('y', String(padTop + plotHeight + 16));
       lbl.setAttribute('text-anchor', h === 0 ? 'start' : h === 24 ? 'end' : 'middle');
-      lbl.textContent = `${String(h % 24).padStart(2, '0')}:00`;
+      lbl.textContent = String(h % 24).padStart(2, '0');
       svg.appendChild(lbl);
     }
 
@@ -523,11 +551,17 @@ export class HmOptimizationChart extends LitElement {
       svg.appendChild(lbl);
     }
 
-    // Axis titles
+    // Axis titles — sit ABOVE the plot area with enough headroom that
+    // they don't overlap the top tick label. The top tick's baseline
+    // is at `padTop + 3`; with ~11px of glyph height the tick occupies
+    // roughly [padTop - 8, padTop + 3]. Placing the title baseline at
+    // `padTop - 12` gives ~9px of clean separation between the title's
+    // bottom and the tick's top.
+    const titleY = padTop - 12;
     const yTitle = document.createElementNS(SVG_NS, 'text');
     yTitle.setAttribute('class', 'axis-title');
     yTitle.setAttribute('x', String(padLeft - 24));
-    yTitle.setAttribute('y', String(padTop - 4));
+    yTitle.setAttribute('y', String(titleY));
     yTitle.setAttribute('text-anchor', 'start');
     yTitle.textContent = this.unit === 'percent' ? '%' : '°F';
     svg.appendChild(yTitle);
@@ -535,7 +569,7 @@ export class HmOptimizationChart extends LitElement {
     const priceTitle = document.createElementNS(SVG_NS, 'text');
     priceTitle.setAttribute('class', 'axis-title');
     priceTitle.setAttribute('x', String(padLeft + plotWidth + 4));
-    priceTitle.setAttribute('y', String(padTop - 4));
+    priceTitle.setAttribute('y', String(titleY));
     priceTitle.setAttribute('text-anchor', 'start');
     priceTitle.textContent = '$/kWh';
     svg.appendChild(priceTitle);

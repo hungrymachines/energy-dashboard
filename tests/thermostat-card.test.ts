@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { HmThermostatCard } from '../src/cards/thermostat-card.js';
-import { HmScheduleChart } from '../src/ui/schedule-chart.js';
+import { HmOptimizationChart } from '../src/ui/optimization-chart.js';
 import { authStore, type AuthState } from '../src/store.js';
 import { clearTokens, setApiBase, setTokens } from '../src/api/client.js';
 
-if (!customElements.get('hm-schedule-chart')) {
-  customElements.define('hm-schedule-chart', HmScheduleChart);
+if (!customElements.get('hm-optimization-chart')) {
+  customElements.define('hm-optimization-chart', HmOptimizationChart);
 }
 if (!customElements.get('hm-thermostat-card')) {
   customElements.define('hm-thermostat-card', HmThermostatCard);
@@ -317,8 +317,70 @@ describe('hm-thermostat-card', () => {
     expect(root.querySelector('input[name="savings_level"]')).toBeNull();
   });
 
-  it('exposes getCardSize() returning 4', () => {
+  it('exposes getCardSize() returning 5', () => {
     const el = mountCard();
-    expect(el.getCardSize()).toBe(4);
+    expect(el.getCardSize()).toBe(5);
+  });
+
+  it('renders the panel-style card chrome (badge, name, savings, mode)', async () => {
+    installFetchStub();
+    const el = mountCard({
+      hass: {
+        states: {
+          'sensor.living_room_temp': {
+            entity_id: 'sensor.living_room_temp',
+            state: '72',
+          },
+        },
+      },
+    });
+    el.setConfig({
+      type: 'custom:hm-thermostat-card',
+      entities: { indoor_temp: 'sensor.living_room_temp' },
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    // Matches the panel's .card / .card-head / .savings classes so the
+    // overview card and dashboard card read as siblings.
+    expect(root.querySelector('.card[data-appliance-type="hvac"]')).not.toBeNull();
+    const badge = root.querySelector('.card-head .badge');
+    expect(badge!.textContent?.trim()).toBe('HVAC');
+    const name = root.querySelector('.card-head .name');
+    expect(name!.textContent?.trim()).toBe('Thermostat');
+    // Mode badge picks up the schedule's mode ("cool" in the fixture).
+    const mode = root.querySelector('.card-head .mode-badge');
+    expect(mode!.getAttribute('data-mode')).toBe('cool');
+    // Savings line uses the same wording as the panel card.
+    expect(root.querySelector('.savings')!.textContent).toContain('savings today');
+  });
+
+  it('renders <hm-optimization-chart> with HVAC-range props (40–100°F)', async () => {
+    installFetchStub();
+    const el = mountCard({
+      hass: {
+        states: {
+          'sensor.living_room_temp': {
+            entity_id: 'sensor.living_room_temp',
+            state: '72',
+          },
+        },
+      },
+    });
+    el.setConfig({
+      type: 'custom:hm-thermostat-card',
+      entities: { indoor_temp: 'sensor.living_room_temp' },
+    });
+    await flush(el);
+
+    const chart = el.shadowRoot!.querySelector(
+      'hm-optimization-chart',
+    ) as unknown as HmOptimizationChart | null;
+    expect(chart).not.toBeNull();
+    // The card pins HVAC range so the visual scale matches the dashboard
+    // (40–100 °F, never auto-derived).
+    expect(chart!.yMin).toBe(40);
+    expect(chart!.yMax).toBe(100);
+    expect(chart!.unit).toBe('fahrenheit');
   });
 });

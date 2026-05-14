@@ -173,6 +173,11 @@ describe('hm-constraint-editor', () => {
       base_temperature: 72,
       savings_level: 2,
       optimization_mode: 'cool',
+      // Phase C/D opt-ins default off, so the payload always carries
+      // explicit booleans (not omitted) — that lets PUT /preferences
+      // disambiguate "not provided" from "user turned this off".
+      optimize_hvac_fan: false,
+      optimize_hvac_mode: false,
       hourly_low_temps_f: null,
       hourly_high_temps_f: null,
     });
@@ -246,11 +251,82 @@ describe('hm-constraint-editor', () => {
       base_temperature: 72,
       savings_level: 2,
       optimization_mode: 'cool',
+      optimize_hvac_fan: false,
+      optimize_hvac_mode: false,
       time_away: '06:30',
       hourly_low_temps_f: null,
       hourly_high_temps_f: null,
     });
     expect('time_home' in body).toBe(false);
+  });
+
+  it('toggles optimize_hvac_fan and optimize_hvac_mode opt-ins (Phase C/D)', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: {
+        base_temperature: 72,
+        savings_level: 2,
+        optimization_mode: 'cool',
+      },
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    // Both checkboxes should default to UNCHECKED — temperature-only
+    // is the safe baseline for new + existing users.
+    const fanBox = root.querySelector<HTMLInputElement>(
+      'input[name="optimize_hvac_fan"]',
+    );
+    const modeBox = root.querySelector<HTMLInputElement>(
+      'input[name="optimize_hvac_mode"]',
+    );
+    expect(fanBox).not.toBeNull();
+    expect(modeBox).not.toBeNull();
+    expect(fanBox!.checked).toBe(false);
+    expect(modeBox!.checked).toBe(false);
+
+    // Tick fan, leave mode unchecked.
+    fanBox!.checked = true;
+    fanBox!.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+
+    clickSave(root);
+    await flush(el);
+
+    expect(calls.length).toBe(1);
+    const body = JSON.parse(String(calls[0]![1]?.body));
+    expect(body.optimize_hvac_fan).toBe(true);
+    expect(body.optimize_hvac_mode).toBe(false);
+  });
+
+  it('seeds Phase C/D toggles from currentConstraints (both true)', async () => {
+    captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: {
+        base_temperature: 72,
+        savings_level: 2,
+        optimization_mode: 'cool',
+        optimize_hvac_fan: true,
+        optimize_hvac_mode: true,
+      },
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const fanBox = root.querySelector<HTMLInputElement>(
+      'input[name="optimize_hvac_fan"]',
+    );
+    const modeBox = root.querySelector<HTMLInputElement>(
+      'input[name="optimize_hvac_mode"]',
+    );
+    expect(fanBox!.checked).toBe(true);
+    expect(modeBox!.checked).toBe(true);
   });
 
   it('blocks save with Use HH:MM error when time_away is invalid (US-FE-HVAC-EDITOR-PREFS-01 c)', async () => {

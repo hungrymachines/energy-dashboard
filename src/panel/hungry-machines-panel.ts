@@ -1447,6 +1447,13 @@ export class HungryMachinesPanel extends LitElement {
     let lowLimits: number[] | undefined;
     let targetValues: number[] | undefined;
     let chartUnit: 'fahrenheit' | 'percent' = 'fahrenheit';
+    // Per-appliance fixed Y-axis range so charts read consistently
+    // across the dashboard regardless of the day's data:
+    //   HVAC          → 40–100 °F (covers winter heat to summer cool)
+    //   Water heater  → 50–150 °F (covers tap-cold to scald-hot)
+    //   EV / battery  → handled by the chart's `'percent'` mode (0–100)
+    let yMin: number | undefined;
+    let yMax: number | undefined;
     let marker:
       | { interval: number; value: number; label?: string }
       | undefined;
@@ -1478,11 +1485,15 @@ export class HungryMachinesPanel extends LitElement {
           ? expandHourlyTo48(prefs.hourly_low_temps_f as number[])
           : lowTemps;
       chartUnit = 'fahrenheit';
+      yMin = 40;
+      yMax = 100;
     } else if (type === 'water_heater') {
       highLimits = asNumberArray(sched['high_temps']);
       lowLimits = asNumberArray(sched['low_temps']);
       targetValues = asNumberArray(sched['temp_trajectory']);
       chartUnit = 'fahrenheit';
+      yMin = 50;
+      yMax = 150;
     } else if (type === 'ev_charger' || type === 'home_battery') {
       targetValues = asNumberArray(sched['value_trajectory']);
       chartUnit = 'percent';
@@ -1519,6 +1530,8 @@ export class HungryMachinesPanel extends LitElement {
           .targetValues=${targetValues}
           .targetMarker=${marker}
           .unit=${chartUnit}
+          .yMin=${yMin}
+          .yMax=${yMax}
           .size=${this._chartSize}
         ></hm-optimization-chart>
         <button
