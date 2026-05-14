@@ -201,7 +201,7 @@ describe('hm-optimization-chart', () => {
     el.lowLimits = Array<number>(48).fill(70);
     await flush(el);
     expect(el.size).toBe('large');
-    expect(viewBoxOf(el)).toEqual({ width: 600, height: 380 });
+    expect(viewBoxOf(el)).toEqual({ width: 600, height: 388 });
     expect(el.getAttribute('size')).toBe('large');
   });
 
@@ -213,7 +213,7 @@ describe('hm-optimization-chart', () => {
     el.highLimits = Array<number>(48).fill(74);
     el.lowLimits = Array<number>(48).fill(70);
     await flush(el);
-    expect(viewBoxOf(el)).toEqual({ width: 600, height: 290 });
+    expect(viewBoxOf(el)).toEqual({ width: 600, height: 298 });
     expect(el.getAttribute('size')).toBe('medium');
   });
 
@@ -225,8 +225,119 @@ describe('hm-optimization-chart', () => {
     el.highLimits = Array<number>(48).fill(74);
     el.lowLimits = Array<number>(48).fill(70);
     await flush(el);
-    expect(viewBoxOf(el)).toEqual({ width: 600, height: 190 });
+    expect(viewBoxOf(el)).toEqual({ width: 600, height: 198 });
     expect(el.getAttribute('size')).toBe('small');
+  });
+
+  it('renders hour-only x-axis labels (no trailing :00)', async () => {
+    const el = mount();
+    el.rates = RATES_48;
+    el.targetValues = Array<number>(48).fill(72);
+    el.highLimits = Array<number>(48).fill(74);
+    el.lowLimits = Array<number>(48).fill(70);
+    await flush(el);
+
+    const labels = Array.from(
+      el.shadowRoot!.querySelectorAll('text.axis-label'),
+    ).map((n) => n.textContent || '');
+    // Hour 24 % 24 → '00' (same as start), so the unique x-axis labels
+    // are 00, 04, 08, 12, 16, 20 plus the wraparound '00'. None should
+    // carry a trailing ':00'.
+    expect(labels).toContain('00');
+    expect(labels).toContain('04');
+    expect(labels).toContain('12');
+    expect(labels).toContain('20');
+    for (const l of labels) {
+      expect(l.endsWith(':00')).toBe(false);
+    }
+  });
+
+  it('honors caller-supplied yMin/yMax for HVAC range (40–100 °F)', async () => {
+    const el = mount();
+    el.rates = RATES_48;
+    el.targetValues = Array<number>(48).fill(72);
+    el.highLimits = Array<number>(48).fill(74);
+    el.lowLimits = Array<number>(48).fill(70);
+    el.yMin = 40;
+    el.yMax = 100;
+    await flush(el);
+
+    const labels = Array.from(
+      el.shadowRoot!.querySelectorAll('text.axis-label'),
+    ).map((n) => n.textContent || '');
+    // 3-tick scale: 40, 60, 80, 100. All four must be present as the
+    // left-axis (no '%' suffix) labels.
+    expect(labels).toContain('40');
+    expect(labels).toContain('60');
+    expect(labels).toContain('80');
+    expect(labels).toContain('100');
+  });
+
+  it('honors caller-supplied yMin/yMax for water-heater range (50–150 °F)', async () => {
+    const el = mount();
+    el.rates = RATES_48;
+    el.targetValues = Array<number>(48).fill(120);
+    el.highLimits = Array<number>(48).fill(140);
+    el.lowLimits = Array<number>(48).fill(110);
+    el.yMin = 50;
+    el.yMax = 150;
+    await flush(el);
+
+    const labels = Array.from(
+      el.shadowRoot!.querySelectorAll('text.axis-label'),
+    ).map((n) => n.textContent || '');
+    expect(labels).toContain('50');
+    expect(labels).toContain('150');
+  });
+
+  it('ignores yMin/yMax if invalid (NaN, inverted) and falls back to auto-derive', async () => {
+    const el = mount();
+    el.rates = RATES_48;
+    el.targetValues = Array<number>(48).fill(72);
+    el.highLimits = Array<number>(48).fill(74);
+    el.lowLimits = Array<number>(48).fill(70);
+    // Invalid: max < min. Should fall back to auto-derived range from
+    // data values (70..74 padded to 68..76).
+    el.yMin = 100;
+    el.yMax = 50;
+    await flush(el);
+
+    const labels = Array.from(
+      el.shadowRoot!.querySelectorAll('text.axis-label'),
+    ).map((n) => n.textContent || '');
+    // The 100 from yMin must not appear as a left-axis tick when the
+    // auto-derive path kicked in.
+    expect(labels).not.toContain('100');
+  });
+
+  it('positions axis title above the top tick label without overlap', async () => {
+    const el = mount();
+    el.size = 'large';
+    el.rates = RATES_48;
+    el.targetValues = Array<number>(48).fill(72);
+    el.highLimits = Array<number>(48).fill(74);
+    el.lowLimits = Array<number>(48).fill(70);
+    await flush(el);
+
+    const titleEl = el.shadowRoot!.querySelector('text.axis-title');
+    const tickEls = Array.from(
+      el.shadowRoot!.querySelectorAll('text.axis-label'),
+    );
+    expect(titleEl).not.toBeNull();
+
+    // Find the top left-axis tick label (smallest y among labels with
+    // text-anchor="end" — those are the left-axis ones).
+    const leftAxisTicks = tickEls.filter(
+      (t) => t.getAttribute('text-anchor') === 'end',
+    );
+    expect(leftAxisTicks.length).toBeGreaterThan(0);
+    const topTickY = Math.min(
+      ...leftAxisTicks.map((t) => Number(t.getAttribute('y') || 0)),
+    );
+    const titleY = Number(titleEl!.getAttribute('y') || 0);
+    // Title baseline must sit clearly above the top tick baseline.
+    // (text height ~11px → 8+ px separation prevents overlap.)
+    expect(topTickY - titleY).toBeGreaterThanOrEqual(8);
   });
 
   it('switching size live re-renders with the new viewBox', async () => {
@@ -237,10 +348,10 @@ describe('hm-optimization-chart', () => {
     el.highLimits = Array<number>(48).fill(74);
     el.lowLimits = Array<number>(48).fill(70);
     await flush(el);
-    expect(viewBoxOf(el)).toEqual({ width: 600, height: 380 });
+    expect(viewBoxOf(el)).toEqual({ width: 600, height: 388 });
 
     el.size = 'small';
     await flush(el);
-    expect(viewBoxOf(el)).toEqual({ width: 600, height: 190 });
+    expect(viewBoxOf(el)).toEqual({ width: 600, height: 198 });
   });
 });
