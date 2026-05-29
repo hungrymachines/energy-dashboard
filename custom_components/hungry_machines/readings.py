@@ -143,13 +143,51 @@ def _read_state(hass: HomeAssistant, entity_id: str) -> Any | None:
     return state
 
 
-def _build_hvac_home_reading(state: Any) -> dict | None:
-    """Build the /api/v1/readings payload from the HVAC climate entity."""
+def _build_hvac_home_reading(
+    hass: HomeAssistant,
+    state: Any,
+    indoor_temp_entity_id: str | None = None,
+) -> dict | None:
+    """Build the /api/v1/readings payload from the HVAC climate entity.
+
+    Indoor temperature resolution:
+      1. The climate entity's `current_temperature` attribute (the
+         universal HA convention).
+      2. Fallback: `indoor_temp_entity_id` from the appliance config.
+         Used when the climate entity declares the attribute but
+         reports it as None — common with Tuya/Smart Life thermostat
+         wrappers, IR-blaster AC controllers, and Generic Thermostat
+         helpers, which don't have an embedded thermistor and expect
+         the user to wire in a separate sensor.
+
+    Returns None (no reading appended) when neither source produces a
+    usable value, with a single INFO log explaining why.
+    """
     indoor_temp = state.attributes.get("current_temperature")
+    if indoor_temp is None and indoor_temp_entity_id:
+        fallback_state = hass.states.get(indoor_temp_entity_id) if hass.states else None
+        if fallback_state is not None:
+            indoor_temp = _coerce_float(getattr(fallback_state, "state", None))
+            if indoor_temp is None:
+                _LOGGER.info(
+                    "Hungry Machines: indoor-temp fallback entity '%s' state=%r "
+                    "is not a number; home reading skipped",
+                    indoor_temp_entity_id,
+                    getattr(fallback_state, "state", None),
+                )
+        else:
+            _LOGGER.info(
+                "Hungry Machines: indoor-temp fallback entity '%s' not present "
+                "in hass.states; home reading skipped",
+                indoor_temp_entity_id,
+            )
     if indoor_temp is None:
         _LOGGER.info(
-            "Hungry Machines: HVAC entity '%s' lacks current_temperature attribute "
-            "(attrs=%s, state=%s); home reading skipped",
+            "Hungry Machines: HVAC entity '%s' reports current_temperature=None "
+            "and no indoor_temp_entity_id is configured "
+            "(climate-entity attrs=%s, state=%s); home reading skipped. "
+            "Configure an indoor temperature sensor in the appliance settings "
+            "to capture readings from this thermostat.",
             state.entity_id,
             sorted(state.attributes.keys()) if state.attributes else [],
             state.state,
@@ -262,7 +300,13 @@ async def capture_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
             continue
 
         if atype == "hvac":
-            reading = _build_hvac_home_reading(control_state)
+            indoor_temp_entity_id = (
+                config.get("indoor_temp_entity_id")
+                if isinstance(config, dict) else None
+            )
+            reading = _build_hvac_home_reading(
+                hass, control_state, indoor_temp_entity_id,
+            )
             if reading is None:
                 continue
             _append(hass, _HOME_BUCKET, reading)

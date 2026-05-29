@@ -324,6 +324,118 @@ async def test_apply_hvac_calls_set_fan_mode_when_schedule_includes_fan() -> Non
 
 
 @pytest.mark.asyncio
+async def test_apply_hvac_does_not_call_set_fan_mode_for_auto_sentinel() -> None:
+    """Regression: when the optimizer marks a slot OFF, it writes
+    `"auto"` into fan_mode_schedule as a sentinel meaning "leave fan
+    alone". The integration MUST NOT call set_fan_mode with the
+    entity's "Auto" option, because on Tuya / mini-split units that
+    triggers Eco / Auto-compressor mode which then overrides the
+    setpoint. Only the temperature setpoint should land."""
+    hass = _hass(_climate_state(
+        "cool", supports_range=False,
+        fan_modes=["Low", "Medium", "High", "Auto"],
+    ))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(
+        setpoint=73.0, fan_mode_schedule=["auto"] * 48,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=26):
+        await scheduler.apply_current_slot(hass, entry)
+
+    services = [c.args[1] for c in hass.services.async_call.await_args_list]
+    assert services == ["set_temperature"], (
+        f"expected only set_temperature, got {services}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_hvac_does_not_call_set_fan_mode_for_off_sentinel() -> None:
+    """Same as the `auto` sentinel test but for the alternative `off`
+    canonical that older schedules may carry."""
+    hass = _hass(_climate_state(
+        "cool", supports_range=False,
+        fan_modes=["Low", "Medium", "High", "Auto"],
+    ))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(
+        setpoint=73.0, fan_mode_schedule=["off"] * 48,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=10):
+        await scheduler.apply_current_slot(hass, entry)
+
+    services = [c.args[1] for c in hass.services.async_call.await_args_list]
+    assert "set_fan_mode" not in services
+
+
+@pytest.mark.asyncio
+async def test_apply_hvac_sentinel_is_case_insensitive() -> None:
+    """The sentinel check must tolerate any casing the backend or a
+    custom optimizer might emit (`AUTO`, `Auto`, `off`, etc.)."""
+    hass = _hass(_climate_state(
+        "cool", supports_range=False,
+        fan_modes=["Low", "Medium", "High", "Auto"],
+    ))
+    entry = _entry()
+    schedule = ["AUTO"] * 24 + ["Off"] * 24
+    hass.data[DOMAIN] = _hvac_cache(
+        setpoint=73.0, fan_mode_schedule=schedule,
+    )
+    # Probe one slot from each half.
+    for slot in (5, 35):
+        hass.services.async_call.reset_mock()
+        with patch.object(scheduler, "_current_slot", return_value=slot):
+            await scheduler.apply_current_slot(hass, entry)
+        services = [c.args[1] for c in hass.services.async_call.await_args_list]
+        assert "set_fan_mode" not in services, (
+            f"slot={slot} expected no set_fan_mode, got {services}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_apply_hvac_maps_canonical_medium_to_entity_label() -> None:
+    """Backend now emits `medium` for moderate-tier fan slots (between
+    low maintenance and high pre-cool). The matcher must resolve it to
+    the entity's "Medium" label without regression."""
+    hass = _hass(_climate_state(
+        "cool", supports_range=False,
+        fan_modes=["Low", "Medium", "High", "Auto"],
+    ))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(
+        setpoint=72.0, fan_mode_schedule=["medium"] * 48,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    fan_call = next(
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_fan_mode"
+    )
+    assert fan_call.args[2]["fan_mode"] == "Medium"
+
+
+@pytest.mark.asyncio
+async def test_apply_hvac_medium_skipped_on_two_speed_units() -> None:
+    """Window ACs that only expose Low/High/Auto (no Medium) should
+    silently skip the fan-mode call for a `medium` canonical instead
+    of forcing the user's unit into a label it doesn't advertise. The
+    setpoint command still lands so cooling is unaffected."""
+    hass = _hass(_climate_state(
+        "cool", supports_range=False,
+        fan_modes=["Low", "High", "Auto"],
+    ))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(
+        setpoint=72.0, fan_mode_schedule=["medium"] * 48,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    services = [c.args[1] for c in hass.services.async_call.await_args_list]
+    assert services == ["set_temperature"]
+
+
+@pytest.mark.asyncio
 async def test_apply_hvac_skips_fan_when_label_unmatched() -> None:
     """If the entity's fan_modes list doesn't contain anything
     matching the canonical, skip the fan service call rather than

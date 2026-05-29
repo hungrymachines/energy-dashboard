@@ -11,7 +11,12 @@ import {
   update as updateRates,
   type RatesResponse,
 } from '../api/rates.js';
-import { list as listAppliances, type Appliance, type ApplianceType } from '../api/appliances.js';
+import {
+  list as listAppliances,
+  remove as appliancesApiRemove,
+  type Appliance,
+  type ApplianceType,
+} from '../api/appliances.js';
 import { patchMe } from '../api/auth.js';
 import { get as getPreferences, type Preferences } from '../api/preferences.js';
 import { expandHourlyTo48, hasCustomRates, hasHourlyComfortBands } from '../utils/hourly.js';
@@ -422,6 +427,95 @@ export class HungryMachinesPanel extends LitElement {
       background: var(--hm-primary, #1E3A8A);
       color: #ffffff;
     }
+    .card .card-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .card .edit-btn.secondary {
+      border-color: var(--hm-muted, #64748B);
+      color: var(--hm-muted, #64748B);
+    }
+    .card .edit-btn.secondary:hover {
+      background: var(--hm-muted, #64748B);
+      color: #ffffff;
+    }
+    .card .edit-btn.danger {
+      border-color: var(--hm-error, #DC2626);
+      color: var(--hm-error, #DC2626);
+    }
+    .card .edit-btn.danger:hover {
+      background: var(--hm-error, #DC2626);
+      color: #ffffff;
+    }
+    .confirm-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.55);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      z-index: 1100;
+    }
+    .confirm-panel {
+      background: #ffffff;
+      border-radius: 12px;
+      padding: 24px;
+      width: 100%;
+      max-width: 440px;
+      box-sizing: border-box;
+      box-shadow: 0 14px 40px rgba(15, 23, 42, 0.35);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .confirm-panel h2 {
+      margin: 0;
+      font-family: var(--hm-font-heading, serif);
+      color: var(--hm-error, #DC2626);
+      font-size: 1.15rem;
+    }
+    .confirm-panel p {
+      margin: 0;
+      color: var(--hm-text, #0F172A);
+      font-size: 14px;
+      line-height: 1.4;
+    }
+    .confirm-panel .confirm-error {
+      color: var(--hm-error, #DC2626);
+      background: rgba(220, 38, 38, 0.08);
+      border: 1px solid var(--hm-error, #DC2626);
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .confirm-panel .actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      margin-top: 4px;
+    }
+    .confirm-panel button {
+      padding: 8px 16px;
+      border-radius: 8px;
+      font: inherit;
+      cursor: pointer;
+    }
+    .confirm-panel button.cancel {
+      background: transparent;
+      border: 1px solid var(--hm-muted, #64748B);
+      color: var(--hm-muted, #64748B);
+    }
+    .confirm-panel button.confirm {
+      background: var(--hm-error, #DC2626);
+      border: 1px solid var(--hm-error, #DC2626);
+      color: #ffffff;
+    }
+    .confirm-panel button.confirm[disabled] {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
     .empty,
     .error {
       display: flex;
@@ -798,6 +892,14 @@ export class HungryMachinesPanel extends LitElement {
     _editorApplianceType: { state: true },
     _editorConstraints: { state: true },
     _addApplianceOpen: { state: true },
+    // Appliance currently being edited via the appliance-form overlay.
+    // Null when the form is in CREATE mode (or closed entirely).
+    _editingAppliance: { state: true },
+    // Pending delete confirmation — when set, the delete confirm modal
+    // is shown for that appliance.
+    _deletingAppliance: { state: true },
+    _deleting: { state: true },
+    _deleteError: { state: true },
     _weatherEntityDraft: { state: true },
     _zoneDraft: { state: true },
     _savedFlash: { state: true },
@@ -827,6 +929,10 @@ export class HungryMachinesPanel extends LitElement {
   _editorApplianceType: ApplianceType = 'hvac';
   _editorConstraints: Record<string, unknown> | undefined = undefined;
   _addApplianceOpen = false;
+  _editingAppliance: Appliance | null = null;
+  _deletingAppliance: Appliance | null = null;
+  _deleting = false;
+  _deleteError: string | null = null;
   _weatherEntityDraft = '';
   _zoneDraft = 1;
   _savedFlash = false;
@@ -1198,8 +1304,73 @@ export class HungryMachinesPanel extends LitElement {
     void this._recomputeNow();
   };
 
+  private _onApplianceUpdated = (event: Event): void => {
+    this._editingAppliance = null;
+    // Refresh the locally cached appliance with the merged config so
+    // a subsequent edit sees the latest values without a round trip.
+    const updated = (event as CustomEvent).detail?.appliance as Appliance | undefined;
+    if (updated && updated.id) {
+      this._appliancesById = { ...this._appliancesById, [updated.id]: updated };
+    }
+    // Config changes (entity_id, hvac_type, indoor_temp sensor, etc.)
+    // can change the optimizer's inputs. Recompute so the dashboard
+    // chart reflects the new appliance state.
+    void this._recomputeNow();
+  };
+
   private _onApplianceCancelled = (): void => {
     this._addApplianceOpen = false;
+    this._editingAppliance = null;
+  };
+
+  private _openEditAppliance = (applianceId: string): void => {
+    const appliance = this._appliancesById[applianceId];
+    if (!appliance) return;
+    this._editingAppliance = appliance;
+  };
+
+  private _openDeleteAppliance = (applianceId: string): void => {
+    const appliance = this._appliancesById[applianceId];
+    if (!appliance) return;
+    this._deletingAppliance = appliance;
+    this._deleteError = null;
+  };
+
+  private _cancelDeleteAppliance = (): void => {
+    this._deletingAppliance = null;
+    this._deleteError = null;
+    this._deleting = false;
+  };
+
+  private _confirmDeleteAppliance = async (): Promise<void> => {
+    const target = this._deletingAppliance;
+    if (!target) return;
+    this._deleting = true;
+    this._deleteError = null;
+    try {
+      await appliancesApiRemove(target.id);
+      // Remove from local caches so the dashboard reflects the change
+      // before the next /schedules fetch lands.
+      const next = { ...this._appliancesById };
+      delete next[target.id];
+      this._appliancesById = next;
+      if (this._schedules) {
+        this._schedules = {
+          ...this._schedules,
+          appliances: (this._schedules.appliances || []).filter(
+            (a) => a.appliance_id !== target.id,
+          ),
+        };
+      }
+      this._deletingAppliance = null;
+    } catch (err) {
+      this._deleteError =
+        err instanceof Error && err.message
+          ? err.message
+          : 'Could not delete appliance — please try again';
+    } finally {
+      this._deleting = false;
+    }
   };
 
   override render() {
@@ -1264,13 +1435,55 @@ export class HungryMachinesPanel extends LitElement {
         @constraints-cancelled=${() => this._onEditorClosed()}
       ></hm-constraint-editor>
       <hm-appliance-form
-        .open=${this._addApplianceOpen}
+        .open=${this._addApplianceOpen || !!this._editingAppliance}
         .hass=${this.hass}
+        .editing=${this._editingAppliance ?? null}
         @appliance-created=${this._onApplianceCreated}
+        @appliance-updated=${this._onApplianceUpdated}
         @cancelled=${this._onApplianceCancelled}
       ></hm-appliance-form>
+      ${this._deletingAppliance ? this._renderDeleteConfirm() : ''}
       ${this._recomputeError ? this._renderRecomputeToast() : ''}
       ${this._recomputing ? this._renderRecomputeOverlay() : ''}
+    `;
+  }
+
+  private _renderDeleteConfirm(): TemplateResult {
+    const target = this._deletingAppliance!;
+    const name = target.name || 'this appliance';
+    return html`
+      <div class="confirm-overlay" role="presentation">
+        <div
+          class="confirm-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="hm-confirm-title"
+        >
+          <h2 id="hm-confirm-title">Delete ${name}?</h2>
+          <p>
+            This removes the appliance and every schedule and reading
+            tied to it. Your learned thermal model is per-user and is
+            kept — re-adding an HVAC appliance later reuses it.
+          </p>
+          ${this._deleteError
+            ? html`<div class="confirm-error" role="alert">${this._deleteError}</div>`
+            : null}
+          <div class="actions">
+            <button
+              class="cancel"
+              type="button"
+              ?disabled=${this._deleting}
+              @click=${() => this._cancelDeleteAppliance()}
+            >Cancel</button>
+            <button
+              class="confirm"
+              type="button"
+              ?disabled=${this._deleting}
+              @click=${() => void this._confirmDeleteAppliance()}
+            >${this._deleting ? 'Deleting…' : 'Delete'}</button>
+          </div>
+        </div>
+      </div>
     `;
   }
 
@@ -1534,13 +1747,31 @@ export class HungryMachinesPanel extends LitElement {
           .yMax=${yMax}
           .size=${this._chartSize}
         ></hm-optimization-chart>
-        <button
-          class="edit-btn"
-          type="button"
-          @click=${() => this._openEditor(appliance.appliance_id, type)}
-        >
-          Edit constraints
-        </button>
+        <div class="card-actions">
+          <button
+            class="edit-btn"
+            type="button"
+            @click=${() => this._openEditor(appliance.appliance_id, type)}
+          >
+            Edit constraints
+          </button>
+          <button
+            class="edit-btn secondary"
+            type="button"
+            @click=${() => this._openEditAppliance(appliance.appliance_id)}
+            title="Edit appliance entity, sensors, or properties"
+          >
+            Edit appliance
+          </button>
+          <button
+            class="edit-btn danger"
+            type="button"
+            @click=${() => this._openDeleteAppliance(appliance.appliance_id)}
+            title="Delete this appliance and its schedules"
+          >
+            Delete
+          </button>
+        </div>
       </div>
     `;
   }
@@ -1575,6 +1806,24 @@ export class HungryMachinesPanel extends LitElement {
           Generation forecast is folded into pricing for HVAC, EV, battery, and water-heater
           schedules so they prefer daylight hours when possible.
         </p>
+        <div class="card-actions">
+          <button
+            class="edit-btn secondary"
+            type="button"
+            @click=${() => this._openEditAppliance(appliance.appliance_id)}
+            title="Edit solar system size and orientation"
+          >
+            Edit appliance
+          </button>
+          <button
+            class="edit-btn danger"
+            type="button"
+            @click=${() => this._openDeleteAppliance(appliance.appliance_id)}
+            title="Delete this appliance"
+          >
+            Delete
+          </button>
+        </div>
       </div>
     `;
   }

@@ -35,6 +35,12 @@ const CONTROL_DOMAINS: Record<ApplianceType, ReadonlyArray<string>> = {
 // Optional auxiliary sensor entities — when present, the readings poller
 // includes their state in the per-appliance reading payload.
 const AUX_FIELDS: Partial<Record<ApplianceType, { name: string; label: string; help: string; domain: string }>> = {
+  hvac: {
+    name: 'indoor_temp_entity_id',
+    label: 'Indoor temperature sensor (optional)',
+    help: 'sensor.* exposing indoor temp in °F — used when the climate entity reports current_temperature: null (Tuya wrappers, IR-blaster controllers, etc.)',
+    domain: 'sensor',
+  },
   ev_charger: {
     name: 'soc_entity_id',
     label: 'State-of-charge sensor (optional)',
@@ -208,6 +214,11 @@ export class HmApplianceForm extends LitElement {
     submitting: { type: Boolean, reflect: true },
     error: { state: true },
     hass: { attribute: false },
+    // `editing` is the appliance being edited — when null/undefined,
+    // the form is in CREATE mode (POST). When set, the form skips the
+    // type-picker step, pre-populates from the appliance, and calls
+    // PUT on submit instead of POST.
+    editing: { attribute: false },
     _pickedType: { state: true },
     _values: { state: true },
     _errors: { state: true },
@@ -217,18 +228,37 @@ export class HmApplianceForm extends LitElement {
   submitting = false;
   error: string | null = null;
   hass: HassLike | undefined = undefined;
+  editing: Appliance | null = null;
   _pickedType: ApplianceType | null = null;
   _values: Record<string, string> = {};
   _errors: ErrorMap = {};
 
   private _lastOpen = false;
+  private _seededForEditingId: string | null = null;
 
   override willUpdate(changed: Map<string, unknown>): void {
     if (changed.has('open')) {
       if (this.open && !this._lastOpen) {
-        this._reset();
+        // Don't blow away values when opening directly into edit mode
+        // — `_seedFromEditing` will populate them below.
+        if (!this.editing) {
+          this._reset();
+        }
       }
       this._lastOpen = this.open;
+    }
+    // Whenever the editing target changes (or arrives for the first
+    // time after open), seed the form values from it.
+    if (
+      this.open &&
+      this.editing &&
+      this._seededForEditingId !== this.editing.id
+    ) {
+      this._seedFromEditing(this.editing);
+      this._seededForEditingId = this.editing.id;
+    }
+    if (!this.editing && this._seededForEditingId !== null) {
+      this._seededForEditingId = null;
     }
   }
 
@@ -236,6 +266,42 @@ export class HmApplianceForm extends LitElement {
     this._pickedType = null;
     this._values = {};
     this._errors = {};
+    this.error = null;
+    this.submitting = false;
+  }
+
+  private _seedFromEditing(appliance: Appliance): void {
+    const t = appliance.appliance_type;
+    this._pickedType = t;
+    const defaults = this._defaultValues(t);
+    const cfg = (appliance.config ?? {}) as Record<string, unknown>;
+    // Stringify every config field that the form binds to — numbers
+    // arrive as `number` from the API but the <input> elements expect
+    // strings. Empty strings are fine for optional fields.
+    const fromCfg = (key: string): string => {
+      const raw = cfg[key];
+      if (raw === null || raw === undefined) return '';
+      return String(raw);
+    };
+    const seeded: Record<string, string> = {
+      ...defaults,
+      name: appliance.name ?? '',
+    };
+    for (const key of Object.keys(defaults)) {
+      if (key === 'name') continue;
+      const cfgValue = fromCfg(key);
+      if (cfgValue !== '') seeded[key] = cfgValue;
+    }
+    // Aux field — may exist on the appliance config but not in
+    // `defaults` if the form added support later (e.g. HVAC
+    // indoor_temp_entity_id on a pre-update appliance).
+    const aux = AUX_FIELDS[t];
+    if (aux) {
+      const auxVal = fromCfg(aux.name);
+      seeded[aux.name] = auxVal;
+    }
+    this._values = seeded;
+    this._errors = this._validate(seeded);
     this.error = null;
     this.submitting = false;
   }
@@ -253,7 +319,13 @@ export class HmApplianceForm extends LitElement {
     // pick from a populated dropdown.
     switch (t) {
       case 'hvac':
-        return { name: '', hvac_type: 'central_ac', home_size_sqft: '', entity_id: '' };
+        return {
+          name: '',
+          hvac_type: 'central_ac',
+          home_size_sqft: '',
+          entity_id: '',
+          indoor_temp_entity_id: '',
+        };
       case 'ev_charger':
         return {
           name: '',
@@ -416,6 +488,7 @@ export class HmApplianceForm extends LitElement {
           hvac_type: v['hvac_type'] ?? 'central_ac',
           home_size_sqft: Number(v['home_size_sqft']),
           entity_id: entityId,
+          ...(auxValue ? { indoor_temp_entity_id: auxValue } : {}),
         };
       case 'ev_charger':
         return {
@@ -461,25 +534,42 @@ export class HmApplianceForm extends LitElement {
     this.submitting = true;
     this.error = null;
     try {
-      const appliance: Appliance = await appliancesApi.create({
-        appliance_type: this._pickedType,
-        name: this._values['name'].trim(),
-        config: this._buildConfig(),
-      });
-      this.dispatchEvent(
-        new CustomEvent('appliance-created', {
-          detail: { appliance },
-          bubbles: true,
-          composed: true,
-        }),
-      );
+      if (this.editing) {
+        // EDIT path: PUT only the name and config; appliance_type is
+        // immutable (changing it would break linked schedules + readings).
+        const appliance: Appliance = await appliancesApi.update(this.editing.id, {
+          name: this._values['name'].trim(),
+          config: this._buildConfig(),
+        });
+        this.dispatchEvent(
+          new CustomEvent('appliance-updated', {
+            detail: { appliance },
+            bubbles: true,
+            composed: true,
+          }),
+        );
+      } else {
+        const appliance: Appliance = await appliancesApi.create({
+          appliance_type: this._pickedType,
+          name: this._values['name'].trim(),
+          config: this._buildConfig(),
+        });
+        this.dispatchEvent(
+          new CustomEvent('appliance-created', {
+            detail: { appliance },
+            bubbles: true,
+            composed: true,
+          }),
+        );
+      }
       this.open = false;
       this._reset();
     } catch (err) {
+      const verb = this.editing ? 'update' : 'create';
       this.error =
         err instanceof Error && err.message
           ? err.message
-          : 'Could not create appliance — please try again';
+          : `Could not ${verb} appliance — please try again`;
     } finally {
       this.submitting = false;
     }
@@ -495,7 +585,9 @@ export class HmApplianceForm extends LitElement {
 
   override render() {
     if (!this.open) return null;
+    const editing = !!this.editing;
     if (this._pickedType) {
+      const title = editing ? 'Edit appliance' : 'Add appliance details';
       return html`
         <div class="overlay" role="presentation">
           <div
@@ -504,7 +596,7 @@ export class HmApplianceForm extends LitElement {
             aria-modal="true"
             aria-labelledby="hm-af-title"
           >
-            <h2 id="hm-af-title">Add appliance details</h2>
+            <h2 id="hm-af-title">${title}</h2>
             ${this.error
               ? html`<div class="top-error" role="alert">${this.error}</div>`
               : null}
@@ -864,16 +956,23 @@ export class HmApplianceForm extends LitElement {
           : null}
       </div>
       <div class="actions">
-        <button class="back" type="button" @click=${() => this._back()}>Back</button>
+        ${this.editing
+          ? null
+          : html`<button class="back" type="button" @click=${() => this._back()}>Back</button>`}
         <button class="cancel" type="button" @click=${() => this._onCancel()}>Cancel</button>
         <button
           class="submit"
           type="button"
           ?disabled=${hasErrors || this.submitting}
           @click=${() => this._onSubmit()}
-        >${this.submitting ? 'Adding…' : 'Add'}</button>
+        >${this._submitLabel()}</button>
       </div>
     `;
+  }
+
+  private _submitLabel(): string {
+    if (this.editing) return this.submitting ? 'Saving…' : 'Save';
+    return this.submitting ? 'Adding…' : 'Add';
   }
 
 }
