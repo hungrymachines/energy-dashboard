@@ -90,6 +90,12 @@ export function update(id: string, body: UpdateApplianceBody): Promise<Appliance
   });
 }
 
+export async function remove(id: string): Promise<void> {
+  await apiFetch<unknown>(`/api/v1/appliances/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
 export function setConstraints(id: string, body: Record<string, unknown>): Promise<ConstraintsResponse> {
   return apiFetch<ConstraintsResponse>(`/api/v1/appliances/${encodeURIComponent(id)}/constraints`, {
     method: 'POST',

@@ -440,3 +440,98 @@ async def test_hvac_without_current_temperature_skipped() -> None:
         n = await readings.capture_readings(hass, entry)
     assert n == 0
     assert readings.buffered_count(hass) == 0
+
+
+@pytest.mark.asyncio
+async def test_hvac_current_temperature_none_falls_back_to_indoor_temp_entity() -> None:
+    """Real-world pilot scenario: a Tuya thermostat declares
+    current_temperature in its attribute keys but reports it as None.
+    With indoor_temp_entity_id configured, the reading should come
+    from that sensor entity instead of being skipped."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {
+            "entity_id": "climate.back_ac",
+            "indoor_temp_entity_id": "sensor.back_room_temp",
+        },
+    }
+    # Climate entity DECLARES current_temperature but value is None.
+    climate_state = _state(
+        "cool",
+        {"current_temperature": None, "temperature": 73.0, "fan_mode": "Low"},
+    )
+    temp_sensor_state = _state("74.2", {})
+    hass = _hass({
+        "climate.back_ac": climate_state,
+        "sensor.back_room_temp": temp_sensor_state,
+    })
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        n = await readings.capture_readings(hass, entry)
+
+    assert n == 1
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["indoor_temp"] == 74.2
+    assert posted["target_temp"] == 73.0
+    assert posted["fan_mode"] == "Low"
+
+
+@pytest.mark.asyncio
+async def test_hvac_fallback_sensor_with_unparseable_state_skipped() -> None:
+    """If the fallback sensor exists but its state can't parse as a
+    number (e.g. 'unknown'), the reading is skipped — better than
+    inventing a value."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {
+            "entity_id": "climate.back_ac",
+            "indoor_temp_entity_id": "sensor.back_room_temp",
+        },
+    }
+    climate_state = _state("cool", {"current_temperature": None})
+    bad_sensor_state = _state("unknown", {})
+    hass = _hass({
+        "climate.back_ac": climate_state,
+        "sensor.back_room_temp": bad_sensor_state,
+    })
+    entry = _entry()
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        n = await readings.capture_readings(hass, entry)
+    assert n == 0
+
+
+@pytest.mark.asyncio
+async def test_hvac_prefers_climate_current_temperature_over_fallback() -> None:
+    """When the climate entity DOES populate current_temperature, the
+    fallback sensor is ignored — the climate entity is the
+    authoritative source whenever it has a value."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {
+            "entity_id": "climate.living_room",
+            "indoor_temp_entity_id": "sensor.living_room_temp",
+        },
+    }
+    # Climate has a real value; sensor has a different value.
+    climate_state = _state("cool", {"current_temperature": 71.5, "temperature": 72.0})
+    sensor_state = _state("99.9", {})
+    hass = _hass({
+        "climate.living_room": climate_state,
+        "sensor.living_room_temp": sensor_state,
+    })
+    entry = _entry()
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        n = await readings.capture_readings(hass, entry)
+    assert n == 1
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["indoor_temp"] == 71.5  # NOT 99.9

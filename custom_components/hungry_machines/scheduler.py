@@ -417,10 +417,27 @@ async def _apply_hvac(
     # temperature setpoint; fan and temperature are independent service
     # calls on the climate domain. Same opt-in / vocabulary-match
     # discipline as the mode change above.
+    #
+    # `"auto"` and `"off"` in `fan_mode_schedule` are SENTINELS — the
+    # backend writes them for OFF slots and for cases where the
+    # optimizer has no opinion on fan speed. They explicitly mean
+    # "leave the unit's fan_mode alone", NOT "actively switch to Auto".
+    # Some climate entities (notably Tuya/Smart-Life and several mini-
+    # splits) treat fan_mode=Auto as a request to enter Eco / Auto-
+    # compressor mode, which then overrides the temperature setpoint.
+    # The integration must NOT issue set_fan_mode for these sentinels.
     fan_canonical = _resolve_canonical(schedule, "fan_mode_schedule", slot)
-    fan_label = _match_entity_option(
-        fan_canonical, attrs.get("fan_modes") if fan_canonical else None,
-    )
+    fan_label: str | None = None
+    if fan_canonical is not None:
+        canonical_lower = fan_canonical.strip().lower()
+        if canonical_lower in ("auto", "off"):
+            # Sentinel: skip fan call so the unit's idle behavior
+            # is whatever the user / unit decided previously.
+            fan_label = None
+        else:
+            fan_label = _match_entity_option(
+                fan_canonical, attrs.get("fan_modes"),
+            )
 
     _LOGGER.info(
         "Hungry Machines HVAC apply: entity=%s slot=%d mode=%s setpoint=%.1f"
