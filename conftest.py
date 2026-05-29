@@ -175,6 +175,19 @@ def _install_stubs() -> None:
         config_entries.OptionsFlow = OptionsFlow
         config_entries.ConfigFlowResult = dict
 
+    # `homeassistant.util.dt` — real HA exposes this submodule with
+    # `now()` (returning HA-configured local datetime) and `utcnow()`.
+    # Production code uses it to compute slot indices in the user's
+    # local timezone rather than the process TZ (which is usually UTC
+    # in Docker). The stub here exposes both functions so tests can
+    # patch `scheduler.dt_util` and substitute their own clock.
+    _ensure_module("homeassistant.util")
+    util_dt = _ensure_module("homeassistant.util.dt")
+    if not hasattr(util_dt, "now"):
+        import datetime as _datetime
+        util_dt.now = lambda: _datetime.datetime.now()
+        util_dt.utcnow = lambda: _datetime.datetime.now(_datetime.timezone.utc)
+
     aiohttp_helper = _ensure_module("homeassistant.helpers.aiohttp_client")
     if not hasattr(aiohttp_helper, "async_get_clientsession"):
         aiohttp_helper.async_get_clientsession = MagicMock(

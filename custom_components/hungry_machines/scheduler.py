@@ -44,6 +44,8 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+
+from homeassistant.util import dt as dt_util
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -176,7 +178,25 @@ def _publish_schedule_states(hass: HomeAssistant, cache: dict[str, Any]) -> None
 
 
 def _current_slot(now: datetime | None = None) -> int:
-    now = now or datetime.now()
+    """Map the current wall-clock time to a 0..47 schedule slot.
+
+    Uses Home Assistant's CONFIGURED LOCAL TIME (`dt_util.now()`), not
+    the host process's local time. This matters because:
+      * Most HA deployments run their Python process in UTC (Docker
+        default, k8s default), so `datetime.now()` returns UTC.
+      * The backend's pricing arrays are LOCAL-TIME-keyed — slot 0 =
+        midnight LOCAL, slot 32 = 4pm LOCAL, etc.
+      * `async_track_time_change` fires the apply callback at HA's
+        local-time `minute=[0, 30]` boundaries.
+    Combining those, slot computation must also be done in HA's
+    configured local time. Otherwise the integration applies the
+    schedule on a UTC-offset grid, sending the slot meant for 1 PM
+    at 9 AM (for an EDT user, 4-hour shift).
+
+    Callers may pass `now` explicitly for testing; production paths
+    always default to `dt_util.now()`.
+    """
+    now = now or dt_util.now()
     return (now.hour * 2) + (1 if now.minute >= 30 else 0)
 
 
@@ -439,11 +459,18 @@ async def _apply_hvac(
                 fan_canonical, attrs.get("fan_modes"),
             )
 
+    # Include HA-local wall-clock time in the log message body so the
+    # user can correlate a slot number with their clock — HA's log
+    # formatter timestamps using the host process's TZ (often UTC),
+    # which won't match the local-time grid the slot represents.
+    local_now = dt_util.now()
+    local_label = local_now.strftime("%H:%M %Z")
     _LOGGER.info(
-        "Hungry Machines HVAC apply: entity=%s slot=%d mode=%s setpoint=%.1f"
-        "%s%s payload=%s",
+        "Hungry Machines HVAC apply: entity=%s slot=%d (%s local) mode=%s "
+        "setpoint=%.1f%s%s payload=%s",
         entity_id,
         slot,
+        local_label,
         raw_state,
         setpoint,
         f" fan={fan_label}" if fan_label else "",
