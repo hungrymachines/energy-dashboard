@@ -10,9 +10,13 @@ v2.0+: drives a closed control loop across every registered appliance.
 * **Schedule apply** (every :00 / :30) — `scheduler.apply_current_slot`
   iterates the cache and calls the right service per appliance type:
   `climate.set_temperature` for HVAC, `switch.turn_on/off` for the rest.
-* **Weather push** (daily at 03:30 UTC) — `weather.push_today_forecast`
-  reads the user's HA weather entity and POSTs its forecast so the API's
-  nightly optimizer prefers it over Open-Meteo.
+* **Weather push** (daily at 03:30 UTC + on integration startup) —
+  `weather.push_today_forecast` reads the user's HA weather entity and
+  POSTs its forecast so the API's nightly optimizer prefers it over
+  Open-Meteo. The startup push is fire-and-forget on a small delay so
+  it doesn't block `async_setup_entry`; it ensures that an HA restart
+  or HACS reinstall AFTER 03:30 UTC still seeds today's forecast
+  before the next nightly optimization window.
 """
 from __future__ import annotations
 
@@ -208,6 +212,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass, _push_weather, hour=3, minute=30, second=0
         )
     )
+
+    # Startup push: if HA was restarted or HACS reinstalled the
+    # integration AFTER 03:30 UTC, the daily timer above won't fire
+    # again until tomorrow — meaning the backend has no fresh
+    # HA-pushed forecast and falls back to Open-Meteo for tonight's
+    # optimization. Fire one push from the event loop right after
+    # setup completes to plug that gap.
+    #
+    # `async_create_task` keeps the work off the setup hot path so a
+    # slow weather entity (or a wedged network) can't block the
+    # integration from coming up. The push is idempotent — running
+    # both the startup push and the daily timer on the same day is
+    # harmless; the backend overwrites with the latest payload.
+    async def _initial_weather_push() -> None:
+        try:
+            await weather.push_today_forecast(hass, entry)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.info(
+                "Hungry Machines: startup weather push failed: %s "
+                "(will retry at daily 03:30 UTC tick)",
+                err,
+            )
+
+    hass.async_create_task(_initial_weather_push())
 
     return True
 

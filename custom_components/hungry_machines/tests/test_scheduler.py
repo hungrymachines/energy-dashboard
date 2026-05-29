@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -847,3 +848,62 @@ def test_current_slot_at_half_past_is_odd() -> None:
 def test_current_slot_at_quarter_past_uses_lower_half() -> None:
     # 14:15 → minute < 30 → slot 28
     assert scheduler._current_slot(datetime(2026, 5, 7, 14, 15)) == 28
+
+
+def test_current_slot_uses_ha_local_time_not_process_utc() -> None:
+    """Regression for the timezone bug: with no explicit `now`,
+    `_current_slot` must use `dt_util.now()` (HA's configured local
+    time) — NOT `datetime.now()` (process local, which is UTC in most
+    Docker / k8s HA deployments).
+
+    Setup: HA configured for America/New_York (EDT, UTC-4). The wall
+    clock locally is 09:00 (slot 18). If the implementation reads the
+    process clock (UTC), it would return 13:00 → slot 26 — the exact
+    4-hour shift the pilot user observed.
+    """
+    edt = ZoneInfo("America/New_York")
+    local_9am = datetime(2026, 5, 29, 9, 0, tzinfo=edt)
+    with patch.object(scheduler, "dt_util") as mock_dt:
+        mock_dt.now.return_value = local_9am
+        slot = scheduler._current_slot()
+    assert slot == 18, (
+        "expected slot 18 (09:00 local EDT), got "
+        f"{slot} — likely reading process UTC instead of HA local time"
+    )
+
+
+def test_current_slot_explicit_now_argument_overrides_dt_util() -> None:
+    """The optional `now` parameter still wins over `dt_util.now()`
+    so existing test fixtures + admin paths can pass a specific time."""
+    with patch.object(scheduler, "dt_util") as mock_dt:
+        mock_dt.now.return_value = datetime(2026, 5, 29, 23, 59)
+        # Explicit argument should be used instead of the patched
+        # dt_util fallback.
+        assert scheduler._current_slot(datetime(2026, 5, 29, 0, 0)) == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_hvac_log_message_includes_ha_local_clock_time() -> None:
+    """The HVAC apply log line must include HA-local wall-clock time so
+    users can read the slot in their own timezone, regardless of how
+    HA's log formatter timestamps the line (often UTC in Docker)."""
+    hass = _hass(_climate_state("cool", supports_range=False))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(setpoint=72.0)
+    edt = ZoneInfo("America/New_York")
+    local_3pm = datetime(2026, 5, 29, 15, 0, tzinfo=edt)
+    with patch.object(scheduler, "dt_util") as mock_dt, \
+         patch.object(scheduler, "_current_slot", return_value=30), \
+         patch.object(scheduler, "_LOGGER") as mock_log:
+        mock_dt.now.return_value = local_3pm
+        await scheduler.apply_current_slot(hass, entry)
+    # Find the apply log call and check that "15:00" appears in the
+    # formatted message body.
+    apply_call = next(
+        c for c in mock_log.info.call_args_list
+        if "HVAC apply" in c.args[0]
+    )
+    fmt = apply_call.args[0]
+    formatted = fmt % apply_call.args[1:]
+    assert "15:00" in formatted, f"expected '15:00' in log: {formatted}"
+    assert "local" in formatted
