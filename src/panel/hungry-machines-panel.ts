@@ -17,6 +17,10 @@ import {
   type Appliance,
   type ApplianceType,
 } from '../api/appliances.js';
+import * as calibrationApi from '../api/calibration.js';
+import type {
+  CalibrationStatusResponse,
+} from '../api/calibration.js';
 import { patchMe } from '../api/auth.js';
 import { get as getPreferences, type Preferences } from '../api/preferences.js';
 import { expandHourlyTo48, hasCustomRates, hasHourlyComfortBands } from '../utils/hourly.js';
@@ -300,6 +304,58 @@ export class HungryMachinesPanel extends LitElement {
       background: var(--hm-primary, #1E3A8A);
       color: #ffffff;
       font-weight: 600;
+    }
+    .calibration-banners {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    .banner.calibration {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 18px;
+      border-radius: 10px;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+    .banner.calibration.in-progress {
+      background: rgba(245, 158, 11, 0.10);
+      border: 1px solid var(--hm-accent, #F59E0B);
+      color: var(--hm-text, #0F172A);
+    }
+    .banner.calibration.complete {
+      background: rgba(15, 118, 110, 0.08);
+      border: 1px solid var(--hm-secondary, #0F766E);
+      color: var(--hm-text, #0F172A);
+    }
+    .banner-text {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .banner-text strong {
+      color: var(--hm-primary, #1E3A8A);
+    }
+    .banner-skip {
+      background: transparent;
+      border: 1px solid var(--hm-muted, #64748B);
+      color: var(--hm-muted, #64748B);
+      padding: 6px 14px;
+      border-radius: 6px;
+      font: inherit;
+      cursor: pointer;
+      align-self: center;
+    }
+    .banner-skip:hover {
+      background: var(--hm-muted, #64748B);
+      color: #ffffff;
+    }
+    .banner-skip[disabled] {
+      opacity: 0.55;
+      cursor: not-allowed;
     }
     .cards {
       display: grid;
@@ -900,6 +956,10 @@ export class HungryMachinesPanel extends LitElement {
     _deletingAppliance: { state: true },
     _deleting: { state: true },
     _deleteError: { state: true },
+    // Per-HVAC-appliance calibration status snapshot. Populated when
+    // the dashboard loads and refreshed on appliance-updated events.
+    _calibrationByAppliance: { state: true },
+    _calibrationSkipping: { state: true },
     _weatherEntityDraft: { state: true },
     _zoneDraft: { state: true },
     _savedFlash: { state: true },
@@ -933,6 +993,8 @@ export class HungryMachinesPanel extends LitElement {
   _deletingAppliance: Appliance | null = null;
   _deleting = false;
   _deleteError: string | null = null;
+  _calibrationByAppliance: Record<string, CalibrationStatusResponse> = {};
+  _calibrationSkipping = false;
   _weatherEntityDraft = '';
   _zoneDraft = 1;
   _savedFlash = false;
@@ -1026,6 +1088,10 @@ export class HungryMachinesPanel extends LitElement {
         for (const a of appliances) map[a.id] = a;
       }
       this._appliancesById = map;
+      // Calibration status — one fetch per HVAC appliance. Errors
+      // are swallowed; the banner just won't render. Runs after the
+      // appliance list lands so we know which ids to query.
+      void this._refreshCalibrationStatuses();
     } catch (err) {
       this._schedulesError =
         err instanceof Error && err.message
@@ -1034,6 +1100,47 @@ export class HungryMachinesPanel extends LitElement {
       this._schedulesFetched = false;
     } finally {
       this._schedulesLoading = false;
+    }
+  }
+
+  private async _refreshCalibrationStatuses(): Promise<void> {
+    const hvacIds = Object.values(this._appliancesById)
+      .filter((a) => a.appliance_type === 'hvac')
+      .map((a) => a.id);
+    if (hvacIds.length === 0) {
+      this._calibrationByAppliance = {};
+      return;
+    }
+    const next: Record<string, CalibrationStatusResponse> = {};
+    await Promise.all(
+      hvacIds.map(async (id) => {
+        try {
+          const status = await calibrationApi.getStatus(id);
+          next[id] = status;
+        } catch {
+          // Best effort — leave it out of the map; banner won't render.
+        }
+      }),
+    );
+    this._calibrationByAppliance = next;
+  }
+
+  private async _onCalibrationSkip(applianceId: string): Promise<void> {
+    if (this._calibrationSkipping) return;
+    this._calibrationSkipping = true;
+    try {
+      await calibrationApi.skip(applianceId);
+      // Refresh the status so the banner disappears.
+      const fresh = await calibrationApi.getStatus(applianceId);
+      this._calibrationByAppliance = {
+        ...this._calibrationByAppliance,
+        [applianceId]: fresh,
+      };
+    } catch {
+      // Surface failure silently for now; the banner will retry on
+      // next dashboard load. (No toast infrastructure to wire into.)
+    } finally {
+      this._calibrationSkipping = false;
     }
   }
 
@@ -1533,6 +1640,7 @@ export class HungryMachinesPanel extends LitElement {
         <h2>Dashboard</h2>
         ${this._renderChartSizeToggle()}
       </div>
+      <div class="calibration-section">${this._renderCalibrationBanners()}</div>
       <div class="cards">
         ${appliances.map((a) => this._renderApplianceCard(a, rates))}
         ${missingTypes.map((t) => this._renderExampleApplianceCard(t, rates))}
@@ -1547,6 +1655,85 @@ export class HungryMachinesPanel extends LitElement {
         </button>
       </div>
     `;
+  }
+
+  private _renderCalibrationBanners(): TemplateResult {
+    const map = this._calibrationByAppliance ?? {};
+    const banners: TemplateResult[] = [];
+    for (const [applianceId, status] of Object.entries(map)) {
+      const banner = this._renderCalibrationBanner(applianceId, status);
+      if (banner) banners.push(banner);
+    }
+    if (banners.length === 0) return html``;
+    return html`<div class="calibration-banners">${banners}</div>`;
+  }
+
+  private _renderCalibrationBanner(
+    applianceId: string,
+    status: CalibrationStatusResponse,
+  ): TemplateResult | null {
+    const appliance = this._appliancesById[applianceId];
+    if (!appliance) return null;
+    const name = appliance.name || 'your AC';
+
+    // In-progress: show "scheduled" or "running" message + Skip button.
+    if (status.is_in_progress) {
+      const run = status.latest_run;
+      const dateLabel = run?.schedule_date
+        ? new Date(run.schedule_date + 'T00:00:00').toLocaleDateString(undefined, {
+            weekday: 'short',
+            month: 'short',
+            day: 'numeric',
+          })
+        : 'the next warm day';
+      return html`
+        <div class="banner calibration in-progress" role="status">
+          <div class="banner-text">
+            <strong>Calibrating ${name}</strong>
+            <span>
+              ${run?.status === 'in_progress'
+                ? `Running a 6-hour test on ${dateLabel} (09:00–15:00 local) to measure how this AC actually cools your space.`
+                : `Scheduled for ${dateLabel} during the next warm day.`}
+            </span>
+          </div>
+          ${status.can_skip
+            ? html`<button
+                class="banner-skip"
+                type="button"
+                ?disabled=${this._calibrationSkipping}
+                @click=${() => this._onCalibrationSkip(applianceId)}
+              >
+                ${this._calibrationSkipping ? 'Skipping…' : 'Skip'}
+              </button>`
+            : null}
+        </div>
+      `;
+    }
+
+    // Completed: show a small confirmation with the measured rates.
+    if (status.is_complete && status.latest_run?.status === 'completed') {
+      const rates = status.latest_run.derived_rates;
+      if (!rates) return null;
+      const low = rates.cooling_effect_cool_low;
+      const high = rates.cooling_effect_cool_high;
+      if (low === null || high === null) return null;
+      // °F/slot → °F/hr for display.
+      const lowHr = (low * 2).toFixed(1);
+      const highHr = (high * 2).toFixed(1);
+      return html`
+        <div class="banner calibration complete" role="status">
+          <div class="banner-text">
+            <strong>${name} calibration done</strong>
+            <span>
+              Measured cooling: ${lowHr} °F/hr on Low fan,
+              ${highHr} °F/hr on High fan.
+            </span>
+          </div>
+        </div>
+      `;
+    }
+
+    return null;
   }
 
   private _renderChartSizeToggle(): TemplateResult {
