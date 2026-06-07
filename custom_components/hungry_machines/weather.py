@@ -10,12 +10,23 @@ optimization at 04:00 UTC), this module:
 3. Transforms into the API's expected shape:
        {
          "forecast": {
-           "hourly_temps_f": float[24..72],
+           "hourly_temps_f": float[24..48],
            "hourly_humidity": float[]?,
            "hourly_wind_mph": float[]?,
+           "forecast_date": "YYYY-MM-DD",  # the local date hourly[0] covers
          }
        }
 4. POSTs to `/api/v1/weather`.
+
+**Local-midnight alignment.** Each forecast item carries an absolute
+`datetime` from HA. We bin those into 24 buckets keyed to "hours since
+the next LOCAL midnight" so the array the server receives always has
+`hourly_temps_f[0]` = 00:00 local on `forecast_date`. The previous
+version pushed the raw `forecast_list` whose item 0 = push time, which
+meant an EDT push at 03:30 EDT shifted the whole array by 3.5 hours
+relative to the server's "hour 0 = local midnight" assumption — and
+that 3.5-hour shift propagated into the thermal model fitter via the
+forecast lookup.
 
 Tolerates: missing weather entity, weather entity that doesn't support
 `get_forecasts`, partial fields (humidity / wind missing), and
@@ -24,10 +35,12 @@ unit-conversion (HA's metric weather entities expose temp in °C).
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from . import api
 
@@ -44,6 +57,107 @@ def _kmh_to_mph(kmh: float) -> float:
 
 def _ms_to_mph(ms: float) -> float:
     return ms * 2.236936
+
+
+def _align_forecast_to_local_day(
+    forecast_list: list[dict],
+    temp_unit: str,
+    wind_unit: str,
+) -> tuple[str, list[float], list[float], list[float]] | None:
+    """Re-bin raw HA forecast items into 24 hourly buckets keyed to the
+    next LOCAL midnight.
+
+    Returns `(forecast_date, temps_f, humidity, wind_mph)` where:
+      * `forecast_date` is the ISO local date for hour 0 of the arrays
+      * Arrays are length 24, one entry per local hour
+      * Missing humidity / wind buckets are filled with the previous
+        valid value (or 50.0 / 5.0 fallback so the server-side
+        length-match validation passes)
+
+    Returns None when the forecast doesn't cover at least one full
+    local day past `now_local`. The caller should skip the push and
+    let the server fall back to Open-Meteo.
+
+    Bucketing strategy: walk each forecast item, parse its absolute
+    `datetime`, convert to local, place into the bucket
+    `floor((dt_local - local_midnight) / 1h)`. Items before the
+    target midnight or past the end of the 24-hour window are
+    discarded.
+    """
+    now_local = dt_util.now()
+    # Next local midnight. If now_local IS midnight (rare edge case),
+    # we treat "today" as the target — the user's day has just started.
+    if now_local.hour == 0 and now_local.minute == 0:
+        target_midnight = now_local.replace(second=0, microsecond=0)
+    else:
+        target_midnight = (now_local + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+
+    temps_by_hour: dict[int, float] = {}
+    humidity_by_hour: dict[int, float] = {}
+    wind_by_hour: dict[int, float] = {}
+
+    for item in forecast_list:
+        if not isinstance(item, dict):
+            continue
+        dt_raw = item.get("datetime")
+        if not isinstance(dt_raw, str):
+            continue
+        try:
+            dt_abs = datetime.fromisoformat(dt_raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        dt_local = dt_util.as_local(dt_abs)
+        delta_h = (dt_local - target_midnight).total_seconds() / 3600.0
+        # Discard items outside the [0, 24) hour window we want to fill.
+        if delta_h < 0 or delta_h >= 24:
+            continue
+        bucket = int(delta_h)
+
+        t = item.get("temperature")
+        if t is not None:
+            try:
+                temps_by_hour[bucket] = _convert_temp(float(t), temp_unit)
+            except (TypeError, ValueError):
+                pass
+        h = item.get("humidity")
+        if h is not None:
+            try:
+                humidity_by_hour[bucket] = float(h)
+            except (TypeError, ValueError):
+                pass
+        w = item.get("wind_speed")
+        if w is not None:
+            try:
+                wind_by_hour[bucket] = _convert_wind(float(w), wind_unit)
+            except (TypeError, ValueError):
+                pass
+
+    if len(temps_by_hour) < 24:
+        # Less than full local-day coverage. The forecast started later
+        # than midnight or ran out before evening; either way, we'd be
+        # filling gaps with stale data and the model would key off them.
+        return None
+
+    # Compact into ordered 24-element arrays. Forward-fill humidity /
+    # wind from the last known value so the server's length validation
+    # passes (it requires humidity/wind arrays to match temps length).
+    temps = [float(temps_by_hour[h]) for h in range(24)]
+    humidity = []
+    last_h = 50.0
+    for h in range(24):
+        if h in humidity_by_hour:
+            last_h = humidity_by_hour[h]
+        humidity.append(last_h)
+    wind = []
+    last_w = 5.0
+    for h in range(24):
+        if h in wind_by_hour:
+            last_w = wind_by_hour[h]
+        wind.append(last_w)
+
+    return target_midnight.date().isoformat(), temps, humidity, wind
 
 
 async def _user_weather_entity(hass: HomeAssistant, entry: ConfigEntry) -> str | None:
@@ -156,48 +270,27 @@ async def push_today_forecast(
     temp_unit = _detect_temp_unit(state)
     wind_unit = _detect_wind_unit(state)
 
-    hourly_temps_f: list[float] = []
-    hourly_humidity: list[float] = []
-    hourly_wind_mph: list[float] = []
-    for item in forecast_list[:72]:  # API caps at 72 hours
-        if not isinstance(item, dict):
-            continue
-        t = item.get("temperature")
-        if t is None:
-            continue
-        try:
-            tf = _convert_temp(float(t), temp_unit)
-        except (TypeError, ValueError):
-            continue
-        hourly_temps_f.append(tf)
-
-        h = item.get("humidity")
-        if h is not None:
-            try:
-                hourly_humidity.append(float(h))
-            except (TypeError, ValueError):
-                pass
-
-        w = item.get("wind_speed")
-        if w is not None:
-            try:
-                hourly_wind_mph.append(_convert_wind(float(w), wind_unit))
-            except (TypeError, ValueError):
-                pass
-
-    if len(hourly_temps_f) < 24:
+    aligned = _align_forecast_to_local_day(forecast_list, temp_unit, wind_unit)
+    if aligned is None:
         _LOGGER.info(
-            "Hungry Machines: weather entity '%s' only produced %d hourly "
-            "points; need at least 24, skipping push",
+            "Hungry Machines: weather entity '%s' returned a forecast that "
+            "doesn't fully cover the next 24 local hours; skipping push. "
+            "The API will fall back to Open-Meteo for this user.",
             entity_id,
-            len(hourly_temps_f),
         )
         return False
 
-    payload: dict[str, Any] = {"hourly_temps_f": hourly_temps_f}
-    if len(hourly_humidity) == len(hourly_temps_f):
-        payload["hourly_humidity"] = hourly_humidity
-    if len(hourly_wind_mph) == len(hourly_temps_f):
-        payload["hourly_wind_mph"] = hourly_wind_mph
+    forecast_date, hourly_temps_f, hourly_humidity, hourly_wind_mph = aligned
+
+    payload: dict[str, Any] = {
+        "hourly_temps_f": hourly_temps_f,
+        "hourly_humidity": hourly_humidity,
+        "hourly_wind_mph": hourly_wind_mph,
+        # Tells the server the local date that hour 0 covers. Without
+        # this the server defaults to user-local-today, which is
+        # equivalent — but sending it explicitly removes the ambiguity
+        # for users whose push lands near midnight local.
+        "forecast_date": forecast_date,
+    }
 
     return await api.post_weather(hass, entry, payload)

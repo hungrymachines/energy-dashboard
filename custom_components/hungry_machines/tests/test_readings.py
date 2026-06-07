@@ -113,6 +113,199 @@ async def test_capture_hvac_records_fan_mode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_capture_hvac_attaches_commanded_values_from_cache() -> None:
+    """Phase 2: every reading carries the scheduler's last-applied
+    intent for this entity. Without this, the backend reconciler has
+    nothing to compare the climate-entity's (possibly lying) reported
+    state against."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    state = _state(
+        "cool",
+        {"current_temperature": 72.5, "temperature": 75.0, "fan_mode": "low"},
+    )
+    hass = _hass({"climate.living_room": state})
+    entry = _entry()
+    # Pre-seed the cache as if the scheduler had just applied a slot
+    # that commanded fan=high setpoint=68 — exactly the Tuya scenario
+    # where the entity reports low/75 but we sent high/68. Cache is
+    # keyed by `state.entity_id` (what the readings collector reads),
+    # which the `_state` helper sets to "climate.test".
+    hass.data.setdefault(DOMAIN, {})["last_commanded"] = {
+        "climate.test": {
+            "hvac_mode": "COOL",
+            "fan_mode": "high",
+            "setpoint": 68.0,
+        }
+    }
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["commanded_hvac_mode"] == "COOL"
+    assert posted["commanded_fan_mode"] == "high"
+    assert posted["commanded_setpoint"] == 68.0
+    # Entity-reported values still recorded so the reconciler can
+    # quantify the divergence.
+    assert posted["fan_mode"] == "low"
+    assert posted["target_temp"] == 75.0
+
+
+@pytest.mark.asyncio
+async def test_capture_hvac_omits_commanded_fields_before_first_apply() -> None:
+    """Fresh HA install / never-driven entity → no cache entry → the
+    payload omits commanded_* entirely (NOT null fields). The server
+    is tolerant of both, but omitting keeps the payload lean for the
+    pre-scheduler period."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    state = _state(
+        "cool", {"current_temperature": 72.5, "temperature": 75.0, "fan_mode": "low"},
+    )
+    hass = _hass({"climate.living_room": state})
+    entry = _entry()
+    # No last_commanded seeded — represents pre-first-apply state.
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert "commanded_hvac_mode" not in posted
+    assert "commanded_fan_mode" not in posted
+    assert "commanded_setpoint" not in posted
+
+
+@pytest.mark.asyncio
+async def test_capture_hvac_reads_power_sensor_in_watts() -> None:
+    """User configures a built-in power meter or smart plug exposing
+    watts → the reading payload carries `power_watts` verbatim."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {
+            "entity_id": "climate.test",
+            "power_sensor_entity_id": "sensor.ac_power",
+        },
+    }
+    climate = _state(
+        "cool", {"current_temperature": 72.5, "temperature": 75.0},
+    )
+    power = MagicMock()
+    power.state = "1850.5"
+    power.attributes = {"unit_of_measurement": "W"}
+    hass = _hass({"climate.test": climate, "sensor.ac_power": power})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["power_watts"] == 1850.5
+
+
+@pytest.mark.asyncio
+async def test_capture_hvac_converts_kw_to_watts() -> None:
+    """Smart plugs marketed as 'kWh meters' often expose instantaneous
+    draw in kW. The reading payload must always store watts so the
+    reconciler's threshold (`power_watts > 300`) is unit-consistent
+    across users."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {
+            "entity_id": "climate.test",
+            "power_sensor_entity_id": "sensor.ac_plug",
+        },
+    }
+    climate = _state(
+        "cool", {"current_temperature": 72.5, "temperature": 75.0},
+    )
+    power = MagicMock()
+    power.state = "1.85"   # 1.85 kW
+    power.attributes = {"unit_of_measurement": "kW"}
+    hass = _hass({"climate.test": climate, "sensor.ac_plug": power})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["power_watts"] == pytest.approx(1850.0, rel=1e-3)
+
+
+@pytest.mark.asyncio
+async def test_capture_hvac_omits_power_when_no_sensor_configured() -> None:
+    """Without `power_sensor_entity_id` in the appliance config, the
+    reading payload omits `power_watts`. We don't fall back to any
+    climate-entity power attribute — that path was where unit
+    inconsistencies + Tuya quirks injected noise into the model."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.test"},  # no power sensor
+    }
+    climate = _state(
+        "cool", {"current_temperature": 72.5, "temperature": 75.0},
+    )
+    hass = _hass({"climate.test": climate})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert "power_watts" not in posted
+
+
+@pytest.mark.asyncio
+async def test_capture_hvac_skips_power_when_sensor_unavailable() -> None:
+    """User wired up a sensor but it's reporting `unavailable` (HA
+    convention for offline / restart-pending state). Skip without
+    crashing — next 5-min cycle picks it up when it recovers."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {
+            "entity_id": "climate.test",
+            "power_sensor_entity_id": "sensor.ac_power",
+        },
+    }
+    climate = _state(
+        "cool", {"current_temperature": 72.5, "temperature": 75.0},
+    )
+    power = MagicMock()
+    power.state = "unavailable"
+    power.attributes = {"unit_of_measurement": "W"}
+    hass = _hass({"climate.test": climate, "sensor.ac_power": power})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert "power_watts" not in posted
+
+
+@pytest.mark.asyncio
 async def test_capture_hvac_uses_hvac_action_over_mode() -> None:
     """A heat_cool-mode thermostat that's currently cooling reports
     state='heat_cool' and hvac_action='cooling'. We must capture COOL,
