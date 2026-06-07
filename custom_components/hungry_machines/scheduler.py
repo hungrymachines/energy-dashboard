@@ -63,6 +63,56 @@ def _domain_data(hass: HomeAssistant) -> dict[str, Any]:
     return hass.data.setdefault(DOMAIN, {})
 
 
+_LAST_COMMANDED_KEY = "last_commanded"
+
+
+def _record_last_commanded(
+    hass: HomeAssistant,
+    entity_id: str,
+    *,
+    hvac_mode: str | None,
+    fan_mode: str | None,
+    setpoint: float | None,
+) -> None:
+    """Cache what the scheduler just told this climate entity to do.
+
+    The cache is keyed by entity_id and overwritten on every slot
+    apply. `readings.py` reads from it to attach `commanded_*` fields
+    to each 5-min sensor reading, giving the backend reconciler a
+    ground-truth signal for what the AC was supposed to be doing —
+    distinct from what the climate entity reports back (which can be
+    stale or wrong on Tuya / mini-split units).
+
+    Values are stored verbatim from the schedule, including SENTINELS
+    like fan_mode='auto'/'off' which mean "we did not actively command
+    a fan tier this slot" — the reconciler treats those distinctly
+    from "we commanded low/med/high."
+    """
+    cache = _domain_data(hass).setdefault(_LAST_COMMANDED_KEY, {})
+    cache[entity_id] = {
+        "hvac_mode": hvac_mode,
+        "fan_mode": fan_mode,
+        "setpoint": setpoint,
+    }
+
+
+def get_last_commanded(
+    hass: HomeAssistant, entity_id: str
+) -> dict[str, Any] | None:
+    """Read the latest commanded values for `entity_id`, or None.
+
+    Returns None before the first slot apply or for entities that have
+    never been driven by the scheduler. `readings.py` calls this once
+    per cycle and omits the `commanded_*` fields when None — the
+    server-side reconciler treats missing fields as "no signal" and
+    falls back to entity-reported state."""
+    cache = _domain_data(hass).get(_LAST_COMMANDED_KEY) or {}
+    entry = cache.get(entity_id)
+    if not isinstance(entry, dict):
+        return None
+    return dict(entry)
+
+
 async def fetch_today_schedule(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> dict[str, Any] | None:
@@ -402,6 +452,23 @@ async def _apply_hvac(
     hass: HomeAssistant, entity_id: str, schedule: dict, slot: int
 ) -> None:
     setpoint = _resolve_setpoint(schedule, slot)
+    mode_canonical = _resolve_canonical(schedule, "hvac_mode_schedule", slot)
+    fan_canonical = _resolve_canonical(schedule, "fan_mode_schedule", slot)
+
+    # Record the schedule's intent for this slot BEFORE any service
+    # calls so the readings collector has a consistent ground-truth
+    # snapshot of what the AC is supposed to be doing — including for
+    # OFF slots (where _build_hvac_payload returns None and we
+    # short-circuit) and for failed apply attempts. The reconciler
+    # uses this to detect Tuya-style "AC ignoring commands" without
+    # depending on the entity's self-report.
+    _record_last_commanded(
+        hass, entity_id,
+        hvac_mode=mode_canonical,
+        fan_mode=fan_canonical,
+        setpoint=float(setpoint) if setpoint is not None else None,
+    )
+
     if setpoint is None:
         _LOGGER.warning(
             "Hungry Machines HVAC slot %s: no setpoint available for %s",
@@ -418,7 +485,6 @@ async def _apply_hvac(
     # silently when the schedule didn't include a mode (= user opted
     # out) or when the requested mode isn't in the entity's
     # `hvac_modes` list (= incompatible unit).
-    mode_canonical = _resolve_canonical(schedule, "hvac_mode_schedule", slot)
     if mode_canonical is not None:
         await _maybe_set_hvac_mode(hass, entity_id, attrs, mode_canonical, slot)
         # Re-read state after a mode change so the payload builder sees
@@ -446,7 +512,6 @@ async def _apply_hvac(
     # splits) treat fan_mode=Auto as a request to enter Eco / Auto-
     # compressor mode, which then overrides the temperature setpoint.
     # The integration must NOT issue set_fan_mode for these sentinels.
-    fan_canonical = _resolve_canonical(schedule, "fan_mode_schedule", slot)
     fan_label: str | None = None
     if fan_canonical is not None:
         canonical_lower = fan_canonical.strip().lower()

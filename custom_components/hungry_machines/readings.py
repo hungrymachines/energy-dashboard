@@ -34,6 +34,7 @@ from homeassistant.core import HomeAssistant
 
 from . import api
 from .const import DOMAIN
+from .scheduler import get_last_commanded
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -143,10 +144,46 @@ def _read_state(hass: HomeAssistant, entity_id: str) -> Any | None:
     return state
 
 
+def _read_power_watts(
+    hass: HomeAssistant, power_sensor_entity_id: str | None
+) -> float | None:
+    """Read the configured power sensor and coerce to watts.
+
+    Many HA power sensors expose values in W; some (especially smart
+    plugs marketed as "kWh meters") expose kW. We sniff the entity's
+    `unit_of_measurement` attribute and convert kW → W when needed so
+    the server always stores watts. Returns None gracefully when the
+    entity is absent, unavailable, or reports a non-numeric state.
+
+    Why this matters: the reconciler treats `power_watts > threshold`
+    as authoritative "AC is running" — so unit inconsistency would
+    flip the classification for a smart-plug user.
+    """
+    if not power_sensor_entity_id:
+        return None
+    s = hass.states.get(power_sensor_entity_id) if hass.states else None
+    if s is None:
+        return None
+    raw = getattr(s, "state", None)
+    value = _coerce_float(raw)
+    if value is None:
+        return None
+    unit = ""
+    attrs = getattr(s, "attributes", None) or {}
+    if isinstance(attrs, dict):
+        unit = str(attrs.get("unit_of_measurement") or "").strip().lower()
+    # Common HA units: "W", "kW", "watt", "kilowatt". Convert kW → W;
+    # everything else is treated as W (the universal default).
+    if unit in ("kw", "kilowatt", "kilowatts"):
+        return value * 1000.0
+    return value
+
+
 def _build_hvac_home_reading(
     hass: HomeAssistant,
     state: Any,
     indoor_temp_entity_id: str | None = None,
+    power_sensor_entity_id: str | None = None,
 ) -> dict | None:
     """Build the /api/v1/readings payload from the HVAC climate entity.
 
@@ -160,8 +197,17 @@ def _build_hvac_home_reading(
          helpers, which don't have an embedded thermistor and expect
          the user to wire in a separate sensor.
 
-    Returns None (no reading appended) when neither source produces a
-    usable value, with a single INFO log explaining why.
+    Power resolution:
+      * If `power_sensor_entity_id` is set on the appliance config,
+        the integration reads from there and includes `power_watts`.
+        Source can be a built-in meter, a smart plug, or any sensor
+        exposing watts (or kW — auto-converted).
+      * When no power sensor is configured, `power_watts` is omitted.
+        Legacy fallback to any climate-entity power attribute would
+        risk reading the wrong number for users who haven't opted in.
+
+    Returns None (no reading appended) when neither indoor source
+    produces a usable value, with a single INFO log explaining why.
     """
     indoor_temp = state.attributes.get("current_temperature")
     if indoor_temp is None and indoor_temp_entity_id:
@@ -210,6 +256,28 @@ def _build_hvac_home_reading(
     fan_mode = state.attributes.get("fan_mode")
     if fan_mode is not None:
         reading["fan_mode"] = str(fan_mode)
+
+    # Ground-truth signal — what the scheduler last commanded for this
+    # entity. The reconciler uses commanded values to detect when the
+    # climate entity reports stale or default state (a common Tuya /
+    # mini-split quirk). Skipped silently if the scheduler hasn't
+    # applied a slot yet (fresh HA start, never-driven entity).
+    commanded = get_last_commanded(hass, state.entity_id)
+    if commanded is not None:
+        if commanded.get("hvac_mode") is not None:
+            reading["commanded_hvac_mode"] = commanded["hvac_mode"]
+        if commanded.get("fan_mode") is not None:
+            reading["commanded_fan_mode"] = commanded["fan_mode"]
+        if commanded.get("setpoint") is not None:
+            reading["commanded_setpoint"] = commanded["setpoint"]
+    # Physics-grounded signal — what the AC is actually drawing in
+    # watts. Only included when the user has wired up a power sensor
+    # (built-in meter or smart plug). Treated by the reconciler as
+    # authoritative for "is the unit running" regardless of what the
+    # climate entity claims about hvac_state / fan_mode.
+    power_watts = _read_power_watts(hass, power_sensor_entity_id)
+    if power_watts is not None:
+        reading["power_watts"] = power_watts
     return reading
 
 
@@ -304,8 +372,13 @@ async def capture_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
                 config.get("indoor_temp_entity_id")
                 if isinstance(config, dict) else None
             )
+            power_sensor_entity_id = (
+                config.get("power_sensor_entity_id")
+                if isinstance(config, dict) else None
+            )
             reading = _build_hvac_home_reading(
                 hass, control_state, indoor_temp_entity_id,
+                power_sensor_entity_id,
             )
             if reading is None:
                 continue

@@ -369,6 +369,72 @@ async def test_apply_hvac_does_not_call_set_fan_mode_for_off_sentinel() -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_hvac_records_commanded_values_in_cache() -> None:
+    """Every slot apply must seed `hass.data[DOMAIN]['last_commanded'][entity_id]`
+    with the schedule's intent so the readings collector can attach
+    `commanded_*` to each 5-min payload. The reconciler downstream uses
+    these to detect when a Tuya / mini-split thermostat ignores our
+    commands."""
+    hass = _hass(_climate_state(
+        "cool", supports_range=False,
+        fan_modes=["low", "medium", "high"],
+        hvac_modes=["off", "cool"],
+    ))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(
+        setpoint=72.0,
+        fan_mode_schedule=["low"] * 48,
+        hvac_mode_schedule=["COOL"] * 48,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=18):
+        await scheduler.apply_current_slot(hass, entry)
+
+    cached = scheduler.get_last_commanded(hass, "climate.living_room")
+    assert cached is not None
+    assert cached["hvac_mode"] == "COOL"
+    assert cached["fan_mode"] == "low"
+    assert cached["setpoint"] == 72.0
+
+
+@pytest.mark.asyncio
+async def test_apply_hvac_records_commanded_for_off_slot() -> None:
+    """OFF slots short-circuit `_build_hvac_payload` (returns None
+    because the entity isn't in a temperature-driven mode), but the
+    schedule's INTENT — "OFF for this slot" — must still land in the
+    commanded cache. Without that, the reconciler can't tell the
+    difference between 'we commanded OFF and the AC obeyed' vs 'we
+    commanded OFF but the AC kept running.'"""
+    hass = _hass(_climate_state(
+        "off", supports_range=False,
+        hvac_modes=["off", "cool"],
+    ))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(
+        setpoint=80.0,
+        fan_mode_schedule=["auto"] * 48,
+        hvac_mode_schedule=["OFF"] * 48,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=22):
+        await scheduler.apply_current_slot(hass, entry)
+
+    cached = scheduler.get_last_commanded(hass, "climate.living_room")
+    assert cached is not None
+    assert cached["hvac_mode"] == "OFF"
+    assert cached["fan_mode"] == "auto"
+    assert cached["setpoint"] == 80.0
+
+
+@pytest.mark.asyncio
+async def test_get_last_commanded_returns_none_before_first_apply() -> None:
+    """Before any slot has been applied — fresh HA start, integration
+    just installed, entity never driven — readings.py must not blow up.
+    The getter returns None and the readings payload omits the
+    commanded_* fields entirely."""
+    hass = _hass()
+    assert scheduler.get_last_commanded(hass, "climate.never_driven") is None
+
+
+@pytest.mark.asyncio
 async def test_apply_hvac_sentinel_is_case_insensitive() -> None:
     """The sentinel check must tolerate any casing the backend or a
     custom optimizer might emit (`AUTO`, `Auto`, `off`, etc.)."""

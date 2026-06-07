@@ -61,6 +61,20 @@ const AUX_FIELDS: Partial<Record<ApplianceType, { name: string; label: string; h
   },
 };
 
+// HVAC gets a SECOND optional aux field for instantaneous power draw —
+// the ground-truth signal the backend reconciler uses on misbehaving
+// climate entities (Tuya / mini-split units that echo stale state).
+// Kept as a separate constant rather than extending AUX_FIELDS to a
+// list because the original singular-aux render path is well-tested
+// and the second field is HVAC-specific; a second conditional block
+// in the render lets us keep the working pattern intact.
+const HVAC_POWER_FIELD = {
+  name: 'power_sensor_entity_id',
+  label: 'AC power sensor (optional)',
+  help: 'sensor.* exposing instantaneous draw in W or kW (built-in meter or smart plug). Lets the model verify the AC is actually running when the climate entity reports stale state — common on Tuya / mini-split units.',
+  domain: 'sensor',
+} as const;
+
 export class HmApplianceForm extends LitElement {
   static override styles = css`
     :host {
@@ -300,6 +314,12 @@ export class HmApplianceForm extends LitElement {
       const auxVal = fromCfg(aux.name);
       seeded[aux.name] = auxVal;
     }
+    // HVAC has a second optional aux field (power sensor) so the
+    // reconciler has a physics-grounded signal independent of the
+    // climate entity's possibly-stale reports.
+    if (t === 'hvac') {
+      seeded[HVAC_POWER_FIELD.name] = fromCfg(HVAC_POWER_FIELD.name);
+    }
     this._values = seeded;
     this._errors = this._validate(seeded);
     this.error = null;
@@ -325,6 +345,7 @@ export class HmApplianceForm extends LitElement {
           home_size_sqft: '',
           entity_id: '',
           indoor_temp_entity_id: '',
+          power_sensor_entity_id: '',
         };
       case 'ev_charger':
         return {
@@ -483,13 +504,16 @@ export class HmApplianceForm extends LitElement {
     const aux = AUX_FIELDS[this._pickedType as ApplianceType];
     const auxValue = aux ? (v[aux.name] ?? '').trim() : '';
     switch (this._pickedType) {
-      case 'hvac':
+      case 'hvac': {
+        const powerValue = (v[HVAC_POWER_FIELD.name] ?? '').trim();
         return {
           hvac_type: v['hvac_type'] ?? 'central_ac',
           home_size_sqft: Number(v['home_size_sqft']),
           entity_id: entityId,
           ...(auxValue ? { indoor_temp_entity_id: auxValue } : {}),
+          ...(powerValue ? { power_sensor_entity_id: powerValue } : {}),
         };
+      }
       case 'ev_charger':
         return {
           battery_capacity_kwh: Number(v['battery_capacity_kwh']),
@@ -949,6 +973,24 @@ export class HmApplianceForm extends LitElement {
                         )}
                       </select>
                       <small class="hint">${auxHelp}</small>
+                    </label>
+                  `
+                : null}
+              ${t === 'hvac'
+                ? html`
+                    <label>
+                      <span class="label-text">${HVAC_POWER_FIELD.label}</span>
+                      <select
+                        name=${HVAC_POWER_FIELD.name}
+                        .value=${v[HVAC_POWER_FIELD.name] ?? ''}
+                        @change=${onSelect(HVAC_POWER_FIELD.name)}
+                      >
+                        <option value="" ?selected=${(v[HVAC_POWER_FIELD.name] ?? '') === ''}>— none —</option>
+                        ${this._entityList([HVAC_POWER_FIELD.domain]).map(
+                          (id) => html`<option value=${id} ?selected=${id === v[HVAC_POWER_FIELD.name]}>${id}</option>`,
+                        )}
+                      </select>
+                      <small class="hint">${HVAC_POWER_FIELD.help}</small>
                     </label>
                   `
                 : null}
