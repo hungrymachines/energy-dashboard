@@ -1,6 +1,7 @@
 """Tests for custom_components.hungry_machines.weather (v2.0)."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -34,11 +35,23 @@ def _state(attrs: dict | None = None) -> MagicMock:
 
 
 def _hourly_forecast(n: int, base_temp: float = 70.0, unit: str = "F") -> list[dict]:
+    """Build a synthetic forecast list of `n` hourly items.
+
+    Items are anchored to the NEXT local midnight (which the alignment
+    helper uses as hour 0) so all entries fall inside the [0, 24) window
+    the production code keeps. Starting before midnight would put the
+    earliest items outside the window and the helper would return None
+    for "not enough coverage".
+    """
+    next_local_midnight = (
+        datetime.now(timezone.utc) + timedelta(days=1)
+    ).replace(hour=0, minute=0, second=0, microsecond=0)
     items = []
     for i in range(n):
         t = base_temp + i * 0.5
+        ts = next_local_midnight + timedelta(hours=i)
         items.append({
-            "datetime": f"2026-05-07T{i % 24:02d}:00:00+00:00",
+            "datetime": ts.isoformat(),
             "temperature": t,
             "humidity": 50 + (i % 10),
             "wind_speed": 5.0,
@@ -84,10 +97,12 @@ async def test_happy_path_pushes_normalised_payload() -> None:
     assert ok is True
     assert len(posted) == 1
     payload = posted[0]
-    assert len(payload["hourly_temps_f"]) == 48
+    # Alignment helper trims to 24 local-day buckets (not 48 raw items).
+    assert len(payload["hourly_temps_f"]) == 24
     assert payload["hourly_temps_f"][0] == 70.0  # already in F, no conversion
     assert "hourly_humidity" in payload
     assert "hourly_wind_mph" in payload
+    assert "forecast_date" in payload  # explicit local-day alignment metadata
 
 
 @pytest.mark.asyncio
@@ -95,8 +110,19 @@ async def test_celsius_temps_converted_to_fahrenheit() -> None:
     hass = _hass({"weather.home": _state({"temperature_unit": "°C"})})
     entry = _entry()
     me = {"weather_entity_id": "weather.home"}
-    # 24 hourly forecasts at 0°C → should become 32°F
-    forecast = [{"temperature": 0.0} for _ in range(24)]
+    # 24 hourly forecasts at 0°C → should become 32°F. Each item needs
+    # a `datetime` field anchored to the local-midnight window the
+    # alignment helper expects.
+    next_local_midnight = (
+        datetime.now(timezone.utc) + timedelta(days=1)
+    ).replace(hour=0, minute=0, second=0, microsecond=0)
+    forecast = [
+        {
+            "datetime": (next_local_midnight + timedelta(hours=i)).isoformat(),
+            "temperature": 0.0,
+        }
+        for i in range(24)
+    ]
 
     hass.services.async_call = AsyncMock(
         return_value={"weather.home": {"forecast": forecast}}
@@ -136,6 +162,59 @@ async def test_too_few_forecast_points_skipped() -> None:
 
     assert ok is False
     post.assert_not_awaited()
+
+
+def test_align_drops_items_before_target_midnight() -> None:
+    """An HA forecast that starts at push time (not midnight) used to
+    get sent as-is, and the server interpreted item 0 as "00:00 local"
+    even though it was actually 03:30 EDT — the bug that put every
+    sensor reading's forecast-fill 3.5 hours off. The alignment helper
+    now drops items before the next local midnight and pulls 24
+    midnight-aligned hours."""
+    base_utc = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    next_local_midnight = (base_utc + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+
+    # Build 48 hourly items: 6 PRE-midnight (should drop) + 42 starting
+    # at midnight (24 of which get binned).
+    items = []
+    for offset in range(-6, 42):
+        items.append({
+            "datetime": (next_local_midnight + timedelta(hours=offset)).isoformat(),
+            "temperature": 70.0 + offset,
+            "humidity": 50.0,
+            "wind_speed": 5.0,
+        })
+
+    result = weather._align_forecast_to_local_day(items, "F", "mph")
+    assert result is not None
+    fdate, temps, humidity, wind = result
+    assert fdate == next_local_midnight.date().isoformat()
+    assert len(temps) == 24
+    # Hour 0 = first item at exactly midnight → temp=70.0 (offset 0).
+    assert temps[0] == 70.0
+    # Hour 23 → temp=93.0 (offset 23).
+    assert temps[23] == 93.0
+
+
+def test_align_returns_none_when_coverage_partial() -> None:
+    """If the forecast doesn't cover all 24 local hours past midnight,
+    skip the push rather than send a partial array — the server would
+    have to fill gaps with stale or absent data and the model would
+    then key off those holes."""
+    next_local_midnight = (
+        datetime.now(timezone.utc) + timedelta(days=1)
+    ).replace(hour=0, minute=0, second=0, microsecond=0)
+    # Only 12 hours of coverage — half a day.
+    items = [
+        {
+            "datetime": (next_local_midnight + timedelta(hours=i)).isoformat(),
+            "temperature": 70.0 + i,
+        }
+        for i in range(12)
+    ]
+    assert weather._align_forecast_to_local_day(items, "F", "mph") is None
 
 
 @pytest.mark.asyncio

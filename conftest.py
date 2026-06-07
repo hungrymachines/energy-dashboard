@@ -185,8 +185,22 @@ def _install_stubs() -> None:
     util_dt = _ensure_module("homeassistant.util.dt")
     if not hasattr(util_dt, "now"):
         import datetime as _datetime
-        util_dt.now = lambda: _datetime.datetime.now()
+        # Real HA returns a tz-aware datetime in the configured local tz.
+        # The stub returns tz-aware UTC so timestamp math (subtraction,
+        # comparison) doesn't blow up with naive/aware mismatches.
+        util_dt.now = lambda: _datetime.datetime.now(_datetime.timezone.utc)
         util_dt.utcnow = lambda: _datetime.datetime.now(_datetime.timezone.utc)
+    if not hasattr(util_dt, "as_local"):
+        # Real HA implementation converts a tz-aware datetime to the
+        # configured local timezone, or assumes UTC if the input is naive.
+        # Tests stub the configured local tz to UTC so this is a no-op
+        # except for the tzinfo attachment.
+        import datetime as _datetime
+        def _as_local(dt):
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=_datetime.timezone.utc)
+            return dt.astimezone(_datetime.timezone.utc)
+        util_dt.as_local = _as_local
 
     aiohttp_helper = _ensure_module("homeassistant.helpers.aiohttp_client")
     if not hasattr(aiohttp_helper, "async_get_clientsession"):
