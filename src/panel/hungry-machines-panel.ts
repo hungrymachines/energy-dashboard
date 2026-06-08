@@ -357,6 +357,12 @@ export class HungryMachinesPanel extends LitElement {
       opacity: 0.55;
       cursor: not-allowed;
     }
+    .diagnostics-section {
+      margin-bottom: 16px;
+    }
+    .diagnostics-section:empty {
+      display: none;
+    }
     .cards {
       display: grid;
       gap: 24px;
@@ -1641,6 +1647,9 @@ export class HungryMachinesPanel extends LitElement {
         ${this._renderChartSizeToggle()}
       </div>
       <div class="calibration-section">${this._renderCalibrationBanners()}</div>
+      <div class="diagnostics-section">
+        <hm-diagnostics-panel></hm-diagnostics-panel>
+      </div>
       <div class="cards">
         ${appliances.map((a) => this._renderApplianceCard(a, rates))}
         ${missingTypes.map((t) => this._renderExampleApplianceCard(t, rates))}
