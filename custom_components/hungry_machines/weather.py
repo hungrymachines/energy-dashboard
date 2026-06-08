@@ -63,7 +63,15 @@ def _align_forecast_to_local_day(
     forecast_list: list[dict],
     temp_unit: str,
     wind_unit: str,
-) -> tuple[str, list[float], list[float], list[float]] | None:
+) -> tuple[
+    str,
+    list[float],
+    list[float],
+    list[float],
+    list[float] | None,
+    list[float] | None,
+    list[float] | None,
+] | None:
     """Re-bin raw HA forecast items into 24 hourly buckets keyed to the
     next LOCAL midnight.
 
@@ -97,6 +105,9 @@ def _align_forecast_to_local_day(
     temps_by_hour: dict[int, float] = {}
     humidity_by_hour: dict[int, float] = {}
     wind_by_hour: dict[int, float] = {}
+    cloud_by_hour: dict[int, float] = {}
+    precip_by_hour: dict[int, float] = {}
+    solar_by_hour: dict[int, float] = {}
 
     for item in forecast_list:
         if not isinstance(item, dict):
@@ -133,6 +144,47 @@ def _align_forecast_to_local_day(
                 wind_by_hour[bucket] = _convert_wind(float(w), wind_unit)
             except (TypeError, ValueError):
                 pass
+        # Phase 3 — extended signals. Each is best-effort; the HA
+        # weather entity vocabulary varies by integration:
+        #   Met.no / OpenMeteo expose 'cloud_coverage' (0-100)
+        #   Some expose 'cloudiness' or 'cloudiness_pct'
+        #   OWM exposes 'precipitation' in mm
+        #   Some expose 'precipitation_intensity' in mm/h
+        #   Solar irradiance shows up as 'solar_irradiance' (W/m²) or
+        #   'uv_index' (0-11+ scale, which we convert)
+        for cloud_key in ("cloud_coverage", "cloudiness", "cloudiness_pct"):
+            cv = item.get(cloud_key)
+            if cv is not None:
+                try:
+                    cloud_by_hour[bucket] = max(0.0, min(100.0, float(cv)))
+                    break
+                except (TypeError, ValueError):
+                    pass
+        for precip_key in ("precipitation", "precipitation_intensity"):
+            pv = item.get(precip_key)
+            if pv is not None:
+                try:
+                    precip_by_hour[bucket] = max(0.0, float(pv))
+                    break
+                except (TypeError, ValueError):
+                    pass
+        sv = item.get("solar_irradiance")
+        if sv is not None:
+            try:
+                solar_by_hour[bucket] = max(0.0, float(sv))
+            except (TypeError, ValueError):
+                pass
+        else:
+            # UV index → rough W/m² estimate. Peak UV ~11 corresponds
+            # roughly to peak clear-sky irradiance ~1000 W/m². Linear
+            # scale is approximate but good enough for the model to
+            # discriminate "sunny" from "overcast".
+            uv = item.get("uv_index")
+            if uv is not None:
+                try:
+                    solar_by_hour[bucket] = max(0.0, float(uv) * 90.0)
+                except (TypeError, ValueError):
+                    pass
 
     if len(temps_by_hour) < 24:
         # Less than full local-day coverage. The forecast started later
@@ -144,20 +196,39 @@ def _align_forecast_to_local_day(
     # wind from the last known value so the server's length validation
     # passes (it requires humidity/wind arrays to match temps length).
     temps = [float(temps_by_hour[h]) for h in range(24)]
-    humidity = []
-    last_h = 50.0
-    for h in range(24):
-        if h in humidity_by_hour:
-            last_h = humidity_by_hour[h]
-        humidity.append(last_h)
-    wind = []
-    last_w = 5.0
-    for h in range(24):
-        if h in wind_by_hour:
-            last_w = wind_by_hour[h]
-        wind.append(last_w)
+    humidity = _fill_forward(humidity_by_hour, default=50.0)
+    wind = _fill_forward(wind_by_hour, default=5.0)
+    # Extended signals: only include when the entity actually provided
+    # them for some hour. Send None back to the caller when none of
+    # the 24 hours had data; the API treats None arrays as "no signal,
+    # use defaults". Forward-filling from a default would be worse —
+    # the fitter can't tell "no signal" from "constant 50% clouds".
+    cloud = _fill_forward(cloud_by_hour, default=0.0) if cloud_by_hour else None
+    precipitation = _fill_forward(precip_by_hour, default=0.0) if precip_by_hour else None
+    solar = _fill_forward(solar_by_hour, default=0.0) if solar_by_hour else None
 
-    return target_midnight.date().isoformat(), temps, humidity, wind
+    return (
+        target_midnight.date().isoformat(),
+        temps,
+        humidity,
+        wind,
+        cloud,
+        precipitation,
+        solar,
+    )
+
+
+def _fill_forward(by_hour: dict[int, float], *, default: float) -> list[float]:
+    """Compact a sparse {hour: value} dict into a 24-element array,
+    forward-filling gaps from the previous valid value (default for
+    the leading gap if no values are present before that hour)."""
+    out: list[float] = []
+    last = default
+    for h in range(24):
+        if h in by_hour:
+            last = by_hour[h]
+        out.append(last)
+    return out
 
 
 async def _user_weather_entity(hass: HomeAssistant, entry: ConfigEntry) -> str | None:
@@ -280,7 +351,15 @@ async def push_today_forecast(
         )
         return False
 
-    forecast_date, hourly_temps_f, hourly_humidity, hourly_wind_mph = aligned
+    (
+        forecast_date,
+        hourly_temps_f,
+        hourly_humidity,
+        hourly_wind_mph,
+        hourly_cloud,
+        hourly_precip,
+        hourly_solar,
+    ) = aligned
 
     payload: dict[str, Any] = {
         "hourly_temps_f": hourly_temps_f,
@@ -292,5 +371,15 @@ async def push_today_forecast(
         # for users whose push lands near midnight local.
         "forecast_date": forecast_date,
     }
+    # Phase 3 — only include extended arrays when the weather entity
+    # actually provided data. Sending None vs omitting is equivalent
+    # to the server; omitting keeps the payload lean for entities
+    # that don't expose these signals.
+    if hourly_cloud is not None:
+        payload["hourly_cloud_coverage_pct"] = hourly_cloud
+    if hourly_precip is not None:
+        payload["hourly_precipitation_mm"] = hourly_precip
+    if hourly_solar is not None:
+        payload["hourly_solar_irradiance_w"] = hourly_solar
 
     return await api.post_weather(hass, entry, payload)

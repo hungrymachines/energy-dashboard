@@ -63,3 +63,29 @@ export function getIntegrationHealth(): Promise<IntegrationHealth> {
 export function getDivergenceReport(): Promise<DivergenceReport> {
   return apiFetch<DivergenceReport>('/api/v1/integration/health/divergence');
 }
+
+export type SensorVerdict =
+  | 'healthy'
+  | 'intermittent'
+  | 'missing_or_broken'
+  | 'no_data';
+
+export interface ConfiguredSensor {
+  appliance_id: string;
+  appliance_name: string;
+  config_key: string;       // e.g. 'power_sensor_entity_id'
+  label: string;            // e.g. 'Power'
+  entity_id: string;
+  payload_field: string;    // e.g. 'power_watts'
+  populated_pct: number | null;
+  verdict: SensorVerdict;
+  message: string;
+}
+
+export interface SensorHealthResponse {
+  sensors: ConfiguredSensor[];
+}
+
+export function getSensorHealth(): Promise<SensorHealthResponse> {
+  return apiFetch<SensorHealthResponse>('/api/v1/integration/sensors');
+}

@@ -36,6 +36,114 @@ from . import api
 from .const import DOMAIN
 from .scheduler import get_last_commanded
 
+
+# ---------------------------------------------------------------------------
+# Aux-sensor health tracking — surfaces silent configuration failures
+# ---------------------------------------------------------------------------
+#
+# When a user configures `power_sensor_entity_id`, `indoor_temp_entity_id`,
+# or `indoor_humidity_entity_id` and the entity DOESN'T EXIST in HA, the
+# reading collector silently records NULL — leaving the user to wonder why
+# their thermal model never improves. The health tracker observes each
+# aux-sensor read attempt and:
+#
+#   * Logs a WARNING the first time an entity is missing / invalid
+#   * Re-warns every 288 reads (~24 h at 5-min cadence) so the message
+#     appears in fresh log views
+#   * Maintains a snapshot in `hass.data[DOMAIN][_AUX_HEALTH_KEY]` that
+#     the backend can read to drive the panel's sensor-health badge
+#
+# `_AUX_HEALTH_KEY` shape:
+#   {
+#     'sensor.foo': {
+#       'status': 'ok' | 'entity_missing' | 'invalid_state',
+#       'last_value': float | str | None,
+#       'consecutive_failures': int,
+#       'last_logged_cycle': int,
+#       'last_checked': iso8601 str,
+#     },
+#     ...
+#   }
+
+_AUX_HEALTH_KEY = "aux_sensor_health"
+_AUX_HEALTH_RELOG_EVERY = 288  # ~24 h at 5-min cycles
+
+
+def _aux_health(hass: HomeAssistant) -> dict[str, dict[str, Any]]:
+    return hass.data.setdefault(DOMAIN, {}).setdefault(_AUX_HEALTH_KEY, {})
+
+
+def _record_aux_status(
+    hass: HomeAssistant,
+    entity_id: str,
+    *,
+    status: str,
+    purpose: str,
+    last_value: Any = None,
+) -> None:
+    """Update the aux-sensor health snapshot and log on status changes.
+
+    `purpose` is the human-readable role of the sensor in the message
+    ("power", "indoor temperature", "indoor humidity"). Status transitions
+    from ok → not-ok log a WARNING; re-warns every ~24 h while still
+    broken so users see it in recent logs."""
+    health = _aux_health(hass)
+    prev = health.get(entity_id) or {}
+    prev_status = prev.get("status")
+    prev_count = int(prev.get("consecutive_failures") or 0)
+    prev_logged_cycle = int(prev.get("last_logged_cycle") or 0)
+    cycle = int(prev.get("cycle") or 0) + 1
+
+    if status == "ok":
+        health[entity_id] = {
+            "status": "ok",
+            "last_value": last_value,
+            "consecutive_failures": 0,
+            "last_logged_cycle": prev_logged_cycle,
+            "last_checked": datetime.now(timezone.utc).isoformat(),
+            "cycle": cycle,
+        }
+        if prev_status and prev_status != "ok":
+            _LOGGER.info(
+                "Hungry Machines: aux sensor '%s' (%s) recovered after %d failures",
+                entity_id, purpose, prev_count,
+            )
+        return
+
+    new_count = prev_count + 1
+    relog_due = (cycle - prev_logged_cycle) >= _AUX_HEALTH_RELOG_EVERY
+    if prev_status != status or relog_due or prev_count == 0:
+        if status == "entity_missing":
+            _LOGGER.warning(
+                "Hungry Machines: %s sensor '%s' is not present in Home Assistant — "
+                "double-check the entity ID in the appliance settings. The "
+                "corresponding reading column will be NULL until this is fixed.",
+                purpose, entity_id,
+            )
+        else:
+            _LOGGER.warning(
+                "Hungry Machines: %s sensor '%s' returned state=%r which isn't a "
+                "valid value. Verify the sensor is online and reporting a number.",
+                purpose, entity_id, last_value,
+            )
+        prev_logged_cycle = cycle
+
+    health[entity_id] = {
+        "status": status,
+        "last_value": last_value,
+        "consecutive_failures": new_count,
+        "last_logged_cycle": prev_logged_cycle,
+        "last_checked": datetime.now(timezone.utc).isoformat(),
+        "cycle": cycle,
+    }
+
+
+def get_aux_sensor_health(hass: HomeAssistant) -> dict[str, dict[str, Any]]:
+    """Public read of the aux-sensor health snapshot. The HACS `/api/v1/readings`
+    POST handler embeds this in the request so the backend can render
+    'power sensor missing' badges without separately polling HA state."""
+    return dict(_aux_health(hass))
+
 _LOGGER = logging.getLogger(__name__)
 
 _VALID_HVAC_STATES = ("HEAT", "COOL", "OFF", "FAN")
@@ -163,10 +271,18 @@ def _read_power_watts(
         return None
     s = hass.states.get(power_sensor_entity_id) if hass.states else None
     if s is None:
+        _record_aux_status(
+            hass, power_sensor_entity_id,
+            status="entity_missing", purpose="power",
+        )
         return None
     raw = getattr(s, "state", None)
     value = _coerce_float(raw)
     if value is None:
+        _record_aux_status(
+            hass, power_sensor_entity_id,
+            status="invalid_state", purpose="power", last_value=raw,
+        )
         return None
     unit = ""
     attrs = getattr(s, "attributes", None) or {}
@@ -175,8 +291,60 @@ def _read_power_watts(
     # Common HA units: "W", "kW", "watt", "kilowatt". Convert kW → W;
     # everything else is treated as W (the universal default).
     if unit in ("kw", "kilowatt", "kilowatts"):
-        return value * 1000.0
+        value = value * 1000.0
+    _record_aux_status(
+        hass, power_sensor_entity_id,
+        status="ok", purpose="power", last_value=value,
+    )
     return value
+
+
+def _read_indoor_humidity(
+    hass: HomeAssistant,
+    climate_state: Any,
+    indoor_humidity_entity_id: str | None,
+) -> float | None:
+    """Resolve indoor humidity from either the climate entity attribute
+    or the user-configured fallback sensor.
+
+    Many Tuya / Smart Life / IR-blaster climate entities don't expose
+    `current_humidity` at all. Without a fallback path the reading row's
+    `indoor_humidity` column ends up 100% NULL, and the model fitter
+    has no signal for latent-heat load. When the user wires up any
+    `sensor.*` exposing humidity (Third Reality, Aqara, SwitchBot,
+    even most Zigbee plant sensors), we read it here.
+
+    Returns None when neither source produces a usable value (the
+    reading row's column stays NULL). Updates the aux-health snapshot
+    so the panel surfaces a misconfigured entity ID.
+    """
+    raw = climate_state.attributes.get("current_humidity")
+    value = _coerce_float(raw)
+    if value is not None:
+        return value
+    if not indoor_humidity_entity_id:
+        return None
+    s = hass.states.get(indoor_humidity_entity_id) if hass.states else None
+    if s is None:
+        _record_aux_status(
+            hass, indoor_humidity_entity_id,
+            status="entity_missing", purpose="indoor humidity",
+        )
+        return None
+    fallback_raw = getattr(s, "state", None)
+    fallback_value = _coerce_float(fallback_raw)
+    if fallback_value is None:
+        _record_aux_status(
+            hass, indoor_humidity_entity_id,
+            status="invalid_state", purpose="indoor humidity",
+            last_value=fallback_raw,
+        )
+        return None
+    _record_aux_status(
+        hass, indoor_humidity_entity_id,
+        status="ok", purpose="indoor humidity", last_value=fallback_value,
+    )
+    return fallback_value
 
 
 def _build_hvac_home_reading(
@@ -184,6 +352,7 @@ def _build_hvac_home_reading(
     state: Any,
     indoor_temp_entity_id: str | None = None,
     power_sensor_entity_id: str | None = None,
+    indoor_humidity_entity_id: str | None = None,
 ) -> dict | None:
     """Build the /api/v1/readings payload from the HVAC climate entity.
 
@@ -213,19 +382,27 @@ def _build_hvac_home_reading(
     if indoor_temp is None and indoor_temp_entity_id:
         fallback_state = hass.states.get(indoor_temp_entity_id) if hass.states else None
         if fallback_state is not None:
-            indoor_temp = _coerce_float(getattr(fallback_state, "state", None))
+            raw = getattr(fallback_state, "state", None)
+            indoor_temp = _coerce_float(raw)
             if indoor_temp is None:
-                _LOGGER.info(
-                    "Hungry Machines: indoor-temp fallback entity '%s' state=%r "
-                    "is not a number; home reading skipped",
-                    indoor_temp_entity_id,
-                    getattr(fallback_state, "state", None),
+                _record_aux_status(
+                    hass, indoor_temp_entity_id,
+                    status="invalid_state",
+                    purpose="indoor temperature",
+                    last_value=raw,
+                )
+            else:
+                _record_aux_status(
+                    hass, indoor_temp_entity_id,
+                    status="ok",
+                    purpose="indoor temperature",
+                    last_value=indoor_temp,
                 )
         else:
-            _LOGGER.info(
-                "Hungry Machines: indoor-temp fallback entity '%s' not present "
-                "in hass.states; home reading skipped",
-                indoor_temp_entity_id,
+            _record_aux_status(
+                hass, indoor_temp_entity_id,
+                status="entity_missing",
+                purpose="indoor temperature",
             )
     if indoor_temp is None:
         _LOGGER.info(
@@ -247,7 +424,9 @@ def _build_hvac_home_reading(
     target_temp = state.attributes.get("temperature")
     if target_temp is not None:
         reading["target_temp"] = target_temp
-    indoor_humidity = state.attributes.get("current_humidity")
+    indoor_humidity = _read_indoor_humidity(
+        hass, state, indoor_humidity_entity_id,
+    )
     if indoor_humidity is not None:
         reading["indoor_humidity"] = indoor_humidity
     # Fan speed string ("low", "medium", "high", "auto", etc.). Per-
@@ -376,9 +555,15 @@ async def capture_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
                 config.get("power_sensor_entity_id")
                 if isinstance(config, dict) else None
             )
+            indoor_humidity_entity_id = (
+                config.get("indoor_humidity_entity_id")
+                if isinstance(config, dict) else None
+            )
             reading = _build_hvac_home_reading(
-                hass, control_state, indoor_temp_entity_id,
+                hass, control_state,
+                indoor_temp_entity_id,
                 power_sensor_entity_id,
+                indoor_humidity_entity_id,
             )
             if reading is None:
                 continue

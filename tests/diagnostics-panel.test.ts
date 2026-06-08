@@ -28,6 +28,29 @@ function mountPanel(): PanelEl {
   return el;
 }
 
+function _stubFetch(divergence: unknown, sensors: { sensors: unknown[] } = { sensors: [] }) {
+  // The panel pulls divergence + sensor health in parallel; we need to
+  // route each URL to its own response.
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: string | URL | Request) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (url.includes('/integration/health/divergence')) {
+        return jsonResponse(divergence);
+      }
+      if (url.includes('/integration/sensors')) {
+        return jsonResponse(sensors);
+      }
+      return jsonResponse({});
+    }),
+  );
+}
+
 describe('hm-diagnostics-panel', () => {
   beforeEach(() => {
     setApiBase('https://api.example.test');
@@ -232,6 +255,62 @@ describe('hm-diagnostics-panel', () => {
     expect(el._report).not.toBeNull();
     expect(el._report!.sample_count).toBe(0);
     expect(el._report!.verdict).toBe('no_data');
+  });
+
+  it('renders a sensor-health row for each configured aux sensor', async () => {
+    _stubFetch(
+      {
+        lookback_hours: 6,
+        sample_count: 72,
+        commanded_coverage_pct: 100,
+        power_coverage_pct: 0,
+        entity_coverage_pct: 100,
+        commanded_vs_entity_mode_agreement_pct: 100,
+        commanded_vs_power_mode_agreement_pct: null,
+        entity_vs_power_mode_agreement_pct: null,
+        setpoint_offset_avg_f: 0,
+        setpoint_offset_max_f: 0,
+        fan_match_pct: 100,
+        power_obeyed_pct: null,
+        verdict: 'healthy',
+        human_readable: 'OK',
+      },
+      {
+        sensors: [
+          {
+            appliance_id: 'a-1',
+            appliance_name: 'Office AC',
+            config_key: 'power_sensor_entity_id',
+            label: 'Power',
+            entity_id: 'sensor.does_not_exist',
+            payload_field: 'power_watts',
+            populated_pct: 0,
+            verdict: 'missing_or_broken',
+            message: 'Power sensor has produced no usable readings — verify the entity ID.',
+          },
+          {
+            appliance_id: 'a-1',
+            appliance_name: 'Office AC',
+            config_key: 'indoor_temp_entity_id',
+            label: 'Indoor temperature',
+            entity_id: 'sensor.indoor_temp',
+            payload_field: 'indoor_temp',
+            populated_pct: 100,
+            verdict: 'healthy',
+            message: 'Indoor temperature sensor reporting cleanly.',
+          },
+        ],
+      },
+    );
+
+    const el = mountPanel();
+    await flush(el);
+
+    expect(el._sensors).not.toBeNull();
+    expect(el._sensors!.length).toBe(2);
+    const broken = el._sensors!.find((s) => s.verdict === 'missing_or_broken');
+    expect(broken).toBeDefined();
+    expect(broken!.entity_id).toBe('sensor.does_not_exist');
   });
 
   it('shows a graceful fallback when the fetch fails', async () => {

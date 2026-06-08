@@ -189,13 +189,87 @@ def test_align_drops_items_before_target_midnight() -> None:
 
     result = weather._align_forecast_to_local_day(items, "F", "mph")
     assert result is not None
-    fdate, temps, humidity, wind = result
+    fdate, temps, humidity, wind, _cloud, _precip, _solar = result
     assert fdate == next_local_midnight.date().isoformat()
     assert len(temps) == 24
     # Hour 0 = first item at exactly midnight → temp=70.0 (offset 0).
     assert temps[0] == 70.0
     # Hour 23 → temp=93.0 (offset 23).
     assert temps[23] == 93.0
+
+
+def test_align_captures_cloud_precip_solar_when_entity_exposes_them() -> None:
+    """Modern HA weather integrations (Met.no, OpenMeteo, OWM) expose
+    cloud cover, precipitation, and solar/UV per hour. Verify each is
+    extracted with the right name aliases and ranges."""
+    next_local_midnight = (
+        datetime.now(timezone.utc) + timedelta(days=1)
+    ).replace(hour=0, minute=0, second=0, microsecond=0)
+    items = [
+        {
+            "datetime": (next_local_midnight + timedelta(hours=i)).isoformat(),
+            "temperature": 70.0 + i,
+            "cloud_coverage": 40.0 + i,         # 40..63
+            "precipitation": 0.5 if i == 8 else 0.0,
+            "solar_irradiance": 50.0 * i,       # 0..1150
+        }
+        for i in range(24)
+    ]
+    result = weather._align_forecast_to_local_day(items, "F", "mph")
+    assert result is not None
+    fdate, temps, humidity, wind, cloud, precip, solar = result
+    assert cloud is not None and len(cloud) == 24
+    assert cloud[0] == 40.0
+    assert cloud[23] == 63.0
+    assert precip is not None and precip[8] == 0.5
+    assert solar is not None and solar[12] == 600.0
+
+
+def test_align_omits_cloud_precip_solar_when_entity_silent_on_them() -> None:
+    """Older / simpler weather integrations only expose temp + humidity
+    + wind. The extended arrays should be None — the API treats None
+    as 'no signal' and the fitter falls back to defaults instead of
+    keying on fabricated values."""
+    next_local_midnight = (
+        datetime.now(timezone.utc) + timedelta(days=1)
+    ).replace(hour=0, minute=0, second=0, microsecond=0)
+    items = [
+        {
+            "datetime": (next_local_midnight + timedelta(hours=i)).isoformat(),
+            "temperature": 70.0 + i,
+            "humidity": 50.0,
+            "wind_speed": 5.0,
+        }
+        for i in range(24)
+    ]
+    result = weather._align_forecast_to_local_day(items, "F", "mph")
+    assert result is not None
+    _, _, _, _, cloud, precip, solar = result
+    assert cloud is None
+    assert precip is None
+    assert solar is None
+
+
+def test_align_converts_uv_index_to_solar_irradiance() -> None:
+    """When the entity exposes uv_index but not solar_irradiance, we
+    convert to W/m² using a 90×UV approximation (UV 11 ≈ 990 W/m²)."""
+    next_local_midnight = (
+        datetime.now(timezone.utc) + timedelta(days=1)
+    ).replace(hour=0, minute=0, second=0, microsecond=0)
+    items = [
+        {
+            "datetime": (next_local_midnight + timedelta(hours=i)).isoformat(),
+            "temperature": 70.0,
+            "uv_index": 8.0 if i == 12 else 0.0,
+        }
+        for i in range(24)
+    ]
+    result = weather._align_forecast_to_local_day(items, "F", "mph")
+    assert result is not None
+    *_, solar = result
+    assert solar is not None
+    # 8 UV * 90 = 720 W/m²
+    assert solar[12] == 720.0
 
 
 def test_align_returns_none_when_coverage_partial() -> None:

@@ -1,6 +1,9 @@
 import { LitElement, html, css } from 'lit';
 import * as diagnostics from '../api/diagnostics.js';
-import type { DivergenceReport } from '../api/diagnostics.js';
+import type {
+  DivergenceReport,
+  ConfiguredSensor,
+} from '../api/diagnostics.js';
 
 /**
  * `<hm-diagnostics-panel>` — three-signal divergence renderer.
@@ -86,16 +89,81 @@ export class HmDiagnosticsPanel extends LitElement {
       color: var(--hm-muted, #64748B);
       margin-top: 10px;
     }
+    .sensor-grid {
+      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .sensor-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(100, 116, 139, 0.2);
+      background: #fafbfc;
+      font-size: 13px;
+    }
+    .sensor-row.healthy {
+      border-color: rgba(15, 118, 110, 0.35);
+      background: rgba(15, 118, 110, 0.04);
+    }
+    .sensor-row.intermittent {
+      border-color: rgba(245, 158, 11, 0.45);
+      background: rgba(245, 158, 11, 0.06);
+    }
+    .sensor-row.bad {
+      border-color: rgba(220, 38, 38, 0.45);
+      background: rgba(220, 38, 38, 0.05);
+    }
+    .sensor-icon {
+      font-weight: 700;
+      font-size: 14px;
+      line-height: 1;
+      flex: 0 0 auto;
+      padding-top: 2px;
+    }
+    .sensor-icon.ok { color: #115E59; }
+    .sensor-icon.warn { color: #92400E; }
+    .sensor-icon.bad { color: #991B1B; }
+    .sensor-body {
+      flex: 1;
+      line-height: 1.35;
+    }
+    .sensor-label {
+      font-weight: 600;
+      color: var(--hm-text, #0F172A);
+    }
+    .sensor-entity {
+      font-family: monospace;
+      font-size: 12px;
+      color: var(--hm-muted, #64748B);
+    }
+    .sensor-msg {
+      margin-top: 4px;
+      color: var(--hm-muted, #64748B);
+    }
+    .section-title {
+      margin: 14px 0 4px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--hm-text, #0F172A);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
   `;
 
   static override properties = {
     _report: { state: true },
+    _sensors: { state: true },
     _loading: { state: true },
     _error: { state: true },
     refreshKey: { type: Number, attribute: 'refresh-key', reflect: true },
   };
 
   _report: DivergenceReport | null = null;
+  _sensors: ConfiguredSensor[] | null = null;
   _loading = false;
   _error: string | null = null;
   refreshKey = 0;
@@ -117,30 +185,52 @@ export class HmDiagnosticsPanel extends LitElement {
   private async _load(): Promise<void> {
     this._loading = true;
     this._error = null;
-    try {
-      this._report = await diagnostics.getDivergenceReport();
-    } catch (e) {
-      this._error = e instanceof Error ? e.message : String(e);
+    // Fetch divergence + sensor health in parallel — they're
+    // independent endpoints and the panel renders both.
+    const [report, sensors] = await Promise.allSettled([
+      diagnostics.getDivergenceReport(),
+      diagnostics.getSensorHealth(),
+    ]);
+    if (report.status === 'fulfilled') {
+      this._report = report.value;
+    } else {
+      this._error = report.reason instanceof Error
+        ? report.reason.message
+        : String(report.reason);
       this._report = null;
-    } finally {
-      this._loading = false;
     }
+    if (sensors.status === 'fulfilled') {
+      this._sensors = sensors.value.sensors;
+    } else {
+      // Sensor health failure shouldn't blank the whole panel — the
+      // divergence report is independently useful. Just don't render
+      // the section.
+      this._sensors = null;
+    }
+    this._loading = false;
   }
 
   override render() {
-    if (this._loading && !this._report) {
+    if (this._loading && !this._report && !this._sensors) {
       return html`<div class="banner muted"><span class="msg">Checking integration health…</span></div>`;
     }
-    if (this._error) {
+    if (this._error && !this._sensors) {
       return html`<div class="banner muted"><span class="msg">Couldn't load diagnostics: ${this._error}</span></div>`;
     }
+    // Build the report HTML inline when we have a report, otherwise
+    // an empty placeholder. happy-dom has an edge case with multiple
+    // sibling `${cond ? html : null}` interpolations at the top
+    // level of a render — keeping just the report inline + sensors
+    // as a sibling avoids it.
     if (!this._report) {
-      return html``;
+      return html`${this._renderSensorBlock()}`;
     }
-    return this._renderReport(this._report);
+    return this._renderFull(this._report);
   }
 
-  private _renderReport(r: DivergenceReport) {
+  private _renderFull(r: DivergenceReport) {
+    // Inline both pieces so Lit sees one big template result, not
+    // two interpolations sharing the parent.
     const tone = _toneFor(r.verdict);
     const badge = _badgeFor(r.verdict);
     return html`
@@ -173,8 +263,58 @@ export class HmDiagnosticsPanel extends LitElement {
             </details>
           `
         : null}
+      ${this._renderSensorBlock()}
     `;
   }
+
+  private _renderSensorBlock() {
+    if (!this._sensors || this._sensors.length === 0) {
+      return html``;
+    }
+    return this._renderSensorHealth(this._sensors);
+  }
+
+  private _renderSensorHealth(sensors: ConfiguredSensor[]) {
+    return html`
+      <div class="section-title">Sensor health</div>
+      <div class="sensor-grid">
+        ${sensors.map((s) => this._renderSensorRow(s))}
+      </div>
+    `;
+  }
+
+  private _renderSensorRow(s: ConfiguredSensor) {
+    const tone = _sensorTone(s.verdict);
+    const icon = _sensorIcon(s.verdict);
+    return html`
+      <div class="sensor-row ${tone}">
+        <span class="sensor-icon ${icon.cls}">${icon.glyph}</span>
+        <div class="sensor-body">
+          <span class="sensor-label">${s.label}</span>
+          ·
+          <span class="sensor-entity">${s.entity_id}</span>
+          ${s.populated_pct !== null
+            ? html` <span class="sensor-entity">(${s.populated_pct.toFixed(0)}% populated)</span>`
+            : null}
+          <div class="sensor-msg">${s.message}</div>
+        </div>
+      </div>
+    `;
+  }
+
+}
+
+function _sensorTone(v: ConfiguredSensor['verdict']): 'healthy' | 'intermittent' | 'bad' {
+  if (v === 'healthy') return 'healthy';
+  if (v === 'intermittent') return 'intermittent';
+  return 'bad';
+}
+
+function _sensorIcon(v: ConfiguredSensor['verdict']): { glyph: string; cls: string } {
+  if (v === 'healthy') return { glyph: '✓', cls: 'ok' };
+  if (v === 'intermittent') return { glyph: '!', cls: 'warn' };
+  if (v === 'no_data') return { glyph: '?', cls: 'warn' };
+  return { glyph: '✗', cls: 'bad' };
 }
 
 function _toneFor(v: DivergenceReport['verdict']): 'healthy' | 'warn' | 'error' | 'muted' {
