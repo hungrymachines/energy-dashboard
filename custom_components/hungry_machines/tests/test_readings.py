@@ -372,6 +372,97 @@ async def test_capture_hvac_window_ac_eco_mode_records_eco() -> None:
 
 
 @pytest.mark.asyncio
+async def test_aux_health_records_entity_missing_for_power(caplog) -> None:
+    """When the user configures a power sensor but the entity ID doesn't
+    exist in HA, the collector must log a warning so the user notices.
+    Silent NULL was the failure mode that hid a misconfigured entity
+    for weeks of pilot data."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {
+            "entity_id": "climate.test",
+            "power_sensor_entity_id": "sensor.does_not_exist",
+        },
+    }
+    climate = _state(
+        "cool", {"current_temperature": 72.5, "temperature": 75.0},
+    )
+    # Note: sensor.does_not_exist is NOT in hass.states
+    hass = _hass({"climate.test": climate})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ), caplog.at_level("WARNING", logger="custom_components.hungry_machines.readings"):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert "power_watts" not in posted
+
+    # The health snapshot must record the failure state.
+    health = readings.get_aux_sensor_health(hass)
+    assert health["sensor.does_not_exist"]["status"] == "entity_missing"
+    assert health["sensor.does_not_exist"]["consecutive_failures"] == 1
+
+    # And a WARNING line must have been logged — the user's only
+    # in-HA signal that the config is broken.
+    warned = [
+        rec for rec in caplog.records
+        if rec.levelname == "WARNING"
+        and "sensor.does_not_exist" in rec.getMessage()
+    ]
+    assert warned, "expected a WARNING log line about the missing sensor"
+
+
+@pytest.mark.asyncio
+async def test_aux_health_recovers_when_sensor_returns(caplog) -> None:
+    """If the sensor comes back online (HA restart, entity rename, etc.),
+    the next successful read should clear the failure state and emit a
+    recovery INFO log."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {
+            "entity_id": "climate.test",
+            "power_sensor_entity_id": "sensor.ac_power",
+        },
+    }
+    climate = _state(
+        "cool", {"current_temperature": 72.5, "temperature": 75.0},
+    )
+    hass = _hass({"climate.test": climate})
+    entry = _entry()
+
+    # First cycle: sensor missing.
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+    assert readings.get_aux_sensor_health(hass)["sensor.ac_power"]["status"] \
+        == "entity_missing"
+
+    # Second cycle: sensor is now present and reporting valid power.
+    power = MagicMock()
+    power.state = "1450.0"
+    power.attributes = {"unit_of_measurement": "W"}
+    hass.states.get = MagicMock(side_effect=lambda eid: {
+        "climate.test": climate,
+        "sensor.ac_power": power,
+    }.get(eid))
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    health = readings.get_aux_sensor_health(hass)
+    assert health["sensor.ac_power"]["status"] == "ok"
+    assert health["sensor.ac_power"]["consecutive_failures"] == 0
+    assert health["sensor.ac_power"]["last_value"] == 1450.0
+
+
+@pytest.mark.asyncio
 async def test_capture_hvac_dry_mode_records_dry() -> None:
     """Dry/dehumidify mode is recorded as DRY (distinct from COOL).
     The compressor runs intermittently for moisture removal rather

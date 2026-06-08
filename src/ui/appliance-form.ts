@@ -61,17 +61,24 @@ const AUX_FIELDS: Partial<Record<ApplianceType, { name: string; label: string; h
   },
 };
 
-// HVAC gets a SECOND optional aux field for instantaneous power draw —
-// the ground-truth signal the backend reconciler uses on misbehaving
-// climate entities (Tuya / mini-split units that echo stale state).
-// Kept as a separate constant rather than extending AUX_FIELDS to a
-// list because the original singular-aux render path is well-tested
-// and the second field is HVAC-specific; a second conditional block
-// in the render lets us keep the working pattern intact.
+// HVAC gets two additional optional aux fields beyond the singular
+// AUX_FIELDS path: a power sensor (ground-truth "AC running" signal
+// for the reconciler) and an indoor humidity sensor (latent-heat
+// load input for the model). Kept as separate constants rather than
+// extending AUX_FIELDS to a list because the original singular-aux
+// render path is well-tested and additional conditional blocks in
+// the render slot in cleanly.
 const HVAC_POWER_FIELD = {
   name: 'power_sensor_entity_id',
   label: 'AC power sensor (optional)',
   help: 'sensor.* exposing instantaneous draw in W or kW (built-in meter or smart plug). Lets the model verify the AC is actually running when the climate entity reports stale state — common on Tuya / mini-split units.',
+  domain: 'sensor',
+} as const;
+
+const HVAC_INDOOR_HUMIDITY_FIELD = {
+  name: 'indoor_humidity_entity_id',
+  label: 'Indoor humidity sensor (optional)',
+  help: 'sensor.* exposing indoor relative humidity (0-100%). Used when the climate entity doesn\'t expose current_humidity (Tuya / IR-blaster). Humid weather drops AC capacity 30-50% — this lets the optimizer account for that.',
   domain: 'sensor',
 } as const;
 
@@ -314,11 +321,13 @@ export class HmApplianceForm extends LitElement {
       const auxVal = fromCfg(aux.name);
       seeded[aux.name] = auxVal;
     }
-    // HVAC has a second optional aux field (power sensor) so the
-    // reconciler has a physics-grounded signal independent of the
-    // climate entity's possibly-stale reports.
+    // HVAC has two extra optional aux fields beyond the singular
+    // AUX_FIELDS entry: power and indoor humidity. Both seeded from
+    // existing config so editing keeps the user's values.
     if (t === 'hvac') {
       seeded[HVAC_POWER_FIELD.name] = fromCfg(HVAC_POWER_FIELD.name);
+      seeded[HVAC_INDOOR_HUMIDITY_FIELD.name] =
+        fromCfg(HVAC_INDOOR_HUMIDITY_FIELD.name);
     }
     this._values = seeded;
     this._errors = this._validate(seeded);
@@ -346,6 +355,7 @@ export class HmApplianceForm extends LitElement {
           entity_id: '',
           indoor_temp_entity_id: '',
           power_sensor_entity_id: '',
+          indoor_humidity_entity_id: '',
         };
       case 'ev_charger':
         return {
@@ -506,12 +516,14 @@ export class HmApplianceForm extends LitElement {
     switch (this._pickedType) {
       case 'hvac': {
         const powerValue = (v[HVAC_POWER_FIELD.name] ?? '').trim();
+        const humidityValue = (v[HVAC_INDOOR_HUMIDITY_FIELD.name] ?? '').trim();
         return {
           hvac_type: v['hvac_type'] ?? 'central_ac',
           home_size_sqft: Number(v['home_size_sqft']),
           entity_id: entityId,
           ...(auxValue ? { indoor_temp_entity_id: auxValue } : {}),
           ...(powerValue ? { power_sensor_entity_id: powerValue } : {}),
+          ...(humidityValue ? { indoor_humidity_entity_id: humidityValue } : {}),
         };
       }
       case 'ev_charger':
@@ -991,6 +1003,24 @@ export class HmApplianceForm extends LitElement {
                         )}
                       </select>
                       <small class="hint">${HVAC_POWER_FIELD.help}</small>
+                    </label>
+                  `
+                : null}
+              ${t === 'hvac'
+                ? html`
+                    <label>
+                      <span class="label-text">${HVAC_INDOOR_HUMIDITY_FIELD.label}</span>
+                      <select
+                        name=${HVAC_INDOOR_HUMIDITY_FIELD.name}
+                        .value=${v[HVAC_INDOOR_HUMIDITY_FIELD.name] ?? ''}
+                        @change=${onSelect(HVAC_INDOOR_HUMIDITY_FIELD.name)}
+                      >
+                        <option value="" ?selected=${(v[HVAC_INDOOR_HUMIDITY_FIELD.name] ?? '') === ''}>— none —</option>
+                        ${this._entityList([HVAC_INDOOR_HUMIDITY_FIELD.domain]).map(
+                          (id) => html`<option value=${id} ?selected=${id === v[HVAC_INDOOR_HUMIDITY_FIELD.name]}>${id}</option>`,
+                        )}
+                      </select>
+                      <small class="hint">${HVAC_INDOOR_HUMIDITY_FIELD.help}</small>
                     </label>
                   `
                 : null}
