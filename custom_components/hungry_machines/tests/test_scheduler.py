@@ -435,6 +435,82 @@ async def test_get_last_commanded_returns_none_before_first_apply() -> None:
 
 
 @pytest.mark.asyncio
+async def test_off_to_cool_transition_sends_setpoint_despite_stale_state() -> None:
+    """June 10 calibration phase-3 regression: at the OFF→COOL boundary
+    the scheduler sends set_hvac_mode('cool'), but cloud-bridged units
+    (Tuya) take seconds to reflect it — the immediate state re-read
+    still says 'off'. The payload builder used to trust that stale
+    read and skip BOTH set_temperature and set_fan_mode, so the unit
+    resumed cooling at its stale remembered settings (cool/low/80°F
+    instead of cool/high/68°F).
+
+    With assumed_mode, the commanded canonical wins: all three service
+    calls (mode, temperature, fan) must fire."""
+    hass = _hass(_climate_state(
+        "off",  # stale report — unit still shows off after mode cmd
+        supports_range=False,
+        fan_modes=["low", "medium", "high"],
+        hvac_modes=["off", "cool"],
+    ))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(
+        setpoint=68.0,
+        fan_mode_schedule=["high"] * 48,
+        hvac_mode_schedule=["COOL"] * 48,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=30):
+        await scheduler.apply_current_slot(hass, entry)
+
+    calls = [
+        (c.args[1], c.args[2])
+        for c in hass.services.async_call.await_args_list
+    ]
+    services = [s for s, _ in calls]
+    assert "set_hvac_mode" in services, "mode command must fire"
+    assert "set_temperature" in services, (
+        "setpoint must fire even though the entity still reports 'off'"
+    )
+    assert "set_fan_mode" in services, (
+        "fan command must fire even though the entity still reports 'off'"
+    )
+    temp_payload = next(p for s, p in calls if s == "set_temperature")
+    assert temp_payload["temperature"] == 68.0
+    fan_payload = next(p for s, p in calls if s == "set_fan_mode")
+    assert fan_payload["fan_mode"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_cool_to_off_transition_skips_setpoint_despite_stale_state() -> None:
+    """Mirror of the OFF→COOL race: at the COOL→OFF boundary the entity
+    still reports 'cool' for a few seconds. The code used to write the
+    OFF-slot's parking setpoint (high band, e.g. 80°F) into the unit
+    during that window — which the unit then remembered and resumed at
+    when it turned back on. With assumed_mode='OFF', the setpoint write
+    is skipped; only the mode command goes out."""
+    hass = _hass(_climate_state(
+        "cool",  # stale report — unit still shows cool after off cmd
+        supports_range=False,
+        fan_modes=["low", "medium", "high"],
+        hvac_modes=["off", "cool"],
+    ))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(
+        setpoint=80.0,
+        fan_mode_schedule=["auto"] * 48,
+        hvac_mode_schedule=["OFF"] * 48,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    services = [c.args[1] for c in hass.services.async_call.await_args_list]
+    assert "set_hvac_mode" in services, "off command must fire"
+    assert "set_temperature" not in services, (
+        "parking setpoint must NOT be written while transitioning off — "
+        "the unit memorizes it and resumes at it later"
+    )
+
+
+@pytest.mark.asyncio
 async def test_apply_hvac_sentinel_is_case_insensitive() -> None:
     """The sentinel check must tolerate any casing the backend or a
     custom optimizer might emit (`AUTO`, `Auto`, `off`, etc.)."""

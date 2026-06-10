@@ -310,6 +310,7 @@ def _build_hvac_payload(
     entity_id: str,
     state: object | None,
     setpoint: float,
+    assumed_mode: str | None = None,
 ) -> dict | None:
     """Build the climate.set_temperature payload for a single setpoint.
 
@@ -330,6 +331,16 @@ def _build_hvac_payload(
 
     Returns the kwargs dict, or None when the entity is missing / off /
     in an unknown mode.
+
+    `assumed_mode` overrides the entity's REPORTED mode for the
+    payload-shape decision. Pass the canonical mode the scheduler just
+    commanded via `climate.set_hvac_mode`: cloud-bridged units (Tuya /
+    Smart Life) take seconds to reflect a mode change in `hass.states`,
+    so reading back "off" right after commanding "cool" made the
+    OFF→COOL transition skip BOTH set_temperature and set_fan_mode —
+    the unit resumed cooling at whatever stale setpoint/fan it
+    remembered (the June 10 calibration phase-3 incident: AC came back
+    at cool/low/80°F instead of cool/high/68°F).
     """
     if state is None:
         _LOGGER.info(
@@ -337,7 +348,9 @@ def _build_hvac_payload(
         )
         return None
     raw_state = getattr(state, "state", None) or ""
-    hvac_mode = str(raw_state).lower()
+    hvac_mode = (
+        assumed_mode.strip().lower() if assumed_mode else str(raw_state).lower()
+    )
     attrs = getattr(state, "attributes", None) or {}
     try:
         features = int(attrs.get("supported_features", 0))
@@ -488,12 +501,21 @@ async def _apply_hvac(
     if mode_canonical is not None:
         await _maybe_set_hvac_mode(hass, entity_id, attrs, mode_canonical, slot)
         # Re-read state after a mode change so the payload builder sees
-        # the freshly-set mode (the next service call's payload shape
-        # depends on whether the unit is in heat_cool/auto vs. cool/heat).
+        # fresh attributes (fan vocabulary etc.). NOTE: the MODE in this
+        # re-read can be stale — cloud-bridged units (Tuya) take seconds
+        # to reflect set_hvac_mode in hass.states. That's why the
+        # payload builder below receives `assumed_mode=mode_canonical`
+        # instead of trusting the reported state: reading back "off"
+        # right after commanding "cool" used to skip the setpoint AND
+        # fan calls, so the unit resumed at its stale remembered
+        # settings (June 10 calibration phase-3: cool/low/80 instead
+        # of cool/high/68).
         state = hass.states.get(entity_id) if hass.states else state
         attrs = getattr(state, "attributes", None) or {} if state else {}
 
-    payload = _build_hvac_payload(entity_id, state, setpoint)
+    payload = _build_hvac_payload(
+        entity_id, state, setpoint, assumed_mode=mode_canonical,
+    )
     if payload is None:
         return
 
