@@ -610,7 +610,7 @@ async def _apply_hvac(
     )
 
 
-_VERIFY_DELAY_SECONDS = 150  # 2.5 min — Tuya cloud roundtrips settle well within this
+_VERIFY_DELAY_SECONDS = 60  # 1 min — Tuya cloud roundtrips settle within this
 _SETPOINT_TOLERANCE_F = 1.0  # integer-rounding units + °C roundtrips drift ~0.5 °F
 
 
