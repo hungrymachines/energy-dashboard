@@ -50,6 +50,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_call_later
 
 from . import api
 from .const import DOMAIN
@@ -589,6 +590,137 @@ async def _apply_hvac(
             _LOGGER.warning(
                 "Hungry Machines HVAC fan apply failed for %s: %s", entity_id, err
             )
+
+    # Set-then-verify: schedule a one-shot check a few minutes out.
+    # Cloud-bridged units (Tuya / Smart Life) drop or delay commands
+    # often enough that fire-and-forget isn't reliable — the June 10
+    # calibration phase-3 incident resumed at stale settings because
+    # nothing ever checked whether the commanded values stuck. The
+    # verifier re-reads the entity and re-sends anything that didn't
+    # take. ONE retry per slot apply — a user's manual override gets
+    # reverted at most once per half-hour and is then respected until
+    # the next slot boundary.
+    _schedule_apply_verification(
+        hass,
+        entity_id=entity_id,
+        expected_mode=mode_canonical,
+        expected_setpoint=payload.get("temperature") or payload.get("target_temp_high"),
+        expected_fan=fan_label,
+        slot=slot,
+    )
+
+
+_VERIFY_DELAY_SECONDS = 150  # 2.5 min — Tuya cloud roundtrips settle well within this
+_SETPOINT_TOLERANCE_F = 1.0  # integer-rounding units + °C roundtrips drift ~0.5 °F
+
+
+def _schedule_apply_verification(
+    hass: HomeAssistant,
+    *,
+    entity_id: str,
+    expected_mode: str | None,
+    expected_setpoint: float | None,
+    expected_fan: str | None,
+    slot: int,
+) -> None:
+    """Arm a one-shot verification for a just-applied slot.
+
+    Wrapped in try/except because `async_call_later` isn't available
+    in every test harness — verification is an enhancement, not a
+    dependency of the apply itself."""
+
+    async def _verify(_now) -> None:
+        await _verify_hvac_apply(
+            hass,
+            entity_id=entity_id,
+            expected_mode=expected_mode,
+            expected_setpoint=expected_setpoint,
+            expected_fan=expected_fan,
+            slot=slot,
+        )
+
+    try:
+        async_call_later(hass, _VERIFY_DELAY_SECONDS, _verify)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("verification scheduling unavailable: %s", err)
+
+
+async def _verify_hvac_apply(
+    hass: HomeAssistant,
+    *,
+    entity_id: str,
+    expected_mode: str | None,
+    expected_setpoint: float | None,
+    expected_fan: str | None,
+    slot: int,
+) -> None:
+    """Re-read the entity ~2.5 min after an apply and re-send anything
+    that didn't stick. One retry, no re-verification — persistent
+    disobedience surfaces through the divergence report instead of an
+    infinite command loop fighting the unit (or the user)."""
+    state = hass.states.get(entity_id) if hass.states else None
+    if state is None:
+        return
+    attrs = getattr(state, "attributes", None) or {}
+    reported_mode = str(getattr(state, "state", "") or "").strip().lower()
+
+    fixes: list[str] = []
+
+    if expected_mode is not None:
+        want_mode = expected_mode.strip().lower()
+        # ECO/DRY map to cool on the apply side; accept either.
+        if want_mode in ("eco", "dry"):
+            want_mode = "cool"
+        if want_mode != reported_mode:
+            fixes.append(f"mode {reported_mode!r}→{want_mode!r}")
+            try:
+                await hass.services.async_call(
+                    "climate", "set_hvac_mode",
+                    {"entity_id": entity_id, "hvac_mode": want_mode},
+                    blocking=False,
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("verify re-send mode failed for %s: %s", entity_id, err)
+
+    # Setpoint / fan only meaningful when the unit should be actively
+    # heating or cooling — skip both when we commanded OFF.
+    actively_on = expected_mode is None or expected_mode.strip().lower() not in ("off",)
+    if actively_on and expected_setpoint is not None:
+        reported_setpoint = attrs.get("temperature")
+        try:
+            reported_f = float(reported_setpoint) if reported_setpoint is not None else None
+        except (TypeError, ValueError):
+            reported_f = None
+        if reported_f is None or abs(reported_f - float(expected_setpoint)) > _SETPOINT_TOLERANCE_F:
+            fixes.append(f"setpoint {reported_f!r}→{expected_setpoint}")
+            try:
+                await hass.services.async_call(
+                    "climate", "set_temperature",
+                    {"entity_id": entity_id, "temperature": float(expected_setpoint)},
+                    blocking=False,
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("verify re-send setpoint failed for %s: %s", entity_id, err)
+
+    if actively_on and expected_fan is not None:
+        reported_fan = str(attrs.get("fan_mode") or "").strip().lower()
+        if reported_fan != expected_fan.strip().lower():
+            fixes.append(f"fan {reported_fan!r}→{expected_fan!r}")
+            try:
+                await hass.services.async_call(
+                    "climate", "set_fan_mode",
+                    {"entity_id": entity_id, "fan_mode": expected_fan},
+                    blocking=False,
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("verify re-send fan failed for %s: %s", entity_id, err)
+
+    if fixes:
+        _LOGGER.warning(
+            "Hungry Machines HVAC verify slot=%d: %s did not hold commanded "
+            "values — re-sent: %s",
+            slot, entity_id, "; ".join(fixes),
+        )
 
 
 async def _maybe_set_hvac_mode(

@@ -435,6 +435,122 @@ async def test_get_last_commanded_returns_none_before_first_apply() -> None:
 
 
 @pytest.mark.asyncio
+async def test_verify_resends_when_commanded_values_did_not_stick() -> None:
+    """Set-then-verify: ~2.5 min after an apply, the verifier re-reads
+    the entity. If the unit reverted (Tuya dropped the command, or
+    resumed stale remembered settings), the failed pieces are re-sent
+    exactly once."""
+    hass = _hass(_climate_state(
+        "cool", supports_range=False,
+        fan_modes=["low", "medium", "high"],
+        hvac_modes=["off", "cool"],
+    ))
+    # Entity reports: cool / 80.0 / low — but we commanded 68 + high.
+    hass.states.get.return_value.attributes.update(
+        {"temperature": 80.0, "fan_mode": "low"}
+    )
+    await scheduler._verify_hvac_apply(
+        hass,
+        entity_id="climate.living_room",
+        expected_mode="COOL",
+        expected_setpoint=68.0,
+        expected_fan="high",
+        slot=30,
+    )
+    calls = [
+        (c.args[1], c.args[2])
+        for c in hass.services.async_call.await_args_list
+    ]
+    services = [s for s, _ in calls]
+    assert "set_temperature" in services
+    assert "set_fan_mode" in services
+    temp = next(p for s, p in calls if s == "set_temperature")
+    assert temp["temperature"] == 68.0
+    fan = next(p for s, p in calls if s == "set_fan_mode")
+    assert fan["fan_mode"] == "high"
+    # Mode matched ('cool' == commanded COOL) — must NOT re-send mode.
+    assert "set_hvac_mode" not in services
+
+
+@pytest.mark.asyncio
+async def test_verify_is_silent_when_everything_stuck() -> None:
+    """When the entity reports exactly what was commanded, the verifier
+    sends nothing — no churn, no fighting the unit."""
+    hass = _hass(_climate_state(
+        "cool", supports_range=False,
+        fan_modes=["low", "medium", "high"],
+        hvac_modes=["off", "cool"],
+    ))
+    hass.states.get.return_value.attributes.update(
+        {"temperature": 68.0, "fan_mode": "high"}
+    )
+    await scheduler._verify_hvac_apply(
+        hass,
+        entity_id="climate.living_room",
+        expected_mode="COOL",
+        expected_setpoint=68.0,
+        expected_fan="high",
+        slot=30,
+    )
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_verify_skips_setpoint_and_fan_when_commanded_off() -> None:
+    """OFF slots: only the mode is verified. Setpoint / fan checks are
+    meaningless on a unit that should be off — and re-sending them
+    would turn the unit back on."""
+    hass = _hass(_climate_state(
+        "cool",  # unit ignored the off command
+        supports_range=False,
+        hvac_modes=["off", "cool"],
+    ))
+    hass.states.get.return_value.attributes.update(
+        {"temperature": 75.0, "fan_mode": "low"}
+    )
+    await scheduler._verify_hvac_apply(
+        hass,
+        entity_id="climate.living_room",
+        expected_mode="OFF",
+        expected_setpoint=80.0,
+        expected_fan=None,
+        slot=28,
+    )
+    calls = [
+        (c.args[1], c.args[2])
+        for c in hass.services.async_call.await_args_list
+    ]
+    services = [s for s, _ in calls]
+    # Mode mismatch (cool vs commanded OFF) → re-send off.
+    assert services == ["set_hvac_mode"]
+    mode = next(p for s, p in calls if s == "set_hvac_mode")
+    assert mode["hvac_mode"] == "off"
+
+
+@pytest.mark.asyncio
+async def test_apply_schedules_a_verification() -> None:
+    """Every successful apply must arm the one-shot verifier."""
+    hass = _hass(_climate_state(
+        "cool", supports_range=False,
+        fan_modes=["low", "medium", "high"],
+        hvac_modes=["off", "cool"],
+    ))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(
+        setpoint=68.0,
+        fan_mode_schedule=["high"] * 48,
+        hvac_mode_schedule=["COOL"] * 48,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=30), \
+         patch.object(scheduler, "async_call_later") as mock_later:
+        await scheduler.apply_current_slot(hass, entry)
+
+    mock_later.assert_called_once()
+    # Delay arg is the 2.5-minute settle window.
+    assert mock_later.call_args.args[1] == scheduler._VERIFY_DELAY_SECONDS
+
+
+@pytest.mark.asyncio
 async def test_off_to_cool_transition_sends_setpoint_despite_stale_state() -> None:
     """June 10 calibration phase-3 regression: at the OFF→COOL boundary
     the scheduler sends set_hvac_mode('cool'), but cloud-bridged units
