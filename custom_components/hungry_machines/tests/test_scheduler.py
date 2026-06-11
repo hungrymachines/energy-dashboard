@@ -1165,3 +1165,166 @@ async def test_apply_hvac_log_message_includes_ha_local_clock_time() -> None:
     formatted = fmt % apply_call.args[1:]
     assert "15:00" in formatted, f"expected '15:00' in log: {formatted}"
     assert "local" in formatted
+
+
+# ---------------------------------------------------------------------------
+# Comfort-band failsafe — a scheduled OFF slot is overridden when the
+# live indoor temperature has drifted outside the comfort band (the
+# June 11 incident: house at 80°F at 8am, schedule kept commanding OFF).
+# ---------------------------------------------------------------------------
+
+def _override_cache(
+    sched_mode: str = "cool",
+    hvac_mode_schedule: list[str] | None = None,
+    calibration: dict | None = None,
+) -> dict:
+    cache = _hvac_cache(
+        setpoint=72.0,
+        fan_mode_schedule=["auto"] * 48,
+        hvac_mode_schedule=hvac_mode_schedule or ["OFF"] * 48,
+    )
+    schedule = cache["schedule"]["hvac-1"]["schedule"]
+    schedule["mode"] = sched_mode
+    if calibration is not None:
+        schedule["calibration"] = calibration
+    return cache
+
+
+@pytest.mark.asyncio
+async def test_comfort_override_cools_when_off_slot_and_indoor_above_band() -> None:
+    """Scheduled OFF + indoor 80°F against a 74°F high band → the
+    failsafe commands COOL at the band edge instead of applying OFF."""
+    state = _climate_state("off", supports_range=False,
+                           hvac_modes=["off", "cool"])
+    state.attributes["current_temperature"] = 80.0
+    hass = _hass(state)
+    entry = _entry()
+    hass.data[DOMAIN] = _override_cache()
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.apply_current_slot(hass, entry)
+
+    calls = hass.services.async_call.await_args_list
+    mode_calls = [c for c in calls if c.args[1] == "set_hvac_mode"]
+    temp_calls = [c for c in calls if c.args[1] == "set_temperature"]
+    assert mode_calls and mode_calls[0].args[2]["hvac_mode"] == "cool"
+    # Setpoint is the band EDGE (74.0), not the optimizer's 72.0 value.
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 74.0
+
+    # The override is the commanded truth for reconciler + verify.
+    cached = scheduler.get_last_commanded(hass, "climate.living_room")
+    assert cached["hvac_mode"] == "COOL"
+    assert cached["setpoint"] == 74.0
+
+
+@pytest.mark.asyncio
+async def test_comfort_override_stays_off_when_indoor_within_margin() -> None:
+    """Indoor 74.5°F against a 74°F band + 1°F margin → no override;
+    the OFF slot applies as scheduled (no active service calls)."""
+    state = _climate_state("off", supports_range=False,
+                           hvac_modes=["off", "cool"])
+    state.attributes["current_temperature"] = 74.5
+    hass = _hass(state)
+    entry = _entry()
+    hass.data[DOMAIN] = _override_cache()
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.apply_current_slot(hass, entry)
+
+    assert not [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] in ("set_hvac_mode", "set_temperature")
+    ]
+    cached = scheduler.get_last_commanded(hass, "climate.living_room")
+    assert cached["hvac_mode"] == "OFF"
+
+
+@pytest.mark.asyncio
+async def test_comfort_override_never_fires_inside_calibration_phase() -> None:
+    """An OFF phase DURING calibration is the measurement itself —
+    the failsafe must not contaminate it even when far out of band.
+    (The backend's +2°F comfort cap aborts the run server-side.)"""
+    state = _climate_state("off", supports_range=False,
+                           hvac_modes=["off", "cool"])
+    state.attributes["current_temperature"] = 85.0
+    hass = _hass(state)
+    entry = _entry()
+    phase_at_slot: list = [None] * 48
+    phase_at_slot[22] = 2  # OFF drift phase covers this slot
+    hass.data[DOMAIN] = _override_cache(
+        calibration={"phase_at_slot": phase_at_slot},
+    )
+
+    with patch.object(scheduler, "_current_slot", return_value=22):
+        await scheduler.apply_current_slot(hass, entry)
+
+    assert not [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] in ("set_hvac_mode", "set_temperature")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_comfort_override_fires_outside_calibration_window() -> None:
+    """Pre/post-window slots on a calibration day have phase=None —
+    the failsafe DOES protect them (the passive-evening overheat)."""
+    state = _climate_state("off", supports_range=False,
+                           hvac_modes=["off", "cool"])
+    state.attributes["current_temperature"] = 80.0
+    hass = _hass(state)
+    entry = _entry()
+    phase_at_slot: list = [None] * 48
+    phase_at_slot[22] = 2
+    hass.data[DOMAIN] = _override_cache(
+        calibration={"phase_at_slot": phase_at_slot},
+    )
+
+    with patch.object(scheduler, "_current_slot", return_value=40):  # 8pm
+        await scheduler.apply_current_slot(hass, entry)
+
+    mode_calls = [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_hvac_mode"
+    ]
+    assert mode_calls and mode_calls[0].args[2]["hvac_mode"] == "cool"
+
+
+@pytest.mark.asyncio
+async def test_comfort_override_heats_when_below_band_in_heat_mode() -> None:
+    """Heat-mode schedule + indoor below the low band → HEAT at the
+    low band edge."""
+    state = _climate_state("off", supports_range=False,
+                           hvac_modes=["off", "heat"])
+    state.attributes["current_temperature"] = 65.0
+    hass = _hass(state)
+    entry = _entry()
+    hass.data[DOMAIN] = _override_cache(sched_mode="heat")
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.apply_current_slot(hass, entry)
+
+    calls = hass.services.async_call.await_args_list
+    mode_calls = [c for c in calls if c.args[1] == "set_hvac_mode"]
+    temp_calls = [c for c in calls if c.args[1] == "set_temperature"]
+    assert mode_calls and mode_calls[0].args[2]["hvac_mode"] == "heat"
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 70.0
+
+
+@pytest.mark.asyncio
+async def test_comfort_override_ignores_cool_breach_in_heat_mode() -> None:
+    """Direction is mode-gated: a high-band breach in a heat-mode
+    schedule must NOT trigger COOL (winter sun-warmed afternoon)."""
+    state = _climate_state("off", supports_range=False,
+                           hvac_modes=["off", "heat", "cool"])
+    state.attributes["current_temperature"] = 80.0
+    hass = _hass(state)
+    entry = _entry()
+    hass.data[DOMAIN] = _override_cache(sched_mode="heat")
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.apply_current_slot(hass, entry)
+
+    assert not [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] in ("set_hvac_mode", "set_temperature")
+    ]

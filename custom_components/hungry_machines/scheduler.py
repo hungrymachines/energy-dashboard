@@ -462,12 +462,130 @@ def _match_entity_option(
     return None
 
 
+# Comfort-band failsafe margin. The override only fires once the live
+# indoor temperature is this far past the band edge — small enough to
+# matter for comfort, large enough that sensor noise and thermostat
+# deadband wobble don't flap the unit on and off across slot applies.
+_COMFORT_OVERRIDE_MARGIN_F = 1.0
+
+
+def _comfort_band_override(
+    hass: HomeAssistant,
+    entity_id: str,
+    schedule: dict,
+    slot: int,
+    mode_canonical: str | None,
+) -> tuple[str, float] | None:
+    """Decide whether a scheduled-OFF slot must be overridden because
+    the house has drifted outside the comfort band.
+
+    Returns `(override_mode, override_setpoint)` — e.g. `("COOL", 75.0)`
+    — or None when the schedule should apply as-is.
+
+    The backend schedule is OPEN-LOOP: computed during the night from a
+    predicted temperature trajectory. When reality diverges from the
+    prediction (immature model, passive calibration evening, hotter
+    weather than forecast), the integration is the only component that
+    sees the live indoor temperature, so the failsafe lives here. The
+    June 11 incident is the motivating case: the house was 80°F at 8am
+    while the schedule — whose trajectory predicted in-band — kept
+    commanding OFF.
+
+    Deliberately narrow:
+      * Only fires when the slot EXPLICITLY commands OFF. Temperature-
+        only users (no `hvac_mode_schedule`) keep their thermostat's
+        own closed-loop behavior — nothing to fail safe over.
+      * Never fires inside an active calibration phase — the OFF phases
+        there ARE the measurement; the backend aborts the run via its
+        own comfort cap (+2°F) when drift goes too far. Pre/post-window
+        slots on a calibration day have `phase_at_slot=None` and DO get
+        the failsafe, which fixes the passive-evening overheat.
+      * Direction is gated by the schedule's mode: `cool` → COOL on a
+        high-band breach, `heat` → HEAT on a low-band breach, `auto`
+        → either. No mode → no override.
+      * The override setpoint is the BAND EDGE, not the optimizer's
+        slot value — pull the house back into band, then resume the
+        plan at the next slot boundary.
+    """
+    if mode_canonical is None or mode_canonical.strip().lower() != "off":
+        return None
+
+    cal = schedule.get("calibration")
+    if isinstance(cal, dict):
+        phase_at_slot = cal.get("phase_at_slot")
+        if (
+            isinstance(phase_at_slot, list)
+            and slot < len(phase_at_slot)
+            and phase_at_slot[slot] is not None
+        ):
+            return None
+
+    state = hass.states.get(entity_id) if hass.states else None
+    attrs = getattr(state, "attributes", None) or {} if state else {}
+    try:
+        indoor = float(attrs.get("current_temperature"))
+    except (TypeError, ValueError):
+        return None
+
+    sched_mode = str(schedule.get("mode") or "").strip().lower()
+
+    def _band_edge(key: str) -> float | None:
+        arr = schedule.get(key)
+        if not isinstance(arr, list) or slot >= len(arr):
+            return None
+        try:
+            return float(arr[slot])
+        except (TypeError, ValueError):
+            return None
+
+    high = _band_edge("high_temps")
+    if (
+        high is not None
+        and sched_mode in ("cool", "auto")
+        and indoor > high + _COMFORT_OVERRIDE_MARGIN_F
+    ):
+        _LOGGER.warning(
+            "Hungry Machines comfort override slot=%d: %s indoor %.1f°F is "
+            "above high band %.1f°F (+%.1f°F margin) while scheduled OFF — "
+            "commanding COOL at %.1f°F",
+            slot, entity_id, indoor, high, _COMFORT_OVERRIDE_MARGIN_F, high,
+        )
+        return ("COOL", high)
+
+    low = _band_edge("low_temps")
+    if (
+        low is not None
+        and sched_mode in ("heat", "auto")
+        and indoor < low - _COMFORT_OVERRIDE_MARGIN_F
+    ):
+        _LOGGER.warning(
+            "Hungry Machines comfort override slot=%d: %s indoor %.1f°F is "
+            "below low band %.1f°F (-%.1f°F margin) while scheduled OFF — "
+            "commanding HEAT at %.1f°F",
+            slot, entity_id, indoor, low, _COMFORT_OVERRIDE_MARGIN_F, low,
+        )
+        return ("HEAT", low)
+
+    return None
+
+
 async def _apply_hvac(
     hass: HomeAssistant, entity_id: str, schedule: dict, slot: int
 ) -> None:
     setpoint = _resolve_setpoint(schedule, slot)
     mode_canonical = _resolve_canonical(schedule, "hvac_mode_schedule", slot)
     fan_canonical = _resolve_canonical(schedule, "fan_mode_schedule", slot)
+
+    # Closed-loop comfort failsafe: replace a scheduled OFF with an
+    # active mode + band-edge setpoint when the live indoor temperature
+    # has drifted out of band. Runs BEFORE _record_last_commanded so
+    # the readings collector and the set-then-verify pass both treat
+    # the override as the commanded truth for this slot.
+    override = _comfort_band_override(
+        hass, entity_id, schedule, slot, mode_canonical,
+    )
+    if override is not None:
+        mode_canonical, setpoint = override
 
     # Record the schedule's intent for this slot BEFORE any service
     # calls so the readings collector has a consistent ground-truth
