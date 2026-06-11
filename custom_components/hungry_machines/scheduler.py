@@ -131,6 +131,9 @@ async def fetch_today_schedule(
 
     cache: dict[str, Any] = {
         "fetched_at": datetime.now(timezone.utc).isoformat(),
+        # Master pause switch from the panel toggle. Missing key (older
+        # API) defaults to enabled so an API lag never bricks control.
+        "optimization_enabled": bool(body.get("optimization_enabled", True)),
     }
     for entry_data in appliances:
         if not isinstance(entry_data, dict):
@@ -575,6 +578,31 @@ async def _apply_hvac(
     setpoint = _resolve_setpoint(schedule, slot)
     mode_canonical = _resolve_canonical(schedule, "hvac_mode_schedule", slot)
     fan_canonical = _resolve_canonical(schedule, "fan_mode_schedule", slot)
+
+    # Wake a unit that reports `off` under a TEMPERATURE-ONLY schedule.
+    # Those schedules carry no hvac_mode_schedule — they assume the
+    # unit sits in its base mode and the integration just moves the
+    # setpoint. But `_build_hvac_payload` skips off-mode entities, so a
+    # unit left OFF (post-calibration passive evening, power blip, a
+    # manual flip) stayed off FOREVER while the plan assumed cooling.
+    # Now that the panel's optimization toggle exists, "leave my AC
+    # alone" has a legitimate path — so while optimization is enabled
+    # the integration is authoritative and wakes the unit into the
+    # schedule's base mode. Mode-optimized schedules are untouched:
+    # their per-slot mode commands already handle OFF→COOL.
+    if mode_canonical is None:
+        state_now = hass.states.get(entity_id) if hass.states else None
+        raw_now = str(getattr(state_now, "state", "") or "").strip().lower() if state_now else ""
+        sched_mode = str(schedule.get("mode") or "").strip().lower()
+        if raw_now == "off" and sched_mode in ("cool", "heat"):
+            mode_canonical = sched_mode.upper()
+            _LOGGER.warning(
+                "Hungry Machines HVAC wake slot=%d: %s reports 'off' under a "
+                "temperature-only schedule — commanding %s so the optimized "
+                "plan can run (pause optimization in the panel to keep the "
+                "unit off)",
+                slot, entity_id, mode_canonical,
+            )
 
     # Closed-loop comfort failsafe: replace a scheduled OFF with an
     # active mode + band-edge setpoint when the live indoor temperature
@@ -1026,6 +1054,18 @@ async def apply_current_slot(
     if not cache:
         _LOGGER.info(
             "Hungry Machines: no schedule cached, skipping apply"
+        )
+        return
+
+    # Master pause: the user toggled optimization off in the panel.
+    # Skip ALL schedule application — no setpoints, no mode/fan
+    # commands, no comfort failsafe — until a later poll says enabled.
+    # The 5-min cache TTL means flipping the toggle takes effect at
+    # the next half-hour boundary.
+    if cache.get("optimization_enabled") is False:
+        _LOGGER.info(
+            "Hungry Machines: optimization is paused (panel toggle); "
+            "skipping schedule apply"
         )
         return
 

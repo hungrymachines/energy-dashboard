@@ -22,7 +22,7 @@ import type {
   CalibrationStatusResponse,
 } from '../api/calibration.js';
 import { patchMe } from '../api/auth.js';
-import { get as getPreferences, type Preferences } from '../api/preferences.js';
+import { get as getPreferences, update as updatePreferences, type Preferences } from '../api/preferences.js';
 import { expandHourlyTo48, hasCustomRates, hasHourlyComfortBands } from '../utils/hourly.js';
 import {
   PRICING_ZONE_LABELS,
@@ -270,6 +270,41 @@ export class HungryMachinesPanel extends LitElement {
       gap: 16px;
       flex-wrap: wrap;
       margin-bottom: 8px;
+    }
+    .opt-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(100, 116, 139, 0.25);
+      background: var(--hm-bg, #F8FAFC);
+      color: var(--hm-text, #0F172A);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .opt-toggle:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+    .opt-toggle .opt-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #0F766E;
+    }
+    .opt-toggle.paused .opt-dot {
+      background: #F59E0B;
+    }
+    .paused-banner {
+      background: rgba(245, 158, 11, 0.12);
+      border: 1px solid rgba(245, 158, 11, 0.5);
+      border-radius: 10px;
+      padding: 12px 16px;
+      margin-bottom: 16px;
+      color: var(--hm-text, #0F172A);
+      font-size: 14px;
     }
     .size-toggle {
       display: inline-flex;
@@ -980,6 +1015,7 @@ export class HungryMachinesPanel extends LitElement {
     _recomputing: { state: true },
     _recomputeError: { state: true },
     _chartSize: { state: true },
+    _optToggleBusy: { state: true },
   };
 
   hass: unknown = undefined;
@@ -990,6 +1026,7 @@ export class HungryMachinesPanel extends LitElement {
   _schedules: SchedulesResponse | null = null;
   _rates: RatesResponse | null = null;
   _preferences: Preferences | null = null;
+  _optToggleBusy = false;
   _editorOpen = false;
   _editorApplianceId = '';
   _editorApplianceType: ApplianceType = 'hvac';
@@ -1644,9 +1681,10 @@ export class HungryMachinesPanel extends LitElement {
     return html`
       <div class="dashboard-head">
         <h2>Dashboard</h2>
+        ${this._renderOptimizationToggle()}
         ${this._renderChartSizeToggle()}
       </div>
-      <div class="calibration-section">${this._renderCalibrationBanners()}</div>
+      <div class="calibration-section">${this._renderPausedBanner()}${this._renderCalibrationBanners()}</div>
       <div class="diagnostics-section">
         <hm-diagnostics-panel></hm-diagnostics-panel>
       </div>
@@ -1664,6 +1702,56 @@ export class HungryMachinesPanel extends LitElement {
         </button>
       </div>
     `;
+  }
+
+  private _optimizationEnabled(): boolean {
+    // Missing field (older API) means enabled — never render the
+    // paused state unless the backend explicitly said so.
+    return this._preferences?.optimization_enabled !== false;
+  }
+
+  private _renderPausedBanner(): TemplateResult {
+    if (this._optimizationEnabled()) return html``;
+    return html`<div class="paused-banner" role="status">
+      Optimization is paused — your devices are under manual control
+      and no schedules will be applied. Schedules are still computed
+      nightly, so turning optimization back on takes effect within 30
+      minutes.
+    </div>`;
+  }
+
+  private _renderOptimizationToggle(): TemplateResult {
+    const enabled = this._optimizationEnabled();
+    return html`
+      <button
+        class="opt-toggle ${enabled ? '' : 'paused'}"
+        type="button"
+        ?disabled=${this._optToggleBusy}
+        title=${enabled
+          ? 'Pause optimization — devices return to manual control'
+          : 'Resume optimization — schedules apply within 30 minutes'}
+        @click=${() => this._toggleOptimization()}
+      >
+        <span class="opt-dot"></span>
+        ${enabled ? 'Optimization on' : 'Optimization paused'}
+      </button>
+    `;
+  }
+
+  private async _toggleOptimization(): Promise<void> {
+    if (this._optToggleBusy) return;
+    const next = !this._optimizationEnabled();
+    this._optToggleBusy = true;
+    try {
+      this._preferences = await updatePreferences({
+        optimization_enabled: next,
+      });
+    } catch {
+      // PUT failed — leave _preferences untouched so the toggle
+      // reflects the server's actual state.
+    } finally {
+      this._optToggleBusy = false;
+    }
   }
 
   private _renderCalibrationBanners(): TemplateResult {

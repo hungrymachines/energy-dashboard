@@ -1328,3 +1328,86 @@ async def test_comfort_override_ignores_cool_breach_in_heat_mode() -> None:
         c for c in hass.services.async_call.await_args_list
         if c.args[1] in ("set_hvac_mode", "set_temperature")
     ]
+
+
+# ---------------------------------------------------------------------------
+# Temperature-only wake + optimization pause toggle
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_temperature_only_schedule_wakes_off_unit() -> None:
+    """A unit reporting `off` under a temperature-only schedule (no
+    hvac_mode_schedule, schedule mode 'cool') must be woken into COOL
+    so the plan's setpoints can act — previously it stayed off forever
+    because the payload builder skips off-mode entities."""
+    state = _climate_state("off", supports_range=False,
+                           hvac_modes=["off", "cool"])
+    hass = _hass(state)
+    entry = _entry()
+    cache = _hvac_cache(setpoint=74.0)          # temperature-only
+    cache["schedule"]["hvac-1"]["schedule"]["mode"] = "cool"
+    hass.data[DOMAIN] = cache
+
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    calls = hass.services.async_call.await_args_list
+    mode_calls = [c for c in calls if c.args[1] == "set_hvac_mode"]
+    temp_calls = [c for c in calls if c.args[1] == "set_temperature"]
+    assert mode_calls and mode_calls[0].args[2]["hvac_mode"] == "cool"
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 74.0
+    cached = scheduler.get_last_commanded(hass, "climate.living_room")
+    assert cached["hvac_mode"] == "COOL"
+
+
+@pytest.mark.asyncio
+async def test_temperature_only_no_wake_without_schedule_mode() -> None:
+    """No schedule `mode` field → preserve the legacy respect-the-user
+    behavior: an off unit stays off."""
+    hass = _hass(_climate_state("off", supports_range=False,
+                                hvac_modes=["off", "cool"]))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(setpoint=74.0)  # no "mode" key
+
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pause_toggle_skips_all_applies() -> None:
+    """optimization_enabled=false in the cache → nothing is applied:
+    no wake, no setpoint, no failsafe."""
+    state = _climate_state("off", supports_range=False,
+                           hvac_modes=["off", "cool"])
+    state.attributes["current_temperature"] = 85.0   # even out-of-band
+    hass = _hass(state)
+    entry = _entry()
+    cache = _hvac_cache(setpoint=74.0, hvac_mode_schedule=["OFF"] * 48)
+    cache["schedule"]["hvac-1"]["schedule"]["mode"] = "cool"
+    cache["schedule"]["optimization_enabled"] = False
+    hass.data[DOMAIN] = cache
+
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+    hass.services.async_call.assert_not_awaited()
+    assert scheduler.get_last_commanded(hass, "climate.living_room") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_stores_optimization_enabled_flag() -> None:
+    """fetch_today_schedule caches the response's master switch;
+    missing key (older API) defaults to enabled."""
+    hass = _hass()
+    entry = _entry()
+    body = _schedules_body()
+    body["optimization_enabled"] = False
+    with patch.object(scheduler.api, "get_schedules",
+                      new=AsyncMock(return_value=body)):
+        cache = await scheduler.fetch_today_schedule(hass, entry)
+    assert cache["optimization_enabled"] is False
+
+    with patch.object(scheduler.api, "get_schedules",
+                      new=AsyncMock(return_value=_schedules_body())):
+        cache = await scheduler.fetch_today_schedule(hass, entry)
+    assert cache["optimization_enabled"] is True
