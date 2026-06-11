@@ -152,6 +152,42 @@ export class HmDiagnosticsPanel extends LitElement {
       text-transform: uppercase;
       letter-spacing: 0.05em;
     }
+    .sensor-details {
+      margin-top: 10px;
+    }
+    .sensor-details > summary {
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--hm-text, #0F172A);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 0;
+    }
+    .sensor-details > summary > .summary-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .summary-badge.healthy {
+      background: rgba(15, 118, 110, 0.12);
+      color: #115E59;
+    }
+    .summary-badge.intermittent {
+      background: rgba(245, 158, 11, 0.15);
+      color: #92400E;
+    }
+    .summary-badge.bad {
+      background: rgba(220, 38, 38, 0.12);
+      color: #991B1B;
+    }
+    .sensor-details[open] > .sensor-grid {
+      margin-top: 8px;
+    }
   `;
 
   static override properties = {
@@ -275,11 +311,45 @@ export class HmDiagnosticsPanel extends LitElement {
   }
 
   private _renderSensorHealth(sensors: ConfiguredSensor[]) {
+    // Show a short status pill in the summary so users see at-a-glance
+    // whether any sensor is broken without opening the details. Picks
+    // the worst verdict across the configured sensors.
+    const counts = {
+      bad: 0,
+      intermittent: 0,
+      no_data: 0,
+      healthy: 0,
+    };
+    for (const s of sensors) {
+      if (s.verdict === 'missing_or_broken') counts.bad++;
+      else if (s.verdict === 'intermittent') counts.intermittent++;
+      else if (s.verdict === 'no_data') counts.no_data++;
+      else counts.healthy++;
+    }
+    let summaryBadge: { tone: 'bad' | 'intermittent' | 'healthy'; text: string };
+    if (counts.bad > 0) {
+      summaryBadge = {
+        tone: 'bad',
+        text: `${counts.bad} sensor${counts.bad === 1 ? '' : 's'} need${counts.bad === 1 ? 's' : ''} attention`,
+      };
+    } else if (counts.intermittent > 0) {
+      summaryBadge = {
+        tone: 'intermittent',
+        text: `${counts.intermittent} intermittent`,
+      };
+    } else {
+      summaryBadge = { tone: 'healthy', text: 'All healthy' };
+    }
     return html`
-      <div class="section-title">Sensor health</div>
-      <div class="sensor-grid">
-        ${sensors.map((s) => this._renderSensorRow(s))}
-      </div>
+      <details class="sensor-details">
+        <summary>
+          Sensor health
+          <span class="summary-badge ${summaryBadge.tone}">${summaryBadge.text}</span>
+        </summary>
+        <div class="sensor-grid">
+          ${sensors.map((s) => this._renderSensorRow(s))}
+        </div>
+      </details>
     `;
   }
 

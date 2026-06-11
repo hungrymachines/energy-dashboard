@@ -50,6 +50,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_call_later
 
 from . import api
 from .const import DOMAIN
@@ -310,6 +311,7 @@ def _build_hvac_payload(
     entity_id: str,
     state: object | None,
     setpoint: float,
+    assumed_mode: str | None = None,
 ) -> dict | None:
     """Build the climate.set_temperature payload for a single setpoint.
 
@@ -330,6 +332,16 @@ def _build_hvac_payload(
 
     Returns the kwargs dict, or None when the entity is missing / off /
     in an unknown mode.
+
+    `assumed_mode` overrides the entity's REPORTED mode for the
+    payload-shape decision. Pass the canonical mode the scheduler just
+    commanded via `climate.set_hvac_mode`: cloud-bridged units (Tuya /
+    Smart Life) take seconds to reflect a mode change in `hass.states`,
+    so reading back "off" right after commanding "cool" made the
+    OFF→COOL transition skip BOTH set_temperature and set_fan_mode —
+    the unit resumed cooling at whatever stale setpoint/fan it
+    remembered (the June 10 calibration phase-3 incident: AC came back
+    at cool/low/80°F instead of cool/high/68°F).
     """
     if state is None:
         _LOGGER.info(
@@ -337,7 +349,9 @@ def _build_hvac_payload(
         )
         return None
     raw_state = getattr(state, "state", None) or ""
-    hvac_mode = str(raw_state).lower()
+    hvac_mode = (
+        assumed_mode.strip().lower() if assumed_mode else str(raw_state).lower()
+    )
     attrs = getattr(state, "attributes", None) or {}
     try:
         features = int(attrs.get("supported_features", 0))
@@ -448,12 +462,130 @@ def _match_entity_option(
     return None
 
 
+# Comfort-band failsafe margin. The override only fires once the live
+# indoor temperature is this far past the band edge — small enough to
+# matter for comfort, large enough that sensor noise and thermostat
+# deadband wobble don't flap the unit on and off across slot applies.
+_COMFORT_OVERRIDE_MARGIN_F = 1.0
+
+
+def _comfort_band_override(
+    hass: HomeAssistant,
+    entity_id: str,
+    schedule: dict,
+    slot: int,
+    mode_canonical: str | None,
+) -> tuple[str, float] | None:
+    """Decide whether a scheduled-OFF slot must be overridden because
+    the house has drifted outside the comfort band.
+
+    Returns `(override_mode, override_setpoint)` — e.g. `("COOL", 75.0)`
+    — or None when the schedule should apply as-is.
+
+    The backend schedule is OPEN-LOOP: computed during the night from a
+    predicted temperature trajectory. When reality diverges from the
+    prediction (immature model, passive calibration evening, hotter
+    weather than forecast), the integration is the only component that
+    sees the live indoor temperature, so the failsafe lives here. The
+    June 11 incident is the motivating case: the house was 80°F at 8am
+    while the schedule — whose trajectory predicted in-band — kept
+    commanding OFF.
+
+    Deliberately narrow:
+      * Only fires when the slot EXPLICITLY commands OFF. Temperature-
+        only users (no `hvac_mode_schedule`) keep their thermostat's
+        own closed-loop behavior — nothing to fail safe over.
+      * Never fires inside an active calibration phase — the OFF phases
+        there ARE the measurement; the backend aborts the run via its
+        own comfort cap (+2°F) when drift goes too far. Pre/post-window
+        slots on a calibration day have `phase_at_slot=None` and DO get
+        the failsafe, which fixes the passive-evening overheat.
+      * Direction is gated by the schedule's mode: `cool` → COOL on a
+        high-band breach, `heat` → HEAT on a low-band breach, `auto`
+        → either. No mode → no override.
+      * The override setpoint is the BAND EDGE, not the optimizer's
+        slot value — pull the house back into band, then resume the
+        plan at the next slot boundary.
+    """
+    if mode_canonical is None or mode_canonical.strip().lower() != "off":
+        return None
+
+    cal = schedule.get("calibration")
+    if isinstance(cal, dict):
+        phase_at_slot = cal.get("phase_at_slot")
+        if (
+            isinstance(phase_at_slot, list)
+            and slot < len(phase_at_slot)
+            and phase_at_slot[slot] is not None
+        ):
+            return None
+
+    state = hass.states.get(entity_id) if hass.states else None
+    attrs = getattr(state, "attributes", None) or {} if state else {}
+    try:
+        indoor = float(attrs.get("current_temperature"))
+    except (TypeError, ValueError):
+        return None
+
+    sched_mode = str(schedule.get("mode") or "").strip().lower()
+
+    def _band_edge(key: str) -> float | None:
+        arr = schedule.get(key)
+        if not isinstance(arr, list) or slot >= len(arr):
+            return None
+        try:
+            return float(arr[slot])
+        except (TypeError, ValueError):
+            return None
+
+    high = _band_edge("high_temps")
+    if (
+        high is not None
+        and sched_mode in ("cool", "auto")
+        and indoor > high + _COMFORT_OVERRIDE_MARGIN_F
+    ):
+        _LOGGER.warning(
+            "Hungry Machines comfort override slot=%d: %s indoor %.1f°F is "
+            "above high band %.1f°F (+%.1f°F margin) while scheduled OFF — "
+            "commanding COOL at %.1f°F",
+            slot, entity_id, indoor, high, _COMFORT_OVERRIDE_MARGIN_F, high,
+        )
+        return ("COOL", high)
+
+    low = _band_edge("low_temps")
+    if (
+        low is not None
+        and sched_mode in ("heat", "auto")
+        and indoor < low - _COMFORT_OVERRIDE_MARGIN_F
+    ):
+        _LOGGER.warning(
+            "Hungry Machines comfort override slot=%d: %s indoor %.1f°F is "
+            "below low band %.1f°F (-%.1f°F margin) while scheduled OFF — "
+            "commanding HEAT at %.1f°F",
+            slot, entity_id, indoor, low, _COMFORT_OVERRIDE_MARGIN_F, low,
+        )
+        return ("HEAT", low)
+
+    return None
+
+
 async def _apply_hvac(
     hass: HomeAssistant, entity_id: str, schedule: dict, slot: int
 ) -> None:
     setpoint = _resolve_setpoint(schedule, slot)
     mode_canonical = _resolve_canonical(schedule, "hvac_mode_schedule", slot)
     fan_canonical = _resolve_canonical(schedule, "fan_mode_schedule", slot)
+
+    # Closed-loop comfort failsafe: replace a scheduled OFF with an
+    # active mode + band-edge setpoint when the live indoor temperature
+    # has drifted out of band. Runs BEFORE _record_last_commanded so
+    # the readings collector and the set-then-verify pass both treat
+    # the override as the commanded truth for this slot.
+    override = _comfort_band_override(
+        hass, entity_id, schedule, slot, mode_canonical,
+    )
+    if override is not None:
+        mode_canonical, setpoint = override
 
     # Record the schedule's intent for this slot BEFORE any service
     # calls so the readings collector has a consistent ground-truth
@@ -488,12 +620,21 @@ async def _apply_hvac(
     if mode_canonical is not None:
         await _maybe_set_hvac_mode(hass, entity_id, attrs, mode_canonical, slot)
         # Re-read state after a mode change so the payload builder sees
-        # the freshly-set mode (the next service call's payload shape
-        # depends on whether the unit is in heat_cool/auto vs. cool/heat).
+        # fresh attributes (fan vocabulary etc.). NOTE: the MODE in this
+        # re-read can be stale — cloud-bridged units (Tuya) take seconds
+        # to reflect set_hvac_mode in hass.states. That's why the
+        # payload builder below receives `assumed_mode=mode_canonical`
+        # instead of trusting the reported state: reading back "off"
+        # right after commanding "cool" used to skip the setpoint AND
+        # fan calls, so the unit resumed at its stale remembered
+        # settings (June 10 calibration phase-3: cool/low/80 instead
+        # of cool/high/68).
         state = hass.states.get(entity_id) if hass.states else state
         attrs = getattr(state, "attributes", None) or {} if state else {}
 
-    payload = _build_hvac_payload(entity_id, state, setpoint)
+    payload = _build_hvac_payload(
+        entity_id, state, setpoint, assumed_mode=mode_canonical,
+    )
     if payload is None:
         return
 
@@ -567,6 +708,137 @@ async def _apply_hvac(
             _LOGGER.warning(
                 "Hungry Machines HVAC fan apply failed for %s: %s", entity_id, err
             )
+
+    # Set-then-verify: schedule a one-shot check a few minutes out.
+    # Cloud-bridged units (Tuya / Smart Life) drop or delay commands
+    # often enough that fire-and-forget isn't reliable — the June 10
+    # calibration phase-3 incident resumed at stale settings because
+    # nothing ever checked whether the commanded values stuck. The
+    # verifier re-reads the entity and re-sends anything that didn't
+    # take. ONE retry per slot apply — a user's manual override gets
+    # reverted at most once per half-hour and is then respected until
+    # the next slot boundary.
+    _schedule_apply_verification(
+        hass,
+        entity_id=entity_id,
+        expected_mode=mode_canonical,
+        expected_setpoint=payload.get("temperature") or payload.get("target_temp_high"),
+        expected_fan=fan_label,
+        slot=slot,
+    )
+
+
+_VERIFY_DELAY_SECONDS = 60  # 1 min — Tuya cloud roundtrips settle within this
+_SETPOINT_TOLERANCE_F = 1.0  # integer-rounding units + °C roundtrips drift ~0.5 °F
+
+
+def _schedule_apply_verification(
+    hass: HomeAssistant,
+    *,
+    entity_id: str,
+    expected_mode: str | None,
+    expected_setpoint: float | None,
+    expected_fan: str | None,
+    slot: int,
+) -> None:
+    """Arm a one-shot verification for a just-applied slot.
+
+    Wrapped in try/except because `async_call_later` isn't available
+    in every test harness — verification is an enhancement, not a
+    dependency of the apply itself."""
+
+    async def _verify(_now) -> None:
+        await _verify_hvac_apply(
+            hass,
+            entity_id=entity_id,
+            expected_mode=expected_mode,
+            expected_setpoint=expected_setpoint,
+            expected_fan=expected_fan,
+            slot=slot,
+        )
+
+    try:
+        async_call_later(hass, _VERIFY_DELAY_SECONDS, _verify)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("verification scheduling unavailable: %s", err)
+
+
+async def _verify_hvac_apply(
+    hass: HomeAssistant,
+    *,
+    entity_id: str,
+    expected_mode: str | None,
+    expected_setpoint: float | None,
+    expected_fan: str | None,
+    slot: int,
+) -> None:
+    """Re-read the entity ~2.5 min after an apply and re-send anything
+    that didn't stick. One retry, no re-verification — persistent
+    disobedience surfaces through the divergence report instead of an
+    infinite command loop fighting the unit (or the user)."""
+    state = hass.states.get(entity_id) if hass.states else None
+    if state is None:
+        return
+    attrs = getattr(state, "attributes", None) or {}
+    reported_mode = str(getattr(state, "state", "") or "").strip().lower()
+
+    fixes: list[str] = []
+
+    if expected_mode is not None:
+        want_mode = expected_mode.strip().lower()
+        # ECO/DRY map to cool on the apply side; accept either.
+        if want_mode in ("eco", "dry"):
+            want_mode = "cool"
+        if want_mode != reported_mode:
+            fixes.append(f"mode {reported_mode!r}→{want_mode!r}")
+            try:
+                await hass.services.async_call(
+                    "climate", "set_hvac_mode",
+                    {"entity_id": entity_id, "hvac_mode": want_mode},
+                    blocking=False,
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("verify re-send mode failed for %s: %s", entity_id, err)
+
+    # Setpoint / fan only meaningful when the unit should be actively
+    # heating or cooling — skip both when we commanded OFF.
+    actively_on = expected_mode is None or expected_mode.strip().lower() not in ("off",)
+    if actively_on and expected_setpoint is not None:
+        reported_setpoint = attrs.get("temperature")
+        try:
+            reported_f = float(reported_setpoint) if reported_setpoint is not None else None
+        except (TypeError, ValueError):
+            reported_f = None
+        if reported_f is None or abs(reported_f - float(expected_setpoint)) > _SETPOINT_TOLERANCE_F:
+            fixes.append(f"setpoint {reported_f!r}→{expected_setpoint}")
+            try:
+                await hass.services.async_call(
+                    "climate", "set_temperature",
+                    {"entity_id": entity_id, "temperature": float(expected_setpoint)},
+                    blocking=False,
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("verify re-send setpoint failed for %s: %s", entity_id, err)
+
+    if actively_on and expected_fan is not None:
+        reported_fan = str(attrs.get("fan_mode") or "").strip().lower()
+        if reported_fan != expected_fan.strip().lower():
+            fixes.append(f"fan {reported_fan!r}→{expected_fan!r}")
+            try:
+                await hass.services.async_call(
+                    "climate", "set_fan_mode",
+                    {"entity_id": entity_id, "fan_mode": expected_fan},
+                    blocking=False,
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("verify re-send fan failed for %s: %s", entity_id, err)
+
+    if fixes:
+        _LOGGER.warning(
+            "Hungry Machines HVAC verify slot=%d: %s did not hold commanded "
+            "values — re-sent: %s",
+            slot, entity_id, "; ".join(fixes),
+        )
 
 
 async def _maybe_set_hvac_mode(

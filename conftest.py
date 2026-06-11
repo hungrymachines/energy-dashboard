@@ -215,6 +215,14 @@ def _install_stubs() -> None:
             name="async_track_time_change",
             return_value=MagicMock(name="unsub"),
         )
+    if not hasattr(event_helper, "async_call_later"):
+        # Stub used by the scheduler's set-then-verify path. Tests that
+        # want to drive the verification callback can patch
+        # `scheduler.async_call_later` and invoke the captured callback.
+        event_helper.async_call_later = MagicMock(
+            name="async_call_later",
+            return_value=MagicMock(name="unsub"),
+        )
     if not hasattr(event_helper, "async_track_time_interval"):
         event_helper.async_track_time_interval = MagicMock(
             name="async_track_time_interval",
