@@ -933,6 +933,25 @@ export class HungryMachinesPanel extends LitElement {
       font-size: 13px;
       margin: 0;
     }
+    .dynamic-fields {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .pricing-adder-input {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--hm-muted, #64748B);
+      border-radius: 6px;
+      font: inherit;
+      background: var(--hm-bg, #F8FAFC);
+      color: var(--hm-text, #0F172A);
+      box-sizing: border-box;
+    }
+    .pricing-adder-input:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
     .settings-actions {
       display: flex;
       align-items: center;
@@ -1012,6 +1031,12 @@ export class HungryMachinesPanel extends LitElement {
     _customRatesInputs: { state: true },
     _customRatesSaving: { state: true },
     _customRatesSaveError: { state: true },
+    _pricingSourceDraft: { state: true },
+    _pjmNodeDraft: { state: true },
+    _pricingAdderDraft: { state: true },
+    _pricingSaving: { state: true },
+    _pricingError: { state: true },
+    _pricingSavedFlash: { state: true },
     _recomputing: { state: true },
     _recomputeError: { state: true },
     _chartSize: { state: true },
@@ -1049,6 +1074,12 @@ export class HungryMachinesPanel extends LitElement {
   _customRatesInputs: string[] = Array.from({ length: 24 }, () => '');
   _customRatesSaving = false;
   _customRatesSaveError: string | null = null;
+  _pricingSourceDraft: 'zone' | 'custom' | 'dynamic' = 'zone';
+  _pjmNodeDraft = '';
+  _pricingAdderDraft = '';
+  _pricingSaving = false;
+  _pricingError: string | null = null;
+  _pricingSavedFlash = false;
   // User-selected chart size for the dashboard. Persisted to
   // localStorage so the choice survives panel reloads. Defaults to
   // 'large' for first-time users — the v2.4.1 baseline.
@@ -1065,6 +1096,8 @@ export class HungryMachinesPanel extends LitElement {
   private _ratesInflight = false;
   private _appliancesById: Record<string, Appliance> = {};
   private _savedFlashTimer: ReturnType<typeof setTimeout> | null = null;
+  private _pricingDraftsInitialized = false;
+  private _pricingSavedFlashTimer: ReturnType<typeof setTimeout> | null = null;
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -1097,6 +1130,10 @@ export class HungryMachinesPanel extends LitElement {
       clearTimeout(this._savedFlashTimer);
       this._savedFlashTimer = null;
     }
+    if (this._pricingSavedFlashTimer !== null) {
+      clearTimeout(this._pricingSavedFlashTimer);
+      this._pricingSavedFlashTimer = null;
+    }
   }
 
   private _selectView(view: View): void {
@@ -1125,6 +1162,7 @@ export class HungryMachinesPanel extends LitElement {
       ]);
       this._schedules = schedules;
       this._rates = rates;
+      this._initPricingDraftsFromRates(rates);
       this._preferences = preferences;
       const map: Record<string, Appliance> = {};
       if (Array.isArray(appliances)) {
@@ -1256,7 +1294,9 @@ export class HungryMachinesPanel extends LitElement {
     this._ratesLoading = true;
     this._ratesError = null;
     try {
-      this._rates = await getRates();
+      const rates = await getRates();
+      this._rates = rates;
+      this._initPricingDraftsFromRates(rates);
     } catch (err) {
       this._ratesError =
         err instanceof Error && err.message ? err.message : 'Could not load rates';
@@ -1352,6 +1392,125 @@ export class HungryMachinesPanel extends LitElement {
     } finally {
       this._customRatesSaving = false;
     }
+  }
+
+  private _initPricingDraftsFromRates(rates: RatesResponse): void {
+    const source = rates.pricing_source ?? 'zone';
+    this._pricingSourceDraft = source === 'dynamic' || source === 'custom' ? source : 'zone';
+    const nodes = Array.isArray(rates.available_pjm_nodes) ? rates.available_pjm_nodes : [];
+    const storedNode = rates.pjm_pnode_id ?? '';
+    if (storedNode) {
+      this._pjmNodeDraft = storedNode;
+    } else if (nodes.length > 0) {
+      const comed = nodes.find((n) => n.slug.toLowerCase() === 'comed');
+      this._pjmNodeDraft = (comed ?? nodes[0]).slug;
+    } else {
+      this._pjmNodeDraft = '';
+    }
+    const adder = rates.pricing_adder_cents_per_kwh;
+    this._pricingAdderDraft =
+      typeof adder === 'number' && Number.isFinite(adder) ? String(adder) : '';
+    this._pricingDraftsInitialized = true;
+  }
+
+  private _onPricingSourceChange(value: string): void {
+    if (value === 'zone' || value === 'custom' || value === 'dynamic') {
+      this._pricingSourceDraft = value;
+      this._pricingError = null;
+    }
+  }
+
+  private _onPjmNodeChange(value: string): void {
+    this._pjmNodeDraft = value;
+    this._pricingError = null;
+  }
+
+  private _onPricingAdderInput(value: string): void {
+    this._pricingAdderDraft = value;
+    this._pricingError = null;
+  }
+
+  private _isPricingDirty(): boolean {
+    const rates = this._rates;
+    if (!rates) return false;
+    const storedSource = rates.pricing_source ?? 'zone';
+    if (this._pricingSourceDraft !== storedSource) return true;
+    if (this._pricingSourceDraft !== 'dynamic') return false;
+    const storedNode = rates.pjm_pnode_id ?? '';
+    if (this._pjmNodeDraft !== storedNode && this._pjmNodeDraft !== '') {
+      const nodes = rates.available_pjm_nodes ?? [];
+      const resolved = nodes.find((n) => n.slug === this._pjmNodeDraft);
+      if ((resolved ? resolved.slug : this._pjmNodeDraft) !== storedNode) return true;
+    }
+    const storedAdder = rates.pricing_adder_cents_per_kwh;
+    const draftTrim = this._pricingAdderDraft.trim();
+    if (draftTrim === '') {
+      if (storedAdder !== null) return true;
+    } else {
+      const n = Number(draftTrim);
+      if (!Number.isFinite(n) || n !== storedAdder) return true;
+    }
+    return false;
+  }
+
+  private async _savePricingSource(): Promise<void> {
+    const rates = this._rates;
+    if (!rates) return;
+    const draft = this._pricingSourceDraft;
+    const body: {
+      pricing_source: 'zone' | 'custom' | 'dynamic';
+      pjm_node?: string | null;
+      pricing_adder_cents_per_kwh?: number | null;
+    } = { pricing_source: draft };
+    if (draft === 'dynamic') {
+      const node = this._pjmNodeDraft.trim();
+      if (!node) {
+        this._pricingError = 'Choose a pricing node before saving.';
+        return;
+      }
+      body.pjm_node = node;
+      const adderTrim = this._pricingAdderDraft.trim();
+      if (adderTrim === '') {
+        body.pricing_adder_cents_per_kwh = null;
+      } else {
+        const n = Number(adderTrim);
+        if (!Number.isFinite(n) || n < 0 || n > 50) {
+          this._pricingError = 'Adder must be between 0 and 50 cents/kWh.';
+          return;
+        }
+        body.pricing_adder_cents_per_kwh = n;
+      }
+    }
+    this._pricingSaving = true;
+    this._pricingError = null;
+    try {
+      const fresh = await updateRates(body);
+      this._rates = fresh;
+      this._initPricingDraftsFromRates(fresh);
+      this._pricingSavedFlash = true;
+      if (this._pricingSavedFlashTimer !== null) {
+        clearTimeout(this._pricingSavedFlashTimer);
+      }
+      this._pricingSavedFlashTimer = setTimeout(() => {
+        this._pricingSavedFlash = false;
+        this._pricingSavedFlashTimer = null;
+      }, 2000);
+    } catch (err) {
+      this._pricingError =
+        err instanceof Error && err.message
+          ? err.message
+          : 'Could not save pricing source';
+    } finally {
+      this._pricingSaving = false;
+    }
+  }
+
+  private _resetPricingDraft(): void {
+    const rates = this._rates;
+    if (rates) {
+      this._initPricingDraftsFromRates(rates);
+    }
+    this._pricingError = null;
   }
 
   private _openEditor(applianceId: string, type: ApplianceType): void {
@@ -2136,13 +2295,22 @@ export class HungryMachinesPanel extends LitElement {
     const hasRowError = rowErrors.some((e) => e !== null);
     const ratesSource = rates?.source;
     const zoneForImport = rates?.pricing_location ?? 1;
+    const pricingSourceDraft = this._pricingSourceDraft;
+    const availableNodes = rates?.available_pjm_nodes ?? [];
+    const pricingDirty = this._isPricingDirty();
+    const pricingSaving = this._pricingSaving;
+    const pricingError = this._pricingError;
+    const pricingSavedFlash = this._pricingSavedFlash;
+    const dynamicActive = pricingSourceDraft === 'dynamic';
     const summaryText = !rates
       ? ratesLoading
         ? 'Loading rates…'
         : ratesError ?? 'Rates unavailable'
-      : ratesSource === 'custom'
-        ? 'Currently using: your custom rates'
-        : `Currently using: Zone ${zoneForImport} rates`;
+      : dynamicActive
+        ? 'Currently using: PJM day-ahead pricing'
+        : ratesSource === 'custom'
+          ? 'Currently using: your custom rates'
+          : `Currently using: Zone ${zoneForImport} rates`;
     const toggleLabel =
       ratesSource === 'custom' ? 'Edit / Clear override' : 'Edit custom rates';
 
@@ -2227,7 +2395,105 @@ export class HungryMachinesPanel extends LitElement {
             : null}
         </div>
 
-        <div class="settings-section" data-section="custom-rates">
+        <div class="settings-section" data-section="pricing-source">
+          <h3>Pricing source</h3>
+          <p class="rates-summary">${summaryText}</p>
+          <label>
+            <span class="label-text">Source</span>
+            <select
+              name="pricing_source"
+              ?disabled=${!rates || pricingSaving}
+              .value=${pricingSourceDraft}
+              @change=${(e: Event) =>
+                this._onPricingSourceChange(
+                  (e.target as HTMLSelectElement).value,
+                )}
+            >
+              <option value="zone" ?selected=${pricingSourceDraft === 'zone'}>Zone</option>
+              <option value="custom" ?selected=${pricingSourceDraft === 'custom'}>Custom</option>
+              <option value="dynamic" ?selected=${pricingSourceDraft === 'dynamic'}>
+                Dynamic (PJM day-ahead)
+              </option>
+            </select>
+          </label>
+          <div class="dynamic-fields" ?hidden=${!dynamicActive}>
+            <p class="hint">
+              Dynamic prices update daily from PJM Data Miner 2. Your flat adder
+              covers delivery, taxes, and supplier fees on top of the hourly
+              wholesale price.
+            </p>
+            <label>
+              <span class="label-text">Node</span>
+              <select
+                name="pjm_node"
+                ?disabled=${pricingSaving}
+                .value=${this._pjmNodeDraft}
+                @change=${(e: Event) =>
+                  this._onPjmNodeChange(
+                    (e.target as HTMLSelectElement).value,
+                  )}
+              >
+                ${availableNodes.map(
+                  (n) => html`<option value=${n.slug} ?selected=${n.slug === this._pjmNodeDraft}>
+                    ${n.label}
+                  </option>`,
+                )}
+              </select>
+            </label>
+            <label>
+              <span class="label-text">Flat adder (cents/kWh)</span>
+              <input
+                type="number"
+                step="0.1"
+                min="0"
+                max="50"
+                name="pricing_adder_cents_per_kwh"
+                class="pricing-adder-input"
+                ?disabled=${pricingSaving}
+                .value=${this._pricingAdderDraft}
+                @input=${(e: Event) =>
+                  this._onPricingAdderInput(
+                    (e.target as HTMLInputElement).value,
+                  )}
+              />
+            </label>
+          </div>
+          <p
+            class="rates-api-error"
+            role="alert"
+            ?hidden=${!pricingError}
+          >
+            ${pricingError ?? ''}
+          </p>
+          <div class="rates-actions">
+            <button
+              type="button"
+              name="save_pricing_source"
+              class="primary"
+              ?disabled=${!rates || pricingSaving || !pricingDirty}
+              @click=${() => void this._savePricingSource()}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              name="reset_pricing_source"
+              ?disabled=${!rates || pricingSaving || !pricingDirty}
+              @click=${() => this._resetPricingDraft()}
+            >
+              Reset
+            </button>
+            <span class="saved-flash" role="status" ?hidden=${!pricingSavedFlash}>
+              Saved
+            </span>
+          </div>
+        </div>
+
+        <div
+          class="settings-section"
+          data-section="custom-rates"
+          ?hidden=${dynamicActive}
+        >
           <h3>Custom electricity rates</h3>
           <p class="rates-summary">${summaryText}</p>
           ${rates
