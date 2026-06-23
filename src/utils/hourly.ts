@@ -34,7 +34,7 @@ export function hasHourlyComfortBands(prefs: {
   return Array.isArray(high) && Array.isArray(low) && high.length === 24 && low.length === 24;
 }
 
-export function hasCustomRates(rates: { source: 'custom' | 'zone' }): boolean {
+export function hasCustomRates(rates: { source: 'custom' | 'zone' | 'dynamic' }): boolean {
   return rates.source === 'custom';
 }
 
