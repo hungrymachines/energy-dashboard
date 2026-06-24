@@ -1,34 +1,77 @@
 import { describe, it, expect } from 'vitest';
 import {
-  PRICING_ZONE_LABELS,
+  findPricingZone,
   pricingZoneFullLabel,
   pricingZoneOptionLabel,
 } from '../src/data/pricing-zones.js';
+import type { PricingZoneOption } from '../src/api/rates.js';
 
-describe('PRICING_ZONE_LABELS', () => {
-  it('zone 1 provider matches /SDG.?E/', () => {
-    expect(PRICING_ZONE_LABELS[1].provider).toMatch(/SDG.?E/);
+const AVAILABLE: PricingZoneOption[] = [
+  {
+    id: 1,
+    slug: 'sdge_tou_dr1',
+    utility: 'SDG&E',
+    plan: 'TOU-DR1',
+    region: 'San Diego, CA',
+    label: 'SDG&E TOU-DR1 — San Diego',
+    notes: '',
+  },
+  {
+    id: 2,
+    slug: 'coned_nyc',
+    utility: 'ConEd',
+    plan: 'Default',
+    region: 'New York City, NY',
+    label: 'ConEd — New York City',
+    notes: '',
+  },
+  {
+    id: 5,
+    slug: 'sdge_ev_tou_5',
+    utility: 'SDG&E',
+    plan: 'EV-TOU-5',
+    region: 'San Diego, CA',
+    label: 'SDG&E EV-TOU-5 — San Diego',
+    notes: '',
+  },
+];
+
+describe('pricingZoneOptionLabel (data-driven)', () => {
+  it('returns the API-provided label when the id is in the available list', () => {
+    expect(pricingZoneOptionLabel(1, AVAILABLE)).toBe('SDG&E TOU-DR1 — San Diego');
+    expect(pricingZoneOptionLabel(5, AVAILABLE)).toBe('SDG&E EV-TOU-5 — San Diego');
   });
 
-  it('all eight keys 1..8 are present', () => {
-    expect(Object.keys(PRICING_ZONE_LABELS).length).toBe(8);
-    for (const z of [1, 2, 3, 4, 5, 6, 7, 8] as const) {
-      expect(PRICING_ZONE_LABELS[z]).toBeDefined();
-      expect(typeof PRICING_ZONE_LABELS[z].provider).toBe('string');
-      expect(typeof PRICING_ZONE_LABELS[z].region).toBe('string');
-    }
+  it('falls back to "Zone N" for ids not in the available list', () => {
+    expect(pricingZoneOptionLabel(99, AVAILABLE)).toBe('Zone 99');
   });
 
-  it('option label includes the provider, region, and zone number', () => {
-    const label = pricingZoneOptionLabel(1);
-    expect(label).toMatch(/SDG.?E/);
-    expect(label).toContain('San Diego');
-    expect(label).toContain('Zone 1');
+  it('falls back to "Zone N" when the available list is empty', () => {
+    expect(pricingZoneOptionLabel(3, [])).toBe('Zone 3');
+  });
+});
+
+describe('pricingZoneFullLabel (data-driven)', () => {
+  it('returns "utility — region" for known ids', () => {
+    expect(pricingZoneFullLabel(1, AVAILABLE)).toBe('SDG&E — San Diego, CA');
+    expect(pricingZoneFullLabel(2, AVAILABLE)).toBe('ConEd — New York City, NY');
   });
 
-  it('full label omits the zone number', () => {
-    expect(pricingZoneFullLabel(2)).toContain('ConEd');
-    expect(pricingZoneFullLabel(2)).toContain('New York City');
-    expect(pricingZoneFullLabel(2)).not.toContain('Zone');
+  it('omits the trailing "(Zone N)" parenthetical', () => {
+    expect(pricingZoneFullLabel(1, AVAILABLE)).not.toContain('Zone 1');
+  });
+
+  it('falls back to "Zone N" when the id is unknown', () => {
+    expect(pricingZoneFullLabel(99, AVAILABLE)).toBe('Zone 99');
+  });
+});
+
+describe('findPricingZone', () => {
+  it('matches by numeric id', () => {
+    expect(findPricingZone(5, AVAILABLE)?.slug).toBe('sdge_ev_tou_5');
+  });
+
+  it('returns undefined when no match', () => {
+    expect(findPricingZone(99, AVAILABLE)).toBeUndefined();
   });
 });

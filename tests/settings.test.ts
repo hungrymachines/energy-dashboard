@@ -32,6 +32,36 @@ const SAMPLE_USER = {
   weather_entity_id: '',
 };
 
+const AVAILABLE_PRICING_ZONES = [
+  { id: 1, slug: 'sdge_tou_dr1', utility: 'SDG&E', plan: 'TOU-DR1', region: 'San Diego, CA',
+    label: 'SDG&E TOU-DR1 — San Diego', notes: '' },
+  { id: 2, slug: 'coned_nyc', utility: 'ConEd', plan: 'Default', region: 'New York City, NY',
+    label: 'ConEd — New York City', notes: '' },
+  { id: 3, slug: 'sdge_tou_dr2', utility: 'SDG&E', plan: 'TOU-DR2', region: 'San Diego, CA',
+    label: 'SDG&E TOU-DR2 — San Diego', notes: '' },
+  { id: 4, slug: 'sdge_tou_elec', utility: 'SDG&E', plan: 'TOU-ELEC', region: 'San Diego, CA',
+    label: 'SDG&E TOU-ELEC — San Diego', notes: 'TO-VERIFY OP/SOP window placement' },
+  { id: 5, slug: 'sdge_ev_tou_5', utility: 'SDG&E', plan: 'EV-TOU-5', region: 'San Diego, CA',
+    label: 'SDG&E EV-TOU-5 — San Diego', notes: '' },
+];
+
+function ratesResponse(overrides: Record<string, unknown> = {}): unknown {
+  return {
+    pricing_location: 3,
+    intervals: Array.from({ length: 48 }, (_, i) => i),
+    rates_cents_per_kwh: Array.from({ length: 48 }, () => 30),
+    unit: 'cents/kWh',
+    source: 'zone',
+    hourly_rates_cents_per_kwh: null,
+    pricing_source: 'zone',
+    pjm_pnode_id: null,
+    pricing_adder_cents_per_kwh: null,
+    available_pjm_nodes: [],
+    available_pricing_zones: AVAILABLE_PRICING_ZONES,
+    ...overrides,
+  };
+}
+
 function setAuthState(partial: Partial<AuthState>): void {
   authStore.state = {
     access: null,
@@ -126,12 +156,16 @@ describe('hungry-machines-panel settings (v2.0)', () => {
     vi.spyOn(authStore, 'hydrate').mockImplementation(async () => {});
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        new Response('null', {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      ),
+      vi.fn(async (input: string | URL | Request) => {
+        const url =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        if (url.includes('/api/v1/rates')) return jsonResponse(ratesResponse());
+        return jsonResponse(null);
+      }),
     );
   });
 
@@ -230,6 +264,7 @@ describe('hungry-machines-panel settings (v2.0)', () => {
           weather_entity_id: 'weather.met_no',
         });
       }
+      if (url.includes('/api/v1/rates')) return jsonResponse(ratesResponse());
       return jsonResponse(null);
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -306,7 +341,7 @@ describe('hungry-machines-panel settings (v2.0)', () => {
     expect(selectByName(root, 'weather_entity_id').value).toBe('');
   });
 
-  it('pricing zone select shows utility/region labels and the zone-hint reflects the current selection', async () => {
+  it('pricing zone select is data-driven from available_pricing_zones and the zone-hint reflects the current selection', async () => {
     const el = mountPanel({ hass: HASS });
     await flush(el);
     clickSettings(el.shadowRoot!);
@@ -314,7 +349,8 @@ describe('hungry-machines-panel settings (v2.0)', () => {
 
     const root = el.shadowRoot!;
     const zone = selectByName(root, 'pricing_zone');
-    expect(zone.options.length).toBe(8);
+    // Options match the rates mock's available_pricing_zones (5 entries).
+    expect(zone.options.length).toBe(AVAILABLE_PRICING_ZONES.length);
 
     const zone1 = Array.from(zone.options).find((o) => o.value === '1');
     expect(zone1).toBeDefined();

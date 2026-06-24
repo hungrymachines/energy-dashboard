@@ -25,10 +25,8 @@ import { patchMe } from '../api/auth.js';
 import { get as getPreferences, update as updatePreferences, type Preferences } from '../api/preferences.js';
 import { expandHourlyTo48, hasCustomRates, hasHourlyComfortBands } from '../utils/hourly.js';
 import {
-  PRICING_ZONE_LABELS,
   pricingZoneFullLabel,
   pricingZoneOptionLabel,
-  type PricingZone,
 } from '../data/pricing-zones.js';
 
 type HassStateLike = { entity_id?: string; state?: unknown; attributes?: Record<string, unknown> };
@@ -36,10 +34,6 @@ type HassLike = {
   states?: Record<string, HassStateLike>;
   callService?: (domain: string, service: string, data?: Record<string, unknown>) => Promise<unknown> | unknown;
 };
-
-const PRICING_ZONES = Object.keys(PRICING_ZONE_LABELS)
-  .map((k) => Number(k) as PricingZone)
-  .sort((a, b) => a - b);
 
 type View = 'dashboard' | 'settings';
 
@@ -2297,6 +2291,12 @@ export class HungryMachinesPanel extends LitElement {
     const zoneForImport = rates?.pricing_location ?? 1;
     const pricingSourceDraft = this._pricingSourceDraft;
     const availableNodes = rates?.available_pjm_nodes ?? [];
+    const availableZones = rates?.available_pricing_zones ?? [];
+    // Fallback: if rates haven't loaded yet, render just the current
+    // selection so the dropdown isn't empty.
+    const zoneOptionIds: number[] = availableZones.length > 0
+      ? availableZones.map((z) => z.id)
+      : [pricing];
     const pricingDirty = this._isPricingDirty();
     const pricingSaving = this._pricingSaving;
     const pricingError = this._pricingError;
@@ -2360,14 +2360,14 @@ export class HungryMachinesPanel extends LitElement {
               @change=${(e: Event) =>
                 this._onZoneChange(Number((e.target as HTMLSelectElement).value))}
             >
-              ${PRICING_ZONES.map(
+              ${zoneOptionIds.map(
                 (z) => html`<option value=${String(z)} ?selected=${z === pricing}>
-                  ${pricingZoneOptionLabel(z)}
+                  ${pricingZoneOptionLabel(z, availableZones)}
                 </option>`,
               )}
             </select>
           </label>
-          <p class="zone-hint">${pricingZoneFullLabel(pricing)}</p>
+          <p class="zone-hint">${pricingZoneFullLabel(pricing, availableZones)}</p>
           ${this._zoneError
             ? html`<p class="zone-error" role="alert">${this._zoneError}</p>`
             : null}

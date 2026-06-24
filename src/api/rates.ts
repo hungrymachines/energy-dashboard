@@ -2,6 +2,16 @@ import { apiFetch } from './client.js';
 
 export type PjmNodeOption = { slug: string; label: string };
 
+export type PricingZoneOption = {
+  id: number;
+  slug: string;
+  utility: string;
+  plan: string;
+  region: string;
+  label: string;
+  notes: string;
+};
+
 export interface RatesResponse {
   pricing_location: number;
   intervals: number[];
@@ -13,6 +23,7 @@ export interface RatesResponse {
   pjm_pnode_id: string | null;
   pricing_adder_cents_per_kwh: number | null;
   available_pjm_nodes: PjmNodeOption[];
+  available_pricing_zones: PricingZoneOption[];
 }
 
 export interface UpdateRatesBody {
