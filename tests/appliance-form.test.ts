@@ -596,6 +596,155 @@ describe('hm-appliance-form', () => {
     expect(submitBtn!.disabled).toBe(true);
   });
 
+  // -----------------------------------------------------------------------
+  // US-MHVAC-015 — multi-HVAC support: distinct climate entities per HVAC,
+  // client-side guard against binding two HVACs to the same entity.
+  // -----------------------------------------------------------------------
+
+  it('two HVAC appliances can be modeled back-to-back with distinct entity bindings', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      calls.push({ url, init });
+      return jsonResponse({ appliance_id: 'app-' + calls.length });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    // First HVAC — register against the Living Room climate entity.
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'hvac')!.click();
+    await flush(el);
+    {
+      const root = el.shadowRoot!;
+      inputByName(root, 'name').value = 'Living Room';
+      inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+      inputByName(root, 'home_size_sqft').value = '1200';
+      inputByName(root, 'home_size_sqft').dispatchEvent(new Event('input', { bubbles: true }));
+      pickEntity(root, 'climate.living_room');
+      await flush(el);
+      buttonByText(root, 'Add')!.click();
+      await flush(el);
+    }
+
+    // After the first create, the panel would re-open the form with the
+    // existing HVAC available. Simulate that by re-opening with the
+    // new appliance in `existingAppliances`.
+    el.existingAppliances = [
+      {
+        id: 'app-1',
+        user_id: 'user-1',
+        appliance_type: 'hvac',
+        name: 'Living Room',
+        config: { entity_id: 'climate.living_room', hvac_type: 'central_ac', home_size_sqft: 1200 },
+        is_active: true,
+        created_at: new Date().toISOString(),
+      },
+    ];
+    el.open = true;
+    await flush(el);
+
+    // Second HVAC — bind to the bedroom entity. The form must accept it.
+    buttonByDataType(el.shadowRoot!, 'hvac')!.click();
+    await flush(el);
+    {
+      const root = el.shadowRoot!;
+      inputByName(root, 'name').value = 'Bedroom';
+      inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+      inputByName(root, 'home_size_sqft').value = '900';
+      inputByName(root, 'home_size_sqft').dispatchEvent(new Event('input', { bubbles: true }));
+      pickEntity(root, 'climate.bedroom');
+      await flush(el);
+      const submitBtn = buttonByText(root, 'Add');
+      expect(submitBtn!.disabled).toBe(false);
+      submitBtn!.click();
+      await flush(el);
+    }
+
+    const posts = calls.filter(
+      (c) => c.url.endsWith('/api/v1/appliances') && c.init?.method === 'POST',
+    );
+    expect(posts.length).toBe(2);
+
+    const firstBody = JSON.parse(String(posts[0]!.init!.body));
+    const secondBody = JSON.parse(String(posts[1]!.init!.body));
+    expect(firstBody.appliance_type).toBe('hvac');
+    expect(secondBody.appliance_type).toBe('hvac');
+    expect(firstBody.name).toBe('Living Room');
+    expect(secondBody.name).toBe('Bedroom');
+    expect(firstBody.config.entity_id).toBe('climate.living_room');
+    expect(secondBody.config.entity_id).toBe('climate.bedroom');
+    // Distinct entity bindings — the multi-HVAC contract.
+    expect(firstBody.config.entity_id).not.toBe(secondBody.config.entity_id);
+  });
+
+  it('hvac form blocks submit when entity_id collides with an existing HVAC', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ appliance_id: 'app-x' })));
+    const el = mountForm();
+    el.existingAppliances = [
+      {
+        id: 'app-1',
+        user_id: 'user-1',
+        appliance_type: 'hvac',
+        name: 'Living Room',
+        config: { entity_id: 'climate.living_room', hvac_type: 'central_ac', home_size_sqft: 1200 },
+        is_active: true,
+        created_at: new Date().toISOString(),
+      },
+    ];
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'hvac')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Duplicate Try';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    inputByName(root, 'home_size_sqft').value = '1000';
+    inputByName(root, 'home_size_sqft').dispatchEvent(new Event('input', { bubbles: true }));
+    pickEntity(root, 'climate.living_room');
+    await flush(el);
+
+    const errs = Array.from(root.querySelectorAll('.field-error')).map((e) => e.textContent ?? '');
+    expect(
+      errs.some((t) => t.includes('Living Room') && t.includes('climate.living_room')),
+      'collision error mentions the conflicting appliance name and entity',
+    ).toBe(true);
+    expect(buttonByText(root, 'Add')!.disabled).toBe(true);
+  });
+
+  it('hvac edit-mode allows keeping the same entity_id (self-collision is not flagged)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ id: 'app-1' })));
+    const el = mountForm();
+    const existing = {
+      id: 'app-1',
+      user_id: 'user-1',
+      appliance_type: 'hvac' as const,
+      name: 'Living Room',
+      config: { entity_id: 'climate.living_room', hvac_type: 'central_ac', home_size_sqft: 1200 },
+      is_active: true,
+      created_at: new Date().toISOString(),
+    };
+    el.existingAppliances = [existing];
+    el.editing = existing;
+    await flush(el);
+
+    // No type-picker in edit mode; the form should land directly in
+    // step 2 with the existing values seeded and no collision error.
+    const root = el.shadowRoot!;
+    const errs = Array.from(root.querySelectorAll('.field-error')).map((e) => e.textContent ?? '');
+    expect(errs.some((t) => t.includes('already bound'))).toBe(false);
+    const saveBtn = buttonByText(root, 'Save');
+    expect(saveBtn).toBeDefined();
+    expect(saveBtn!.disabled).toBe(false);
+  });
+
   it('solar: out-of-range tilt is rejected', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
     const el = mountForm();

@@ -240,6 +240,11 @@ export class HmApplianceForm extends LitElement {
     // type-picker step, pre-populates from the appliance, and calls
     // PUT on submit instead of POST.
     editing: { attribute: false },
+    // The full list of the user's already-registered appliances. Used
+    // for the multi-HVAC entity uniqueness guard (US-MHVAC-015): two
+    // HVAC appliances may not bind the same climate `entity_id`. Empty
+    // is a safe default for tests that don't care about the guard.
+    existingAppliances: { attribute: false },
     _pickedType: { state: true },
     _values: { state: true },
     _errors: { state: true },
@@ -250,6 +255,7 @@ export class HmApplianceForm extends LitElement {
   error: string | null = null;
   hass: HassLike | undefined = undefined;
   editing: Appliance | null = null;
+  existingAppliances: Appliance[] = [];
   _pickedType: ApplianceType | null = null;
   _values: Record<string, string> = {};
   _errors: ErrorMap = {};
@@ -503,6 +509,22 @@ export class HmApplianceForm extends LitElement {
       const eid = (values['entity_id'] ?? '').trim();
       if (eid === '') {
         errors['entity_id'] = 'Pick the Home Assistant entity to control';
+      } else if (this._pickedType === 'hvac') {
+        // Multi-HVAC entity uniqueness guard (US-MHVAC-015): two HVAC
+        // appliances may not bind the same climate entity. Editing
+        // skips the appliance being edited so the user can keep their
+        // own existing binding.
+        const editingId = this.editing?.id ?? null;
+        const collision = this.existingAppliances.find((a) => {
+          if (a.appliance_type !== 'hvac') return false;
+          if (editingId && a.id === editingId) return false;
+          const cfg = (a.config ?? {}) as Record<string, unknown>;
+          return cfg['entity_id'] === eid;
+        });
+        if (collision) {
+          errors['entity_id'] =
+            `Another HVAC (“${collision.name || collision.id}”) is already bound to ${eid}. Pick a different climate entity.`;
+        }
       }
     }
     return errors;

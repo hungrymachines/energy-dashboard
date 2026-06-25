@@ -357,6 +357,144 @@ describe('hungry-machines-panel', () => {
     expect((el as unknown as { _recomputing: boolean })._recomputing).toBe(false);
   });
 
+  // -----------------------------------------------------------------------
+  // US-MHVAC-015 — the dashboard renders one card per HVAC appliance,
+  // each labeled with its name AND its bound climate entity so a
+  // multi-HVAC user can see which card controls which unit.
+  // -----------------------------------------------------------------------
+  it('renders two HVAC cards each labeled with its distinct bound climate entity', async () => {
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+    setTokens({ access: 'ACCESS', refresh: 'REFRESH' });
+
+    const schedules = {
+      date: 'today',
+      appliances: [
+        {
+          appliance_id: 'app-1',
+          appliance_type: 'hvac',
+          name: 'Living Room',
+          schedule: {},
+          savings_pct: 25,
+          source: 'optimization',
+        },
+        {
+          appliance_id: 'app-2',
+          appliance_type: 'hvac',
+          name: 'Bedroom',
+          schedule: {},
+          savings_pct: 18,
+          source: 'optimization',
+        },
+      ],
+    };
+    const appliances = [
+      {
+        id: 'app-1',
+        user_id: 'user-123',
+        appliance_type: 'hvac',
+        name: 'Living Room',
+        config: { entity_id: 'climate.living_room', hvac_type: 'central_ac', home_size_sqft: 1200 },
+        is_active: true,
+        created_at: new Date().toISOString(),
+      },
+      {
+        id: 'app-2',
+        user_id: 'user-123',
+        appliance_type: 'hvac',
+        name: 'Bedroom',
+        config: { entity_id: 'climate.bedroom', hvac_type: 'central_ac', home_size_sqft: 900 },
+        is_active: true,
+        created_at: new Date().toISOString(),
+      },
+    ];
+
+    const rates = {
+      pricing_source: 'zone',
+      pricing_location: 1,
+      pricing_zone_id: 1,
+      available_pricing_zones: [],
+      available_pjm_nodes: [],
+      pjm_pnode_id: null,
+      pricing_adder_cents_per_kwh: null,
+      rates_cents_per_kwh: [],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        if (url.endsWith('/api/v1/schedules')) {
+          return new Response(JSON.stringify(schedules), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.endsWith('/api/v1/appliances')) {
+          return new Response(JSON.stringify(appliances), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.endsWith('/api/v1/rates')) {
+          return new Response(JSON.stringify(rates), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('/api/v1/calibration/status')) {
+          return new Response(
+            JSON.stringify({ is_in_progress: false, latest_run: null }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return new Response('null', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }),
+    );
+
+    const el = mountPanel();
+    for (let i = 0; i < 10; i++) {
+      await el.updateComplete;
+      await Promise.resolve();
+    }
+
+    const root = el.shadowRoot!;
+    const cards = Array.from(
+      root.querySelectorAll<HTMLDivElement>('div.card[data-appliance-type="hvac"]'),
+    );
+    expect(cards.length).toBe(2);
+
+    const labels = cards.map((c) => {
+      const name = c.querySelector('.name')?.textContent?.trim() ?? '';
+      const binding = c.querySelector('.entity-binding')?.textContent?.trim() ?? '';
+      return { name, binding };
+    });
+    expect(labels).toEqual([
+      { name: 'Living Room', binding: 'climate.living_room' },
+      { name: 'Bedroom', binding: 'climate.bedroom' },
+    ]);
+
+    // The appliance form should receive the existing appliances so the
+    // uniqueness guard can fire (US-MHVAC-015 client-side guard).
+    const form = root.querySelector('hm-appliance-form') as
+      | (HmApplianceForm & { existingAppliances: unknown[] })
+      | null;
+    expect(form).not.toBeNull();
+    expect(Array.isArray(form!.existingAppliances)).toBe(true);
+    expect(form!.existingAppliances.length).toBe(2);
+  });
+
   it('shows a loading spinner when the auth store reports loading', async () => {
     setAuthState({ status: 'loading' });
     const el = mountPanel();

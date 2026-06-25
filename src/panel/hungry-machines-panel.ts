@@ -487,6 +487,18 @@ export class HungryMachinesPanel extends LitElement {
       font-weight: 600;
       font-size: 1.3rem;
     }
+    .card .entity-binding {
+      color: var(--hm-muted, #64748B);
+      font-size: 0.9rem;
+      font-family: var(--hm-font-mono, monospace);
+      letter-spacing: 0.01em;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .card .entity-binding[hidden] {
+      display: none;
+    }
     .card .edit-btn {
       align-self: flex-start;
       background: transparent;
@@ -1741,6 +1753,7 @@ export class HungryMachinesPanel extends LitElement {
         .open=${this._addApplianceOpen || !!this._editingAppliance}
         .hass=${this.hass}
         .editing=${this._editingAppliance ?? null}
+        .existingAppliances=${Object.values(this._appliancesById)}
         @appliance-created=${this._onApplianceCreated}
         @appliance-updated=${this._onApplianceUpdated}
         @cancelled=${this._onApplianceCancelled}
@@ -2166,12 +2179,24 @@ export class HungryMachinesPanel extends LitElement {
       }
     }
 
+    // Per-HVAC entity label so multi-HVAC users can tell which card
+    // controls which climate entity (US-MHVAC-015). Falls back to no
+    // line when the appliance has no config / entity bound (e.g. an
+    // older registration or a non-HVAC type).
+    const fullForEntity = this._appliancesById[appliance.appliance_id];
+    const boundEntityId =
+      type === 'hvac' && fullForEntity
+        ? (((fullForEntity.config ?? {}) as Record<string, unknown>)['entity_id'] as
+            | string
+            | undefined)
+        : undefined;
     return html`
       <div class="card" data-appliance-type=${type}>
         <div class="card-head">
           <span class="badge" aria-hidden="true">${label}</span>
           <span class="name">${appliance.name}</span>
         </div>
+        <div class="entity-binding" ?hidden=${!boundEntityId}>${boundEntityId ?? ''}</div>
         <div class="savings">${savings}</div>
         <hm-optimization-chart
           .rates=${rates}
