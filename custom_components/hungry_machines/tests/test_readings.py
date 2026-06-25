@@ -82,6 +82,73 @@ async def test_capture_hvac_appends_to_home_bucket() -> None:
 
 
 @pytest.mark.asyncio
+async def test_capture_hvac_tags_reading_with_appliance_id() -> None:
+    """US-MHVAC-016: the HVAC reading payload must carry the registered
+    appliance's id so the backend (US-MHVAC-006) can route the row into
+    sensor_readings.appliance_id and keep per-HVAC streams isolated."""
+    appliance = {
+        "id": "hvac-living-room",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    state = _state(
+        "cool",
+        {"current_temperature": 72.5, "temperature": 72.0},
+    )
+    hass = _hass({"climate.living_room": state})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["appliance_id"] == "hvac-living-room"
+
+
+@pytest.mark.asyncio
+async def test_capture_two_hvacs_tag_their_own_appliance_ids() -> None:
+    """Two HVAC appliances under one user → both readings land in the
+    home bucket (single POST endpoint), each carrying its OWN
+    appliance_id so the backend can split the stream per unit."""
+    living = {
+        "id": "hvac-living",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    bedroom = {
+        "id": "hvac-bedroom",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.bedroom"},
+    }
+    living_state = _state(
+        "cool", {"current_temperature": 72.0, "temperature": 71.0},
+    )
+    bedroom_state = _state(
+        "cool", {"current_temperature": 68.5, "temperature": 68.0},
+    )
+    hass = _hass({
+        "climate.living_room": living_state,
+        "climate.bedroom": bedroom_state,
+    })
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances",
+        AsyncMock(return_value=[living, bedroom]),
+    ):
+        n = await readings.capture_readings(hass, entry)
+
+    assert n == 2
+    home = hass.data[DOMAIN]["readings_buffer"]["home"]
+    assert len(home) == 2
+    by_id = {r["appliance_id"]: r for r in home}
+    assert by_id["hvac-living"]["indoor_temp"] == 72.0
+    assert by_id["hvac-bedroom"]["indoor_temp"] == 68.5
+
+
+@pytest.mark.asyncio
 async def test_capture_hvac_records_fan_mode() -> None:
     """Regression: fan_mode was accepted by the API but the integration
     never read state.attributes["fan_mode"], so every sensor_readings

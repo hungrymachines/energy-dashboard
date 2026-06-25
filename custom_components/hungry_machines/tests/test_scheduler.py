@@ -1411,3 +1411,156 @@ async def test_fetch_stores_optimization_enabled_flag() -> None:
                       new=AsyncMock(return_value=_schedules_body())):
         cache = await scheduler.fetch_today_schedule(hass, entry)
     assert cache["optimization_enabled"] is True
+
+
+# ---------------------------------------------------------------------------
+# US-MHVAC-016 — per-appliance reading push + per-entity apply loop.
+# Two HVAC appliances under one user must drive their own climate entities
+# independently and gate on their own optimization_enabled flag.
+# ---------------------------------------------------------------------------
+
+
+def _multi_hvac_hass(states: dict) -> MagicMock:
+    """Build a hass fake where `hass.states.get(entity_id)` returns the
+    right state per entity (vs the single-entity `_hass` helper above)."""
+    hass = MagicMock()
+    hass.data = {}
+    hass.services = MagicMock()
+    hass.services.async_call = AsyncMock()
+    hass.states = MagicMock()
+    hass.states.get = MagicMock(side_effect=lambda eid: states.get(eid))
+    return hass
+
+
+def _multi_hvac_cache(
+    *,
+    living_setpoint: float = 70.0,
+    bedroom_setpoint: float = 68.0,
+    living_enabled: bool = True,
+    bedroom_enabled: bool = True,
+) -> dict:
+    return {
+        "schedule": {
+            "fetched_at": _fresh_ts(),
+            "optimization_enabled": True,
+            "hvac-living": {
+                "appliance_type": "hvac",
+                "entity_id": "climate.living_room",
+                "name": "Living Room",
+                "schedule": {
+                    "setpoint_temps": [living_setpoint] * 48,
+                    "high_temps": [74.0] * 48,
+                    "low_temps": [70.0] * 48,
+                    "mode": "cool",
+                },
+                "optimization_enabled": living_enabled,
+            },
+            "hvac-bedroom": {
+                "appliance_type": "hvac",
+                "entity_id": "climate.bedroom",
+                "name": "Bedroom",
+                "schedule": {
+                    "setpoint_temps": [bedroom_setpoint] * 48,
+                    "high_temps": [72.0] * 48,
+                    "low_temps": [66.0] * 48,
+                    "mode": "cool",
+                },
+                "optimization_enabled": bedroom_enabled,
+            },
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_apply_two_hvacs_each_drives_its_own_climate_entity() -> None:
+    """Two HVAC appliances → two `climate.set_temperature` calls, each
+    targeting its own entity_id with its own optimizer setpoint."""
+    living = _climate_state("cool", supports_range=False)
+    bedroom = _climate_state("cool", supports_range=False)
+    hass = _multi_hvac_hass({
+        "climate.living_room": living,
+        "climate.bedroom": bedroom,
+    })
+    entry = _entry()
+    hass.data[DOMAIN] = _multi_hvac_cache(
+        living_setpoint=72.0, bedroom_setpoint=68.0,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    temp_calls = [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_temperature"
+    ]
+    assert len(temp_calls) == 2
+    payloads = {c.args[2]["entity_id"]: c.args[2] for c in temp_calls}
+    assert payloads["climate.living_room"]["temperature"] == 72.0
+    assert payloads["climate.bedroom"]["temperature"] == 68.0
+
+
+@pytest.mark.asyncio
+async def test_apply_skips_paused_appliance_but_runs_enabled_sibling() -> None:
+    """Per-appliance pause: the disabled HVAC sees no service calls; the
+    other HVAC still applies. Master flag stays True so the run isn't
+    short-circuited at the top."""
+    living = _climate_state("cool", supports_range=False)
+    bedroom = _climate_state("cool", supports_range=False)
+    hass = _multi_hvac_hass({
+        "climate.living_room": living,
+        "climate.bedroom": bedroom,
+    })
+    entry = _entry()
+    hass.data[DOMAIN] = _multi_hvac_cache(
+        living_setpoint=72.0, bedroom_setpoint=68.0,
+        living_enabled=True, bedroom_enabled=False,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    temp_calls = [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_temperature"
+    ]
+    assert len(temp_calls) == 1
+    assert temp_calls[0].args[2]["entity_id"] == "climate.living_room"
+    # The paused appliance must not have been driven at all.
+    assert scheduler.get_last_commanded(hass, "climate.bedroom") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_stores_per_appliance_optimization_enabled() -> None:
+    """fetch_today_schedule caches the per-appliance optimization_enabled
+    flag from each /schedules entry (US-MHVAC-010); missing key defaults
+    to True so an older API never bricks a single unit."""
+    hass = _hass()
+    entry = _entry()
+    body = _schedules_body()
+    body["appliances"][0]["optimization_enabled"] = False
+    # Second entry deliberately omits the flag → defaults to enabled.
+    with patch.object(scheduler.api, "get_schedules",
+                      new=AsyncMock(return_value=body)):
+        cache = await scheduler.fetch_today_schedule(hass, entry)
+    assert cache["hvac-1"]["optimization_enabled"] is False
+    assert cache["ev-1"]["optimization_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_apply_hvac_log_includes_appliance_name() -> None:
+    """The apply log line for HVAC must name the appliance alongside the
+    entity so multi-unit installations are disambiguable in HA logs."""
+    hass = _hass(_climate_state("cool", supports_range=False))
+    entry = _entry()
+    cache = _hvac_cache(setpoint=72.0)
+    cache["schedule"]["hvac-1"]["name"] = "Bedroom"
+    hass.data[DOMAIN] = cache
+    with patch.object(scheduler, "_current_slot", return_value=30), \
+         patch.object(scheduler, "_LOGGER") as mock_log:
+        await scheduler.apply_current_slot(hass, entry)
+    apply_call = next(
+        c for c in mock_log.info.call_args_list
+        if "HVAC apply" in c.args[0]
+    )
+    fmt = apply_call.args[0]
+    formatted = fmt % apply_call.args[1:]
+    assert "Bedroom" in formatted
+    assert "climate.living_room" in formatted

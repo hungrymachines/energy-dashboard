@@ -150,6 +150,13 @@ async def fetch_today_schedule(
             "entity_id": entity_id,
             "name": entry_data.get("name"),
             "schedule": entry_data.get("schedule") or {},
+            # Per-appliance pause flag (US-MHVAC-010). Missing key on
+            # older APIs defaults to enabled so a stale backend never
+            # bricks control. The slot-apply loop ANDs this with the
+            # top-level master flag.
+            "optimization_enabled": bool(
+                entry_data.get("optimization_enabled", True)
+            ),
         }
     _domain_data(hass)["schedule"] = cache
     _publish_schedule_states(hass, cache)
@@ -573,7 +580,11 @@ def _comfort_band_override(
 
 
 async def _apply_hvac(
-    hass: HomeAssistant, entity_id: str, schedule: dict, slot: int
+    hass: HomeAssistant,
+    entity_id: str,
+    schedule: dict,
+    slot: int,
+    appliance_name: str | None = None,
 ) -> None:
     setpoint = _resolve_setpoint(schedule, slot)
     mode_canonical = _resolve_canonical(schedule, "hvac_mode_schedule", slot)
@@ -700,8 +711,9 @@ async def _apply_hvac(
     local_now = dt_util.now()
     local_label = local_now.strftime("%H:%M %Z")
     _LOGGER.info(
-        "Hungry Machines HVAC apply: entity=%s slot=%d (%s local) mode=%s "
-        "setpoint=%.1f%s%s payload=%s",
+        "Hungry Machines HVAC apply: appliance=%s entity=%s slot=%d (%s local) "
+        "mode=%s setpoint=%.1f%s%s payload=%s",
+        appliance_name or "(unnamed)",
         entity_id,
         slot,
         local_label,
@@ -1083,6 +1095,7 @@ async def apply_current_slot(
         atype = info.get("appliance_type")
         entity_id = info.get("entity_id")
         schedule = info.get("schedule") or {}
+        name = info.get("name")
         if not isinstance(entity_id, str) or not entity_id:
             _LOGGER.info(
                 "Hungry Machines apply: appliance %s (%s) missing entity_id; skipping",
@@ -1098,8 +1111,23 @@ async def apply_current_slot(
                 atype,
             )
             continue
+        # Per-appliance pause: when this appliance's optimization is
+        # disabled (US-MHVAC-010), skip its apply entirely so the user
+        # can pause one HVAC while another keeps running. The master
+        # `optimization_enabled` flag above already short-circuited the
+        # whole apply when globally paused.
+        if info.get("optimization_enabled") is False:
+            _LOGGER.info(
+                "Hungry Machines apply: appliance %s (%s) is paused; "
+                "skipping apply",
+                name or aid,
+                atype,
+            )
+            continue
         if atype == "hvac":
-            await _apply_hvac(hass, entity_id, schedule, slot)
+            await _apply_hvac(
+                hass, entity_id, schedule, slot, appliance_name=name,
+            )
         elif atype in ("ev_charger", "home_battery", "water_heater"):
             await _apply_switch(hass, entity_id, schedule, slot)
         else:

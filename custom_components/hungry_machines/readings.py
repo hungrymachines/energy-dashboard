@@ -353,6 +353,7 @@ def _build_hvac_home_reading(
     indoor_temp_entity_id: str | None = None,
     power_sensor_entity_id: str | None = None,
     indoor_humidity_entity_id: str | None = None,
+    appliance_id: str | None = None,
 ) -> dict | None:
     """Build the /api/v1/readings payload from the HVAC climate entity.
 
@@ -421,6 +422,12 @@ def _build_hvac_home_reading(
         "indoor_temp": indoor_temp,
         "hvac_state": _resolve_hvac_state(state),
     }
+    # Tag each reading with its HVAC appliance so the backend's
+    # per-appliance sensor stream (migration 025 / US-MHVAC-006) routes
+    # to the right thermal model. Older HACS clients (or pre-multi-HVAC
+    # appliances missing an id) omit this and the backend stores NULL.
+    if appliance_id:
+        reading["appliance_id"] = appliance_id
     target_temp = state.attributes.get("temperature")
     if target_temp is not None:
         reading["target_temp"] = target_temp
@@ -564,6 +571,7 @@ async def capture_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
                 indoor_temp_entity_id,
                 power_sensor_entity_id,
                 indoor_humidity_entity_id,
+                appliance_id=aid if isinstance(aid, str) else None,
             )
             if reading is None:
                 continue
