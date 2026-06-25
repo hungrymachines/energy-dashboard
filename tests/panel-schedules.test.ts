@@ -387,13 +387,29 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
     expect(hvacChart.lowLimits).toEqual(Array<number>(48).fill(70));
   });
 
-  it('_openEditor for hvac seeds from _preferences, not appliance.config (US-FE-HVAC-EDITOR-PREFS-01)', async () => {
+  it('_openEditor for hvac seeds from per-appliance preferences (US-MHVAC-017)', async () => {
     const prefs = {
       ...PREFS_DEFAULT,
       base_temperature: 71,
       savings_level: 2,
       time_away: '07:30',
       time_home: '18:00',
+    };
+    // Per-appliance preferences row for hvac-1 — distinct from the
+    // user-level prefs (the values it carries override the fallback
+    // path). The editor must seed from THIS row, not from the
+    // user-level /api/v1/preferences response.
+    const hvac1Prefs = {
+      base_temperature: 68,
+      savings_level: 3,
+      time_away: '06:00',
+      time_home: '19:30',
+      optimization_mode: 'cool',
+      optimization_enabled: true,
+      optimize_hvac_fan: false,
+      optimize_hvac_mode: false,
+      hourly_high_temps_f: null,
+      hourly_low_temps_f: null,
     };
     const APPLIANCES = [
       {
@@ -415,7 +431,10 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
         created_at: '2026-01-01T00:00:00Z',
       },
     ];
+    // Route order matters: the per-appliance prefs URL must match BEFORE
+    // the bare `/api/v1/appliances` route (the stub uses `includes`).
     installFetchStub({
+      '/api/v1/appliances/hvac-1/preferences': hvac1Prefs,
       '/api/v1/schedules': SCHEDULES_RESPONSE,
       '/api/v1/rates': RATES_RESPONSE,
       '/api/v1/preferences': prefs,
@@ -432,24 +451,29 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
     el._view = 'dashboard';
     await flush(el);
 
-    // HVAC: editor is seeded from _preferences (which includes time_away/time_home),
-    // not from appliance.config (which only has hvac_type/home_size_sqft).
-    (el as unknown as { _openEditor: (id: string, t: string) => void })._openEditor(
+    // HVAC: editor seeds from the per-appliance prefs row, not from
+    // appliance.config (which only has hvac_type/home_size_sqft) AND
+    // not from the user-level /api/v1/preferences row. Under
+    // US-MHVAC-017 the per-appliance row is the source of truth so
+    // two HVACs under one user can hold and submit independent
+    // values.
+    (el as unknown as { _openEditor: (id: string, t: string) => Promise<void> })._openEditor(
       'hvac-1',
       'hvac',
     );
     await flush(el);
     const constraintsHvac = (el as unknown as { _editorConstraints: Record<string, unknown> })
       ._editorConstraints;
-    expect(constraintsHvac['base_temperature']).toBe(71);
-    expect(constraintsHvac['savings_level']).toBe(2);
-    expect(constraintsHvac['time_away']).toBe('07:30');
-    expect(constraintsHvac['time_home']).toBe('18:00');
+    expect(constraintsHvac['base_temperature']).toBe(68);
+    expect(constraintsHvac['savings_level']).toBe(3);
+    expect(constraintsHvac['time_away']).toBe('06:00');
+    expect(constraintsHvac['time_home']).toBe('19:30');
+    expect(constraintsHvac['optimization_enabled']).toBe(true);
     expect('hvac_type' in constraintsHvac).toBe(false);
     expect('home_size_sqft' in constraintsHvac).toBe(false);
 
     // Non-HVAC: editor is still seeded from appliance.config.
-    (el as unknown as { _openEditor: (id: string, t: string) => void })._openEditor(
+    (el as unknown as { _openEditor: (id: string, t: string) => Promise<void> })._openEditor(
       'ev-1',
       'ev_charger',
     );

@@ -1,6 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { setConstraints } from '../api/appliances.js';
-import { update as updatePreferences } from '../api/preferences.js';
+import { update as updateAppliancePreferences } from '../api/appliance-preferences.js';
 import type { ApplianceType } from '../api/appliances.js';
 import {
   deriveHourlyComfortBand,
@@ -402,6 +402,12 @@ export class HmConstraintEditor extends LitElement {
         // behavior change unless they explicitly tick the box.
         const optFan = (c as Record<string, unknown>)['optimize_hvac_fan'];
         const optMode = (c as Record<string, unknown>)['optimize_hvac_mode'];
+        // Per-appliance pause switch (US-MHVAC-010). Default ON so
+        // a missing field on legacy callers doesn't accidentally pause
+        // the appliance — the editor only saves false when the user
+        // explicitly unchecks the box.
+        const optEnabledRaw = (c as Record<string, unknown>)['optimization_enabled'];
+        const optEnabled = optEnabledRaw === false ? '' : '1';
         return {
           base_temperature: base === null ? '72' : String(base),
           savings_level: savings === null ? '3' : String(savings),
@@ -412,6 +418,7 @@ export class HmConstraintEditor extends LitElement {
           time_home: timeHome,
           optimize_hvac_fan: optFan === true ? '1' : '',
           optimize_hvac_mode: optMode === true ? '1' : '',
+          optimization_enabled: optEnabled,
         };
       }
     }
@@ -559,6 +566,11 @@ export class HmConstraintEditor extends LitElement {
           optimization_mode: (v['optimization_mode'] ?? 'auto') as OptimizationMode,
           optimize_hvac_fan: v['optimize_hvac_fan'] === '1',
           optimize_hvac_mode: v['optimize_hvac_mode'] === '1',
+          // Per-appliance pause switch (US-MHVAC-017). Always send
+          // explicit booleans so a paused unit can be re-enabled by
+          // checking the box and saving — exclude_unset on the server
+          // would otherwise drop a clear-back-to-true PUT.
+          optimization_enabled: v['optimization_enabled'] === '1',
         };
         const timeAway = v['time_away'] ?? '';
         if (timeAway !== '') payload['time_away'] = timeAway;
@@ -586,7 +598,12 @@ export class HmConstraintEditor extends LitElement {
     this._topError = null;
     try {
       if (this.applianceType === 'hvac') {
-        await updatePreferences(payload);
+        // Per-HVAC preferences (US-MHVAC-017): each registered HVAC
+        // carries its own appliance_preferences row, so the save path
+        // is keyed on this.applianceId and never touches the user-level
+        // /api/v1/preferences endpoint. Two HVACs editing in succession
+        // hold and persist independent values.
+        await updateAppliancePreferences(this.applianceId, payload);
       } else {
         await setConstraints(this.applianceId, payload);
       }
@@ -874,6 +891,33 @@ export class HmConstraintEditor extends LitElement {
                     ? html`<div class="field-error">${errs['optimization_mode']}</div>`
                     : null}
                 </label>
+                <fieldset class="opt-toggles">
+                  <legend>Pause this unit</legend>
+                  <p class="opt-toggles-help">
+                    Pause optimization for this HVAC only — schedules are
+                    still computed nightly but the integration leaves
+                    this unit on manual control. The user-wide pause
+                    switch (Dashboard header) overrides this per-unit
+                    setting and pauses everything.
+                  </p>
+                  <label class="opt-toggle">
+                    <input
+                      name="optimization_enabled"
+                      type="checkbox"
+                      .checked=${v['optimization_enabled'] === '1'}
+                      @change=${(e: Event) =>
+                        this._setValue(
+                          'optimization_enabled',
+                          (e.target as HTMLInputElement).checked ? '1' : '',
+                        )}
+                    />
+                    <span>
+                      <strong>Optimization enabled</strong> — uncheck to
+                      pause this HVAC. Re-enable any time; takes effect
+                      on the next apply tick (within 30 minutes).
+                    </span>
+                  </label>
+                </fieldset>
                 <fieldset class="opt-toggles">
                   <legend>What can we optimize?</legend>
                   <p class="opt-toggles-help">

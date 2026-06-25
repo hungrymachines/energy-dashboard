@@ -191,7 +191,8 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
 
     expect(calls.length).toBe(1);
     const [url, init] = calls[0]!;
-    expect(url).toContain('/api/v1/preferences');
+    // Per-HVAC-appliance preferences endpoint (US-MHVAC-017).
+    expect(url).toContain('/api/v1/appliances/hvac-1/preferences');
     expect(init?.method).toBe('PUT');
     const body = JSON.parse(String(init?.body)) as {
       hourly_high_temps_f: number[];
@@ -255,7 +256,8 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
 
     expect(calls.length).toBe(1);
     const [url, init] = calls[0]!;
-    expect(url).toContain('/api/v1/preferences');
+    // Per-HVAC-appliance preferences endpoint (US-MHVAC-017).
+    expect(url).toContain('/api/v1/appliances/hvac-1/preferences');
     expect(init?.method).toBe('PUT');
     const body = JSON.parse(String(init?.body)) as {
       hourly_high_temps_f: number[] | null;

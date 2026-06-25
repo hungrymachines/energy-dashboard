@@ -23,6 +23,10 @@ import type {
 } from '../api/calibration.js';
 import { patchMe } from '../api/auth.js';
 import { get as getPreferences, update as updatePreferences, type Preferences } from '../api/preferences.js';
+import {
+  get as getAppliancePreferences,
+  type AppliancePreferences,
+} from '../api/appliance-preferences.js';
 import { expandHourlyTo48, hasCustomRates, hasHourlyComfortBands } from '../utils/hourly.js';
 import {
   pricingZoneFullLabel,
@@ -1013,6 +1017,7 @@ export class HungryMachinesPanel extends LitElement {
     _editorApplianceId: { state: true },
     _editorApplianceType: { state: true },
     _editorConstraints: { state: true },
+    _appliancePrefsById: { state: true },
     _addApplianceOpen: { state: true },
     // Appliance currently being edited via the appliance-form overlay.
     // Null when the form is in CREATE mode (or closed entirely).
@@ -1062,6 +1067,12 @@ export class HungryMachinesPanel extends LitElement {
   _editorApplianceId = '';
   _editorApplianceType: ApplianceType = 'hvac';
   _editorConstraints: Record<string, unknown> | undefined = undefined;
+  // Per-HVAC-appliance preferences cache (US-MHVAC-017). Populated
+  // lazily when the user opens the HVAC editor and refreshed in
+  // place when the editor save event fires. Independent of the
+  // user-level _preferences row so two HVACs hold and submit
+  // independent values.
+  _appliancePrefsById: Record<string, AppliancePreferences> = {};
   _addApplianceOpen = false;
   _editingAppliance: Appliance | null = null;
   _deletingAppliance: Appliance | null = null;
@@ -1519,17 +1530,50 @@ export class HungryMachinesPanel extends LitElement {
     this._pricingError = null;
   }
 
-  private _openEditor(applianceId: string, type: ApplianceType): void {
-    const appliance = this._appliancesById[applianceId];
-    // HVAC editor edits user preferences, not appliance.config (which is just {hvac_type, home_size_sqft}).
-    const seed: Record<string, unknown> =
-      type === 'hvac'
-        ? ((this._preferences ?? {}) as unknown as Record<string, unknown>)
-        : ((appliance?.config ?? {}) as Record<string, unknown>);
+  private async _openEditor(applianceId: string, type: ApplianceType): Promise<void> {
     this._editorApplianceId = applianceId;
     this._editorApplianceType = type;
-    this._editorConstraints = seed;
-    this._editorOpen = true;
+    if (type === 'hvac') {
+      // Per-HVAC-appliance preferences (US-MHVAC-017). Always fetch a
+      // fresh row on open so a paused/edited unit's UI reflects the
+      // current server state, not whatever the user last looked at.
+      // Seed from the cached row first so the editor renders without
+      // a flash of the user-level fallback while the GET is in flight.
+      const cached = this._appliancePrefsById[applianceId];
+      if (cached) {
+        this._editorConstraints = cached as unknown as Record<string, unknown>;
+      } else if (this._preferences) {
+        // Pre-MHVAC-017 fallback: a freshly-registered HVAC has no
+        // appliance_preferences row in the cache; show the user-level
+        // values so the form doesn't start blank, then overwrite with
+        // the fetched per-appliance row when it lands.
+        this._editorConstraints = this._preferences as unknown as Record<string, unknown>;
+      } else {
+        this._editorConstraints = undefined;
+      }
+      this._editorOpen = true;
+      try {
+        const prefs = await getAppliancePreferences(applianceId);
+        this._appliancePrefsById = {
+          ...this._appliancePrefsById,
+          [applianceId]: prefs,
+        };
+        // Only overwrite seed if the editor is still open on this
+        // appliance — a fast cancel/reopen should not stomp the new
+        // editor instance's freshly seeded values.
+        if (this._editorOpen && this._editorApplianceId === applianceId) {
+          this._editorConstraints = prefs as unknown as Record<string, unknown>;
+        }
+      } catch {
+        // Best-effort: the editor stays on the cached/user-level seed.
+        // The save path still PUTs to the per-appliance endpoint, so a
+        // failed GET doesn't block the user from editing.
+      }
+    } else {
+      const appliance = this._appliancesById[applianceId];
+      this._editorConstraints = (appliance?.config ?? {}) as Record<string, unknown>;
+      this._editorOpen = true;
+    }
   }
 
   private _onEditorClosed(): void {
@@ -1537,20 +1581,35 @@ export class HungryMachinesPanel extends LitElement {
   }
 
   private _onConstraintsSaved(e: CustomEvent): void {
-    // The editor just persisted to the backend. For HVAC saves, the
-    // payload IS the user_preferences delta — fold it into our cached
-    // `_preferences` so reopening the editor reflects the just-saved
-    // state instead of the value we read at panel mount. Without this
-    // patch, the UI shows stale numbers until a full panel reload, which
-    // is indistinguishable from "save didn't work" to the user.
+    // The editor just persisted to the backend. For HVAC saves the
+    // payload IS the per-appliance preferences delta (US-MHVAC-017) —
+    // fold it into our per-appliance cache so reopening the editor
+    // reflects the just-saved state instead of the row we read at
+    // panel mount. Without this patch the UI shows stale numbers
+    // until a full panel reload, which is indistinguishable from
+    // "save didn't work" to the user. The user-level _preferences
+    // row is intentionally NOT touched here — the per-HVAC editor
+    // does not edit user-global fields.
     const detail = (e?.detail ?? {}) as {
       applianceId?: string;
       payload?: Record<string, unknown>;
     };
     const payload = detail.payload;
-    if (this._editorApplianceType === 'hvac' && payload && typeof payload === 'object') {
-      const current = this._preferences ?? ({} as Preferences);
-      this._preferences = { ...current, ...(payload as Partial<Preferences>) } as Preferences;
+    const applianceId = detail.applianceId ?? this._editorApplianceId;
+    if (
+      this._editorApplianceType === 'hvac' &&
+      applianceId &&
+      payload &&
+      typeof payload === 'object'
+    ) {
+      const current = (this._appliancePrefsById[applianceId] ?? {}) as AppliancePreferences;
+      this._appliancePrefsById = {
+        ...this._appliancePrefsById,
+        [applianceId]: {
+          ...current,
+          ...(payload as Partial<AppliancePreferences>),
+        } as AppliancePreferences,
+      };
     }
     this._onEditorClosed();
     void this._recomputeNow();

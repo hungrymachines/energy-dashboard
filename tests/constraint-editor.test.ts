@@ -133,7 +133,7 @@ describe('hm-constraint-editor', () => {
     expect(el.open).toBe(false);
   });
 
-  it('submits hvac form to PUT /api/v1/preferences', async () => {
+  it('submits hvac form to PUT /api/v1/appliances/{id}/preferences (US-MHVAC-017)', async () => {
     const { calls } = captureFetch(
       jsonResponse({
         base_temperature: 72,
@@ -166,7 +166,8 @@ describe('hm-constraint-editor', () => {
 
     expect(calls.length).toBe(1);
     const [url, init] = calls[0]!;
-    expect(url).toContain('/api/v1/preferences');
+    expect(url).toContain('/api/v1/appliances/hvac-1/preferences');
+    expect(url).not.toContain('/api/v1/preferences');
     expect(init?.method).toBe('PUT');
     const body = JSON.parse(String(init?.body));
     expect(body).toEqual({
@@ -178,6 +179,10 @@ describe('hm-constraint-editor', () => {
       // disambiguate "not provided" from "user turned this off".
       optimize_hvac_fan: false,
       optimize_hvac_mode: false,
+      // Per-appliance pause switch defaults ON for new/legacy editors
+      // (US-MHVAC-017) so the editor doesn't accidentally pause a
+      // unit on first open.
+      optimization_enabled: true,
       hourly_low_temps_f: null,
       hourly_high_temps_f: null,
     });
@@ -244,7 +249,7 @@ describe('hm-constraint-editor', () => {
 
     expect(calls.length).toBe(1);
     const [url, init] = calls[0]!;
-    expect(url).toContain('/api/v1/preferences');
+    expect(url).toContain('/api/v1/appliances/hvac-1/preferences');
     expect(init?.method).toBe('PUT');
     const body = JSON.parse(String(init?.body));
     expect(body).toEqual({
@@ -253,6 +258,7 @@ describe('hm-constraint-editor', () => {
       optimization_mode: 'cool',
       optimize_hvac_fan: false,
       optimize_hvac_mode: false,
+      optimization_enabled: true,
       time_away: '06:30',
       hourly_low_temps_f: null,
       hourly_high_temps_f: null,
@@ -391,6 +397,144 @@ describe('hm-constraint-editor', () => {
 
     expect(root.querySelector('input[name="time_away"]')).toBeNull();
     expect(root.querySelector('input[name="time_home"]')).toBeNull();
+  });
+
+  it('renders a per-appliance pause toggle that defaults ON and submits false when unchecked (US-MHVAC-017)', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-bedroom',
+      applianceType: 'hvac',
+      currentConstraints: {
+        base_temperature: 72,
+        savings_level: 2,
+        optimization_mode: 'cool',
+      },
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const pauseBox = root.querySelector<HTMLInputElement>(
+      'input[name="optimization_enabled"]',
+    );
+    expect(pauseBox).not.toBeNull();
+    // Default ON — a missing field on currentConstraints (older API)
+    // must NEVER read as paused.
+    expect(pauseBox!.checked).toBe(true);
+
+    // Uncheck to pause this HVAC.
+    pauseBox!.checked = false;
+    pauseBox!.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+
+    clickSave(root);
+    await flush(el);
+
+    expect(calls.length).toBe(1);
+    const [url, init] = calls[0]!;
+    expect(url).toContain('/api/v1/appliances/hvac-bedroom/preferences');
+    const body = JSON.parse(String(init?.body));
+    expect(body.optimization_enabled).toBe(false);
+  });
+
+  it('seeds the pause toggle from currentConstraints.optimization_enabled=false (US-MHVAC-017)', async () => {
+    captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: {
+        base_temperature: 72,
+        savings_level: 2,
+        optimization_mode: 'cool',
+        optimization_enabled: false,
+      },
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const pauseBox = root.querySelector<HTMLInputElement>(
+      'input[name="optimization_enabled"]',
+    );
+    expect(pauseBox!.checked).toBe(false);
+  });
+
+  it('two HVAC appliances hold and submit independent values (US-MHVAC-017)', async () => {
+    // Each save returns the canonical row shape, but the test asserts
+    // that the URL + body the editor sent are tagged with the right
+    // applianceId AND carry the value the user edited in each form.
+    const { calls } = captureFetch(jsonResponse({}));
+
+    // Mount editor #1 for the bedroom HVAC, seed at 68 F.
+    const el1 = mountEditor({
+      applianceId: 'hvac-bedroom',
+      applianceType: 'hvac',
+      currentConstraints: {
+        base_temperature: 68,
+        savings_level: 1,
+        optimization_mode: 'cool',
+      },
+      open: true,
+    });
+    await flush(el1);
+
+    const root1 = el1.shadowRoot!;
+    expect(
+      root1.querySelector<HTMLInputElement>('input[name="base_temperature"]')!.value,
+    ).toBe('68');
+
+    // Edit + save the bedroom editor.
+    setInputValue(root1, 'base_temperature', '66');
+    await flush(el1);
+    clickSave(root1);
+    await flush(el1);
+
+    // Mount editor #2 for the living-room HVAC, seed at 74 F. Critically,
+    // the same panel can host both editors back-to-back; the per-
+    // appliance applianceId on the editor is what disambiguates the
+    // save target.
+    const el2 = mountEditor({
+      applianceId: 'hvac-living',
+      applianceType: 'hvac',
+      currentConstraints: {
+        base_temperature: 74,
+        savings_level: 3,
+        optimization_mode: 'cool',
+      },
+      open: true,
+    });
+    await flush(el2);
+
+    const root2 = el2.shadowRoot!;
+    // Independence lock: the living-room form must NOT inherit the
+    // bedroom's edited value.
+    expect(
+      root2.querySelector<HTMLInputElement>('input[name="base_temperature"]')!.value,
+    ).toBe('74');
+
+    setInputValue(root2, 'base_temperature', '76');
+    await flush(el2);
+    clickSave(root2);
+    await flush(el2);
+
+    expect(calls.length).toBe(2);
+
+    const [url1, init1] = calls[0]!;
+    expect(url1).toContain('/api/v1/appliances/hvac-bedroom/preferences');
+    const body1 = JSON.parse(String(init1?.body));
+    expect(body1.base_temperature).toBe(66);
+    expect(body1.savings_level).toBe(1);
+
+    const [url2, init2] = calls[1]!;
+    expect(url2).toContain('/api/v1/appliances/hvac-living/preferences');
+    const body2 = JSON.parse(String(init2?.body));
+    expect(body2.base_temperature).toBe(76);
+    expect(body2.savings_level).toBe(3);
+
+    // Neither save touched the user-level /api/v1/preferences endpoint.
+    expect(
+      calls.every(([u]) => !u.endsWith('/api/v1/preferences')),
+    ).toBe(true);
   });
 
   it('blocks save when min_charge_pct is not less than target_charge_pct', async () => {
