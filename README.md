@@ -68,6 +68,9 @@ The panel is the primary surface; the cards are extras for your existing dashboa
 
 ```yaml
 type: custom:hm-thermostat-card
+# Optional: pick a specific HVAC when you have more than one registered.
+# With exactly one HVAC the card auto-resolves and this can be omitted.
+# appliance_id: 11111111-2222-3333-4444-555555555555
 entities:
   indoor_temp: sensor.living_room_temp
   outdoor_temp: sensor.outside_temp
@@ -76,6 +79,9 @@ entities:
 
 ```yaml
 type: custom:hm-savings-card
+# Optional: scope the savings figure (and the integration-health badge)
+# to one HVAC. Omitted → whole-home average + next scheduled run.
+# appliance_id: 11111111-2222-3333-4444-555555555555
 entities:
   power: sensor.home_power
 ```

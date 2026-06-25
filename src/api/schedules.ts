@@ -18,6 +18,24 @@ export interface HvacScheduleResponse {
   source: 'optimization' | 'defaults';
 }
 
+export type IntegrationHealthStatus =
+  | 'healthy'
+  | 'stale_data'
+  | 'frozen_sensor'
+  | 'no_data';
+
+export interface InlineIntegrationHealth {
+  status: IntegrationHealthStatus;
+  message: string;
+  last_reading_at?: string | null;
+  last_reading_age_seconds?: number | null;
+  sample_count?: number;
+  indoor_temp_variance_f?: number | null;
+  distinct_indoor_temps?: number | null;
+  distinct_hvac_states?: number | null;
+  lookback_hours?: number;
+}
+
 export interface ApplianceScheduleEntry {
   appliance_id: string;
   appliance_type: ApplianceType;
@@ -25,6 +43,8 @@ export interface ApplianceScheduleEntry {
   schedule: Record<string, unknown>;
   savings_pct: number;
   source: 'optimization' | 'defaults';
+  optimization_enabled?: boolean;
+  integration_health?: InlineIntegrationHealth;
 }
 
 export interface SchedulesResponse {

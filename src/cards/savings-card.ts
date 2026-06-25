@@ -1,9 +1,22 @@
 import { LitElement, html, css, type TemplateResult } from 'lit';
 import { authStore, type AuthState } from '../store.js';
-import { getAllSchedules, type SchedulesResponse } from '../api/schedules.js';
+import {
+  getAllSchedules,
+  type ApplianceScheduleEntry,
+  type InlineIntegrationHealth,
+  type SchedulesResponse,
+} from '../api/schedules.js';
 
 export interface HmSavingsCardConfig {
   type?: string;
+  /**
+   * UUID of the HVAC appliance this card represents. When set, the card
+   * shows that one appliance's savings + health verdict (US-MHVAC-018).
+   * Omitted → existing behavior: average savings across all appliances
+   * + next non-HVAC scheduled run. With exactly one HVAC and no id, the
+   * card silently resolves to that unit for back-compat.
+   */
+  appliance_id?: string;
   entities?: {
     power?: string;
   };
@@ -96,6 +109,29 @@ export class HmSavingsCard extends LitElement {
       font-size: 0.85rem;
       margin-top: 8px;
     }
+    .scope-name {
+      font-size: 0.85rem;
+      color: var(--hm-muted, #64748B);
+      margin-bottom: 4px;
+    }
+    .health-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      background: rgba(220, 38, 38, 0.08);
+      color: var(--hm-error, #DC2626);
+      margin-top: 8px;
+    }
+    .health-badge[hidden] {
+      display: none;
+    }
+    .health-badge[data-status='stale_data'] {
+      background: rgba(245, 158, 11, 0.12);
+      color: var(--hm-accent, #B45309);
+    }
   `;
 
   static override properties = {
@@ -181,6 +217,35 @@ export class HmSavingsCard extends LitElement {
     return sum / count;
   }
 
+  /**
+   * Resolve the appliance this card is scoped to. The savings card only
+   * scopes when `appliance_id` is explicitly configured — the whole-home
+   * average + "next non-HVAC scheduled run" view stays the default so
+   * existing single-card setups keep their familiar behavior.
+   */
+  private _resolveAppliance(): ApplianceScheduleEntry | null {
+    const configuredId = this._config.appliance_id;
+    if (!configuredId) return null;
+    const appliances = this._schedules?.appliances;
+    if (!Array.isArray(appliances) || appliances.length === 0) return null;
+    return appliances.find((a) => a.appliance_id === configuredId) ?? null;
+  }
+
+  private _healthLabel(health: InlineIntegrationHealth | undefined): string {
+    if (!health) return '';
+    if (health.message) return health.message;
+    switch (health.status) {
+      case 'stale_data':
+        return 'Sensor data is stale.';
+      case 'frozen_sensor':
+        return 'Indoor sensor appears stuck.';
+      case 'no_data':
+        return 'No recent sensor data.';
+      default:
+        return '';
+    }
+  }
+
   private _formatPower(): string | null {
     const entityId = this._config.entities?.power;
     if (!entityId) return null;
@@ -202,6 +267,36 @@ export class HmSavingsCard extends LitElement {
     const next = this._nextRun();
     el.textContent =
       next !== null ? `${next.name} at ${next.hhmm}` : 'No upcoming runs.';
+  }
+
+  private _renderScoped(entry: ApplianceScheduleEntry): TemplateResult {
+    const savings = entry.savings_pct;
+    const savingsText =
+      typeof savings === 'number' && Number.isFinite(savings)
+        ? `${Math.round(savings)}% savings today`
+        : '—';
+    const powerText = this._formatPower();
+    const health = entry.integration_health;
+    const healthHidden = !health || health.status === 'healthy';
+    return html`
+      <div class="scope-name">${entry.name}</div>
+      <div class="savings">${savingsText}</div>
+      <div
+        class="power-row"
+        ?hidden=${powerText === null}
+      >
+        <span class="power-label">Home power</span>
+        <span class="power-value">${powerText ?? ''}</span>
+      </div>
+      <div
+        class="health-badge"
+        data-status=${health?.status ?? 'healthy'}
+        ?hidden=${healthHidden}
+      >
+        ${this._healthLabel(health)}
+      </div>
+      <div class="error" ?hidden=${this._error === null}>${this._error ?? ''}</div>
+    `;
   }
 
   private _nextRun(): { name: string; hhmm: string } | null {
@@ -233,6 +328,11 @@ export class HmSavingsCard extends LitElement {
           Sign in from the Hungry Machines panel to see your savings.
         </div>
       `;
+    }
+
+    const scoped = this._resolveAppliance();
+    if (scoped) {
+      return this._renderScoped(scoped);
     }
 
     const avg = this._averageSavings();

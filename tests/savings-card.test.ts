@@ -207,6 +207,108 @@ describe('hm-savings-card', () => {
     expect(el.getCardSize()).toBe(2);
   });
 
+  it('US-MHVAC-018: scoped by appliance_id renders that one appliance\'s savings (not the average)', async () => {
+    installFetchStub({
+      date: '2025-11-18',
+      appliances: [
+        { ...HVAC_APPLIANCE, appliance_id: 'hvac-living', name: 'Living', savings_pct: 12 },
+        { ...HVAC_APPLIANCE, appliance_id: 'hvac-bedroom', name: 'Bedroom', savings_pct: 34 },
+      ],
+    });
+    const el = mountCard();
+    el.setConfig({
+      type: 'custom:hm-savings-card',
+      appliance_id: 'hvac-bedroom',
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(root.querySelector('.scope-name')!.textContent?.trim()).toBe('Bedroom');
+    expect(root.querySelector('.savings')!.textContent).toMatch(/34%/);
+    // Scoped mode suppresses the "next scheduled run" line — that's a
+    // whole-home metric, not a per-HVAC one.
+    expect(root.querySelector('.next-label')).toBeNull();
+    expect(root.querySelector('.next-value')).toBeNull();
+  });
+
+  it('US-MHVAC-018: scoped card shows integration_health verdict (frozen_sensor)', async () => {
+    installFetchStub({
+      date: '2025-11-18',
+      appliances: [
+        {
+          ...HVAC_APPLIANCE,
+          appliance_id: 'hvac-1',
+          name: 'Bedroom',
+          integration_health: {
+            status: 'frozen_sensor',
+            message: 'Indoor sensor reading has not changed in 6 hours.',
+            sample_count: 60,
+            lookback_hours: 6,
+          },
+        },
+      ],
+    });
+    const el = mountCard();
+    el.setConfig({
+      type: 'custom:hm-savings-card',
+      appliance_id: 'hvac-1',
+    });
+    await flush(el);
+
+    const badge = el.shadowRoot!.querySelector(
+      '.health-badge',
+    ) as HTMLElement | null;
+    expect(badge).not.toBeNull();
+    expect(badge!.hasAttribute('hidden')).toBe(false);
+    expect(badge!.getAttribute('data-status')).toBe('frozen_sensor');
+    expect(badge!.textContent).toContain('not changed');
+  });
+
+  it('US-MHVAC-018: scoped card hides health badge when status is healthy', async () => {
+    installFetchStub({
+      date: '2025-11-18',
+      appliances: [
+        {
+          ...HVAC_APPLIANCE,
+          appliance_id: 'hvac-1',
+          integration_health: { status: 'healthy', message: 'OK' },
+        },
+      ],
+    });
+    const el = mountCard();
+    el.setConfig({
+      type: 'custom:hm-savings-card',
+      appliance_id: 'hvac-1',
+    });
+    await flush(el);
+
+    const badge = el.shadowRoot!.querySelector(
+      '.health-badge',
+    ) as HTMLElement | null;
+    expect(badge).not.toBeNull();
+    expect(badge!.hasAttribute('hidden')).toBe(true);
+  });
+
+  it('US-MHVAC-018: without appliance_id, two-HVAC user still gets the whole-home average', async () => {
+    installFetchStub({
+      date: '2025-11-18',
+      appliances: [
+        { ...HVAC_APPLIANCE, appliance_id: 'hvac-a', savings_pct: 10 },
+        { ...HVAC_APPLIANCE, appliance_id: 'hvac-b', savings_pct: 30 },
+        EV_APPLIANCE,
+      ],
+    });
+    const el = mountCard();
+    el.setConfig({ type: 'custom:hm-savings-card' });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    // (10 + 30 + 32) / 3 = 24
+    expect(root.querySelector('.savings')!.textContent).toMatch(/24%/);
+    // Whole-home mode preserves the next-run line.
+    expect(root.querySelector('.next-value')).not.toBeNull();
+  });
+
   it('renders "No upcoming runs." when no non-HVAC schedule has a true interval', async () => {
     installFetchStub({
       date: '2025-11-18',

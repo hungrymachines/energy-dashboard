@@ -24,19 +24,27 @@ const SAMPLE_USER = {
         weather_entity_id: '',
 };
 
-const HVAC_SCHEDULE_RESPONSE = {
-  date: '2025-11-18',
-  schedule: {
-    intervals: Array.from({ length: 48 }, (_, i) => i),
-    high_temps: Array<number>(48).fill(74),
-    low_temps: Array<number>(48).fill(70),
-  },
-  mode: 'cool',
-  estimated_savings_pct: 18.5,
-  model_confidence: 0.3,
-  generated_at: '2025-11-18T04:15:00+00:00',
-  source: 'optimization',
-};
+function makeHvacAppliance(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    appliance_id: 'hvac-1',
+    appliance_type: 'hvac',
+    name: 'Thermostat',
+    schedule: {
+      intervals: Array.from({ length: 48 }, (_, i) => i),
+      high_temps: Array<number>(48).fill(74),
+      low_temps: Array<number>(48).fill(70),
+      mode: 'cool',
+    },
+    savings_pct: 18.5,
+    source: 'optimization',
+    optimization_enabled: true,
+    ...overrides,
+  };
+}
+
+function makeSchedules(appliances: Record<string, unknown>[]): Record<string, unknown> {
+  return { date: '2025-11-18', appliances };
+}
 
 const PREFERENCES_RESPONSE = {
   base_temperature: 72,
@@ -73,7 +81,9 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 type FetchCall = { url: string; init: RequestInit | undefined };
 
-function installFetchStub(): FetchCall[] {
+function installFetchStub(
+  schedules: Record<string, unknown> = makeSchedules([makeHvacAppliance()]),
+): FetchCall[] {
   const calls: FetchCall[] = [];
   vi.stubGlobal(
     'fetch',
@@ -85,7 +95,7 @@ function installFetchStub(): FetchCall[] {
             ? input.toString()
             : input.url;
       calls.push({ url, init });
-      if (url.endsWith('/api/v1/schedule')) return jsonResponse(HVAC_SCHEDULE_RESPONSE);
+      if (url.endsWith('/api/v1/schedules')) return jsonResponse(schedules);
       if (url.endsWith('/api/v1/preferences')) return jsonResponse(PREFERENCES_RESPONSE);
       if (url.endsWith('/api/v1/rates')) return jsonResponse(RATES_RESPONSE);
       return new Response('{}', {
@@ -353,6 +363,194 @@ describe('hm-thermostat-card', () => {
     expect(mode!.getAttribute('data-mode')).toBe('cool');
     // Savings line uses the same wording as the panel card.
     expect(root.querySelector('.savings')!.textContent).toContain('savings today');
+  });
+
+  it('US-MHVAC-018: selects the configured HVAC by appliance_id when the user has multiple', async () => {
+    installFetchStub(
+      makeSchedules([
+        makeHvacAppliance({
+          appliance_id: 'hvac-living',
+          name: 'Living Room AC',
+          savings_pct: 12,
+          schedule: {
+            intervals: Array.from({ length: 48 }, (_, i) => i),
+            high_temps: Array<number>(48).fill(76),
+            low_temps: Array<number>(48).fill(72),
+            mode: 'cool',
+          },
+        }),
+        makeHvacAppliance({
+          appliance_id: 'hvac-bedroom',
+          name: 'Bedroom Mini-Split',
+          savings_pct: 28,
+          schedule: {
+            intervals: Array.from({ length: 48 }, (_, i) => i),
+            high_temps: Array<number>(48).fill(70),
+            low_temps: Array<number>(48).fill(66),
+            mode: 'cool',
+          },
+        }),
+      ]),
+    );
+    const el = mountCard({
+      hass: {
+        states: {
+          'sensor.living_room_temp': {
+            entity_id: 'sensor.living_room_temp',
+            state: '72',
+          },
+        },
+      },
+    });
+    el.setConfig({
+      type: 'custom:hm-thermostat-card',
+      appliance_id: 'hvac-bedroom',
+      entities: { indoor_temp: 'sensor.living_room_temp' },
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    // The card picked the bedroom unit by id, not the first HVAC.
+    expect(root.querySelector('.card-head .name')!.textContent?.trim()).toBe(
+      'Bedroom Mini-Split',
+    );
+    expect(root.querySelector('.savings')!.textContent).toContain('28%');
+    expect(root.querySelector('.multi-hvac-stub')).toBeNull();
+  });
+
+  it('US-MHVAC-018: back-compat — single HVAC with no appliance_id auto-resolves', async () => {
+    installFetchStub(
+      makeSchedules([
+        makeHvacAppliance({
+          appliance_id: 'hvac-only',
+          name: 'Whole Home AC',
+          savings_pct: 22,
+        }),
+      ]),
+    );
+    const el = mountCard({
+      hass: {
+        states: {
+          'sensor.living_room_temp': {
+            entity_id: 'sensor.living_room_temp',
+            state: '72',
+          },
+        },
+      },
+    });
+    el.setConfig({
+      type: 'custom:hm-thermostat-card',
+      entities: { indoor_temp: 'sensor.living_room_temp' },
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(root.querySelector('.card-head .name')!.textContent?.trim()).toBe(
+      'Whole Home AC',
+    );
+    expect(root.querySelector('.savings')!.textContent).toContain('22%');
+    expect(root.querySelector('.multi-hvac-stub')).toBeNull();
+  });
+
+  it('US-MHVAC-018: multi-HVAC with no appliance_id renders a configuration stub', async () => {
+    installFetchStub(
+      makeSchedules([
+        makeHvacAppliance({ appliance_id: 'hvac-a', name: 'A' }),
+        makeHvacAppliance({ appliance_id: 'hvac-b', name: 'B' }),
+      ]),
+    );
+    const el = mountCard({
+      hass: {
+        states: {
+          'sensor.living_room_temp': {
+            entity_id: 'sensor.living_room_temp',
+            state: '72',
+          },
+        },
+      },
+    });
+    el.setConfig({
+      type: 'custom:hm-thermostat-card',
+      entities: { indoor_temp: 'sensor.living_room_temp' },
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const stub = root.querySelector('.multi-hvac-stub');
+    expect(stub).not.toBeNull();
+    expect(stub!.textContent).toContain('appliance_id');
+  });
+
+  it('US-MHVAC-018: shows integration_health badge for non-healthy verdicts (frozen_sensor)', async () => {
+    installFetchStub(
+      makeSchedules([
+        makeHvacAppliance({
+          integration_health: {
+            status: 'frozen_sensor',
+            message: 'Indoor temperature has not changed in 6 hours.',
+            sample_count: 60,
+            lookback_hours: 6,
+          },
+        }),
+      ]),
+    );
+    const el = mountCard({
+      hass: {
+        states: {
+          'sensor.living_room_temp': {
+            entity_id: 'sensor.living_room_temp',
+            state: '72',
+          },
+        },
+      },
+    });
+    el.setConfig({
+      type: 'custom:hm-thermostat-card',
+      entities: { indoor_temp: 'sensor.living_room_temp' },
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const badge = root.querySelector('.health-badge') as HTMLElement | null;
+    expect(badge).not.toBeNull();
+    // Visible (no hidden attribute) because status != 'healthy'.
+    expect(badge!.hasAttribute('hidden')).toBe(false);
+    expect(badge!.getAttribute('data-status')).toBe('frozen_sensor');
+    expect(badge!.textContent).toContain('Indoor temperature has not changed');
+  });
+
+  it('US-MHVAC-018: hides integration_health badge when status is healthy', async () => {
+    installFetchStub(
+      makeSchedules([
+        makeHvacAppliance({
+          integration_health: {
+            status: 'healthy',
+            message: 'OK',
+          },
+        }),
+      ]),
+    );
+    const el = mountCard({
+      hass: {
+        states: {
+          'sensor.living_room_temp': {
+            entity_id: 'sensor.living_room_temp',
+            state: '72',
+          },
+        },
+      },
+    });
+    el.setConfig({
+      type: 'custom:hm-thermostat-card',
+      entities: { indoor_temp: 'sensor.living_room_temp' },
+    });
+    await flush(el);
+
+    const badge = el.shadowRoot!.querySelector(
+      '.health-badge',
+    ) as HTMLElement | null;
+    expect(badge).not.toBeNull();
+    expect(badge!.hasAttribute('hidden')).toBe(true);
   });
 
   it('renders <hm-optimization-chart> with HVAC-range props (40–100°F)', async () => {

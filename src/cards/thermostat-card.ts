@@ -1,6 +1,11 @@
 import { LitElement, html, css, type TemplateResult } from 'lit';
 import { authStore, type AuthState } from '../store.js';
-import { getHvacSchedule, type HvacScheduleResponse } from '../api/schedules.js';
+import {
+  getAllSchedules,
+  type ApplianceScheduleEntry,
+  type InlineIntegrationHealth,
+  type SchedulesResponse,
+} from '../api/schedules.js';
 import {
   get as getPreferences,
   update as updatePreferences,
@@ -10,6 +15,12 @@ import { get as getRates, type RatesResponse } from '../api/rates.js';
 
 export interface HmThermostatCardConfig {
   type?: string;
+  /**
+   * UUID of the HVAC appliance this card represents. Required when the
+   * user has more than one HVAC registered; with exactly one HVAC the
+   * card resolves to it automatically (US-MHVAC-018 back-compat).
+   */
+  appliance_id?: string;
   entities?: {
     indoor_temp?: string;
     outdoor_temp?: string;
@@ -164,6 +175,41 @@ export class HmThermostatCard extends LitElement {
       background: rgba(220, 38, 38, 0.06);
       border-radius: 8px;
     }
+    /* Per-appliance integration-health badge inlined from /schedules
+       (US-MHVAC-014). Hidden when status is 'healthy' or missing so a
+       working card stays clean; muted-red chip for any non-healthy
+       verdict. */
+    .health-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      background: rgba(220, 38, 38, 0.08);
+      color: var(--hm-error, #DC2626);
+      align-self: flex-start;
+    }
+    .health-badge[hidden] {
+      display: none;
+    }
+    .health-badge[data-status='stale_data'] {
+      background: rgba(245, 158, 11, 0.12);
+      color: var(--hm-accent, #B45309);
+    }
+    .multi-hvac-stub {
+      padding: 12px;
+      border-radius: 8px;
+      background: rgba(245, 158, 11, 0.08);
+      color: var(--hm-accent, #B45309);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .multi-hvac-stub code {
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+    }
     .slider-row {
       display: flex;
       align-items: center;
@@ -191,7 +237,7 @@ export class HmThermostatCard extends LitElement {
   static override properties = {
     hass: { attribute: false },
     _auth: { state: true },
-    _schedule: { state: true },
+    _schedules: { state: true },
     _rates: { state: true },
     _scheduleError: { state: true },
     _savingsLevel: { state: true },
@@ -199,7 +245,7 @@ export class HmThermostatCard extends LitElement {
 
   hass: HassLike | undefined = undefined;
   _auth: AuthState = authStore.state;
-  _schedule: HvacScheduleResponse | null = null;
+  _schedules: SchedulesResponse | null = null;
   _rates: RatesResponse | null = null;
   _scheduleError: string | null = null;
   _savingsLevel = 3;
@@ -229,7 +275,7 @@ export class HmThermostatCard extends LitElement {
         void this._loadIfAuthed();
       } else if (s.status !== 'authed') {
         this._scheduleFetchedAt = 0;
-        this._schedule = null;
+        this._schedules = null;
       }
     });
     void authStore.hydrate();
@@ -257,12 +303,12 @@ export class HmThermostatCard extends LitElement {
     this._scheduleFetchedAt = now;
     this._scheduleError = null;
     try {
-      const [schedule, preferences, rates] = await Promise.all([
-        getHvacSchedule(),
+      const [schedules, preferences, rates] = await Promise.all([
+        getAllSchedules(),
         getPreferences().catch(() => null as Preferences | null),
         getRates().catch(() => null as RatesResponse | null),
       ]);
-      this._schedule = schedule;
+      this._schedules = schedules;
       this._rates = rates;
       if (preferences && typeof preferences.savings_level === 'number') {
         this._savingsLevel = this._clampLevel(preferences.savings_level);
@@ -274,6 +320,34 @@ export class HmThermostatCard extends LitElement {
           : 'Could not load schedule';
       this._scheduleFetchedAt = 0;
     }
+  }
+
+  /**
+   * Resolve which HVAC appliance this card targets:
+   *   - `appliance_id` in card config → match by id
+   *   - exactly one HVAC, no id → back-compat resolve to that one
+   *   - 2+ HVACs, no id → null (caller renders a "configure appliance_id"
+   *     stub so we don't silently show the wrong room)
+   *   - zero HVACs → null
+   */
+  private _resolveAppliance(): ApplianceScheduleEntry | null {
+    const appliances = this._schedules?.appliances;
+    if (!Array.isArray(appliances) || appliances.length === 0) return null;
+    const hvacs = appliances.filter((a) => a.appliance_type === 'hvac');
+    if (hvacs.length === 0) return null;
+    const configuredId = this._config.appliance_id;
+    if (configuredId) {
+      return hvacs.find((a) => a.appliance_id === configuredId) ?? null;
+    }
+    if (hvacs.length === 1) return hvacs[0];
+    return null;
+  }
+
+  private _isMultiHvacUnresolved(): boolean {
+    const appliances = this._schedules?.appliances;
+    if (!Array.isArray(appliances)) return false;
+    const hvacs = appliances.filter((a) => a.appliance_type === 'hvac');
+    return hvacs.length >= 2 && !this._config.appliance_id;
   }
 
   private _clampLevel(n: number): number {
@@ -335,14 +409,19 @@ export class HmThermostatCard extends LitElement {
     const indoorRaw = this._readEntityState(entities.indoor_temp);
     const outdoorRaw = this._readEntityState(entities.outdoor_temp);
     const indoorConfigured = !!entities.indoor_temp;
-    const mode = (this._schedule?.mode ?? '').toLowerCase() || 'auto';
+
+    const entry = this._resolveAppliance();
+    const multiHvacUnresolved = this._isMultiHvacUnresolved();
+    const sched = (entry?.schedule ?? {}) as Record<string, unknown>;
+    const modeRaw = sched['mode'];
+    const mode =
+      (typeof modeRaw === 'string' ? modeRaw : '').toLowerCase() || 'auto';
 
     const ratesArr = this._rates?.rates_cents_per_kwh;
     const rates: number[] =
       Array.isArray(ratesArr) && ratesArr.length === 48
         ? ratesArr
         : new Array(48).fill(0);
-    const sched = (this._schedule?.schedule ?? {}) as Record<string, unknown>;
     const highLimits = this._asNumberArray(sched['high_temps']);
     const lowLimits = this._asNumberArray(sched['low_temps']);
     // Prefer the backend's clamped per-interval setpoints. Falls back to
@@ -351,19 +430,37 @@ export class HmThermostatCard extends LitElement {
       this._asNumberArray(sched['setpoint_temps']) ??
       this._asNumberArray(sched['temp_trajectory']);
 
-    const savingsPct = this._schedule?.estimated_savings_pct;
+    const savingsPct = entry?.savings_pct;
     const savingsText =
       typeof savingsPct === 'number'
         ? `${Math.round(savingsPct)}% savings today`
         : '';
 
+    const name = entry?.name ?? 'Thermostat';
+    const health = entry?.integration_health;
+    const healthHidden = !health || health.status === 'healthy';
+
     return html`
       <div class="card" data-appliance-type="hvac">
         <div class="card-head">
           <span class="badge" aria-hidden="true">HVAC</span>
-          <span class="name">Thermostat</span>
+          <span class="name">${name}</span>
           <span class="mode-badge" data-mode=${mode}>${mode}</span>
         </div>
+        <div
+          class="health-badge"
+          data-status=${health?.status ?? 'healthy'}
+          ?hidden=${healthHidden}
+        >
+          ${this._healthLabel(health)}
+        </div>
+        ${multiHvacUnresolved
+          ? html`<div class="multi-hvac-stub">
+              You have multiple HVAC appliances. Add
+              <code>appliance_id</code> to this card's config to pick
+              which one it controls.
+            </div>`
+          : null}
         <div class="metrics">
           <div class="indoor-wrap">
             ${indoorConfigured
@@ -410,6 +507,21 @@ export class HmThermostatCard extends LitElement {
         </div>
       </div>
     `;
+  }
+
+  private _healthLabel(health: InlineIntegrationHealth | undefined): string {
+    if (!health) return '';
+    if (health.message) return health.message;
+    switch (health.status) {
+      case 'stale_data':
+        return 'Sensor data is stale.';
+      case 'frozen_sensor':
+        return 'Indoor sensor appears stuck.';
+      case 'no_data':
+        return 'No recent sensor data.';
+      default:
+        return '';
+    }
   }
 
   /**
