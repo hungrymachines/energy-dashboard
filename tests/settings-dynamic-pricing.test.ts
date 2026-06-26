@@ -48,12 +48,8 @@ function ratesResponse(overrides: Record<string, unknown> = {}): unknown {
     source: 'zone',
     hourly_rates_cents_per_kwh: null,
     pricing_source: 'zone',
-    pjm_pnode_id: null,
     dynamic_zone: null,
     pricing_adder_cents_per_kwh: null,
-    available_pjm_nodes: [
-      { slug: 'comed', label: 'ComEd (Northern Illinois)' },
-    ],
     available_dynamic_zones: [
       { slug: 'comed', iso: 'PJM', label: 'ComEd (Northern Illinois)' },
       { slug: 'sdge', iso: 'CAISO', label: 'SDG&E (San Diego, CAISO SP15)' },

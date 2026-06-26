@@ -1,7 +1,5 @@
 import { apiFetch } from './client.js';
 
-export type PjmNodeOption = { slug: string; label: string };
-
 export type DynamicZoneOption = { slug: string; iso: string; label: string };
 
 export type PricingZoneOption = {
@@ -22,10 +20,8 @@ export interface RatesResponse {
   source: 'custom' | 'zone' | 'dynamic';
   hourly_rates_cents_per_kwh: number[] | null;
   pricing_source: 'zone' | 'custom' | 'dynamic';
-  pjm_pnode_id: string | null;
   dynamic_zone: string | null;
   pricing_adder_cents_per_kwh: number | null;
-  available_pjm_nodes: PjmNodeOption[];
   available_dynamic_zones: DynamicZoneOption[];
   available_pricing_zones: PricingZoneOption[];
 }
@@ -33,7 +29,6 @@ export interface RatesResponse {
 export interface UpdateRatesBody {
   hourly_rates_cents_per_kwh?: number[] | null;
   pricing_source?: 'zone' | 'custom' | 'dynamic';
-  pjm_node?: string | null;
   dynamic_zone?: string | null;
   pricing_adder_cents_per_kwh?: number | null;
 }
