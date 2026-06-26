@@ -1295,18 +1295,16 @@ export class HungryMachinesPanel extends LitElement {
   }
 
   private _isDirty(): boolean {
-    const currentZone = this._auth.user?.pricing_location ?? 1;
-    if (this._zoneDraft !== currentZone) return true;
+    // Weather-only now — the pricing zone moved into the unified Pricing
+    // source section (saved via _savePricingSource).
     const currentWeather = this._auth.user?.weather_entity_id ?? '';
     return this._weatherEntityDraft !== currentWeather;
   }
 
   private async _onSave(): Promise<void> {
     if (!this._isDirty()) return;
-    const currentZone = this._auth.user?.pricing_location ?? 1;
     const currentWeather = this._auth.user?.weather_entity_id ?? '';
-    const patch: { pricing_location?: number; weather_entity_id?: string } = {};
-    if (this._zoneDraft !== currentZone) patch.pricing_location = this._zoneDraft;
+    const patch: { weather_entity_id?: string } = {};
     if (this._weatherEntityDraft !== currentWeather)
       patch.weather_entity_id = this._weatherEntityDraft;
 
@@ -1315,7 +1313,6 @@ export class HungryMachinesPanel extends LitElement {
     try {
       const updated = await patchMe(patch);
       authStore.patchUser({
-        pricing_location: updated.pricing_location,
         weather_entity_id: updated.weather_entity_id,
       });
     } catch (err) {
@@ -1334,7 +1331,6 @@ export class HungryMachinesPanel extends LitElement {
   }
 
   private _onReset(): void {
-    this._zoneDraft = this._auth.user?.pricing_location ?? 1;
     this._weatherEntityDraft = this._auth.user?.weather_entity_id ?? '';
   }
 
@@ -1462,14 +1458,27 @@ export class HungryMachinesPanel extends LitElement {
       this._dynamicZoneDraft = '';
     }
     const adder = rates.pricing_adder_cents_per_kwh;
+    // Pre-populate the flat adder with the 8 c/kWh default (matches the
+    // backend DYNAMIC_ADDER_CENTS_DEFAULT) when the user hasn't set one,
+    // so the field is never blank — they can change it only if they wish.
     this._pricingAdderDraft =
-      typeof adder === 'number' && Number.isFinite(adder) ? String(adder) : '';
+      typeof adder === 'number' && Number.isFinite(adder) ? String(adder) : '8';
+    // Zone draft tracks the catalog id; keep it in sync with the loaded
+    // rates so Reset returns to the stored zone.
+    if (typeof rates.pricing_location === 'number') {
+      this._zoneDraft = rates.pricing_location;
+    }
     this._pricingDraftsInitialized = true;
   }
 
   private _onPricingSourceChange(value: string): void {
     if (value === 'zone' || value === 'custom' || value === 'dynamic') {
       this._pricingSourceDraft = value;
+      // Switching to dynamic with a blank adder pre-fills the 8 c/kWh
+      // default so the user sees a sensible starting value.
+      if (value === 'dynamic' && this._pricingAdderDraft.trim() === '') {
+        this._pricingAdderDraft = '8';
+      }
       this._pricingError = null;
     }
   }
@@ -1489,6 +1498,10 @@ export class HungryMachinesPanel extends LitElement {
     if (!rates) return false;
     const storedSource = rates.pricing_source ?? 'zone';
     if (this._pricingSourceDraft !== storedSource) return true;
+    // Zone source: the static-catalog zone picker is dirty when changed.
+    if (this._pricingSourceDraft === 'zone') {
+      return this._zoneDraft !== (rates.pricing_location ?? 1);
+    }
     if (this._pricingSourceDraft !== 'dynamic') return false;
     const storedZone = rates.dynamic_zone ?? '';
     if (this._dynamicZoneDraft !== storedZone) return true;
@@ -1509,10 +1522,13 @@ export class HungryMachinesPanel extends LitElement {
     const draft = this._pricingSourceDraft;
     const body: {
       pricing_source: 'zone' | 'custom' | 'dynamic';
+      pricing_location?: number;
       dynamic_zone?: string | null;
       pricing_adder_cents_per_kwh?: number | null;
     } = { pricing_source: draft };
-    if (draft === 'dynamic') {
+    if (draft === 'zone') {
+      body.pricing_location = this._zoneDraft;
+    } else if (draft === 'dynamic') {
       const zone = this._dynamicZoneDraft.trim();
       if (!zone) {
         this._pricingError = 'Choose a pricing region before saving.';
@@ -1536,6 +1552,9 @@ export class HungryMachinesPanel extends LitElement {
     try {
       const fresh = await updateRates(body);
       this._rates = fresh;
+      // The dashboard reads the zone from auth.user.pricing_location; keep
+      // it in sync so a zone change here reflects everywhere immediately.
+      authStore.patchUser({ pricing_location: fresh.pricing_location });
       this._initPricingDraftsFromRates(fresh);
       this._pricingSavedFlash = true;
       if (this._pricingSavedFlashTimer !== null) {
@@ -2505,31 +2524,6 @@ export class HungryMachinesPanel extends LitElement {
             : null}
         </div>
 
-        <div class="settings-section">
-          <h3>Pricing zone</h3>
-          <p class="hint">Your time-of-use pricing zone (exact names coming soon).</p>
-          <label>
-            <span class="label-text">Zone</span>
-            <select
-              name="pricing_zone"
-              ?disabled=${this._zoneSaving}
-              .value=${String(pricing)}
-              @change=${(e: Event) =>
-                this._onZoneChange(Number((e.target as HTMLSelectElement).value))}
-            >
-              ${zoneOptionIds.map(
-                (z) => html`<option value=${String(z)} ?selected=${z === pricing}>
-                  ${pricingZoneOptionLabel(z, availableZones)}
-                </option>`,
-              )}
-            </select>
-          </label>
-          <p class="zone-hint">${pricingZoneFullLabel(pricing, availableZones)}</p>
-          ${this._zoneError
-            ? html`<p class="zone-error" role="alert">${this._zoneError}</p>`
-            : null}
-        </div>
-
         <div class="settings-actions">
           <button
             type="button"
@@ -2549,6 +2543,9 @@ export class HungryMachinesPanel extends LitElement {
           </button>
           ${this._savedFlash
             ? html`<span class="saved-flash" role="status">Saved</span>`
+            : null}
+          ${this._zoneError
+            ? html`<span class="zone-error" role="alert">${this._zoneError}</span>`
             : null}
         </div>
 
@@ -2573,7 +2570,30 @@ export class HungryMachinesPanel extends LitElement {
               </option>
             </select>
           </label>
-          <div class="dynamic-fields" ?hidden=${!dynamicActive}>
+          <div class="zone-fields" ?hidden=${pricingSourceDraft !== 'zone'}>
+            <p class="hint">
+              Your utility's published time-of-use plan. Prices are fixed by
+              the tariff and don't change day to day.
+            </p>
+            <label>
+              <span class="label-text">Zone</span>
+              <select
+                name="pricing_zone"
+                ?disabled=${pricingSaving}
+                .value=${String(pricing)}
+                @change=${(e: Event) =>
+                  this._onZoneChange(Number((e.target as HTMLSelectElement).value))}
+              >
+                ${zoneOptionIds.map(
+                  (z) => html`<option value=${String(z)} ?selected=${z === pricing}>
+                    ${pricingZoneOptionLabel(z, availableZones)}
+                  </option>`,
+                )}
+              </select>
+            </label>
+            <p class="zone-hint">${pricingZoneFullLabel(pricing, availableZones)}</p>
+          </div>
+          <div class="dynamic-fields" ?hidden=${pricingSourceDraft !== 'dynamic'}>
             <p class="hint">
               Dynamic prices update daily from the wholesale day-ahead market
               (PJM, CAISO, or NYISO depending on your region). Your flat adder
@@ -2616,6 +2636,118 @@ export class HungryMachinesPanel extends LitElement {
               />
             </label>
           </div>
+          <div class="custom-fields" ?hidden=${pricingSourceDraft !== 'custom'}>
+            <p class="hint">
+              Enter your own 24-hour rate profile — useful when your plan isn't
+              in the list. Values are in dollars per kWh.
+            </p>
+            ${rates
+              ? html`
+                  <div class="rates-actions">
+                    <button
+                      type="button"
+                      name="toggle_custom_rates"
+                      @click=${() =>
+                        editorOpen
+                          ? this._closeCustomRatesEditor()
+                          : this._openCustomRatesEditor()}
+                    >
+                      ${editorOpen ? 'Close' : toggleLabel}
+                    </button>
+                  </div>
+                `
+              : null}
+            ${editorOpen
+              ? html`
+                  <div class="rates-editor">
+                    <p class="rates-helper">
+                      Rates in dollars per kWh (e.g. 0.36 = 36 cents/kWh).
+                    </p>
+                    ${ratesSource === 'zone'
+                      ? html`
+                          <div class="rates-actions">
+                            <button
+                              type="button"
+                              name="import_from_zone"
+                              @click=${() => this._importFromZone()}
+                            >
+                              Import from Zone ${zoneForImport}
+                            </button>
+                          </div>
+                        `
+                      : null}
+                    <table class="rates-table">
+                      <thead>
+                        <tr>
+                          <th>Hour</th>
+                          <th>$/kWh</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${inputs.map((val, i) => {
+                          const err = rowErrors[i];
+                          const hourLabel = `${String(i).padStart(2, '0')}:00`;
+                          return html`
+                            <tr data-row=${i}>
+                              <td>${hourLabel}</td>
+                              <td>
+                                <input
+                                  type="number"
+                                  step="0.001"
+                                  min="0"
+                                  max="2"
+                                  name=${`rate_${i}`}
+                                  data-hour=${i}
+                                  .value=${val}
+                                  class=${err ? 'invalid' : ''}
+                                  @input=${(e: Event) =>
+                                    this._onCustomRateInput(
+                                      i,
+                                      (e.target as HTMLInputElement).value,
+                                    )}
+                                />
+                                ${err
+                                  ? html`<div class="row-error">${err}</div>`
+                                  : ''}
+                              </td>
+                            </tr>
+                          `;
+                        })}
+                      </tbody>
+                    </table>
+                    ${saveError
+                      ? html`<p class="rates-api-error" role="alert">
+                          ${saveError}
+                        </p>`
+                      : ''}
+                    <div class="rates-actions">
+                      <button
+                        type="button"
+                        name="save_rates"
+                        class="primary"
+                        ?disabled=${hasRowError || saving}
+                        @click=${() => void this._saveCustomRates()}
+                      >
+                        Save
+                      </button>
+                      ${rates && hasCustomRates(rates)
+                        ? html`
+                            <button
+                              type="button"
+                              name="clear_override"
+                              ?disabled=${saving}
+                              @click=${() =>
+                                void this._clearCustomRatesOverride()}
+                            >
+                              Clear override
+                            </button>
+                          `
+                        : ''}
+                    </div>
+                  </div>
+                `
+              : null}
+          </div>
           <p
             class="rates-api-error"
             role="alert"
@@ -2645,121 +2777,6 @@ export class HungryMachinesPanel extends LitElement {
               Saved
             </span>
           </div>
-        </div>
-
-        <div
-          class="settings-section"
-          data-section="custom-rates"
-          ?hidden=${dynamicActive}
-        >
-          <h3>Custom electricity rates</h3>
-          <p class="rates-summary">${summaryText}</p>
-          ${rates
-            ? html`
-                <div class="rates-actions">
-                  <button
-                    type="button"
-                    name="toggle_custom_rates"
-                    @click=${() =>
-                      editorOpen
-                        ? this._closeCustomRatesEditor()
-                        : this._openCustomRatesEditor()}
-                  >
-                    ${editorOpen ? 'Close' : toggleLabel}
-                  </button>
-                </div>
-              `
-            : null}
-          ${editorOpen
-            ? html`
-                <div class="rates-editor">
-                  <p class="rates-helper">
-                    Rates in dollars per kWh (e.g. 0.36 = 36 cents/kWh).
-                  </p>
-                  ${ratesSource === 'zone'
-                    ? html`
-                        <div class="rates-actions">
-                          <button
-                            type="button"
-                            name="import_from_zone"
-                            @click=${() => this._importFromZone()}
-                          >
-                            Import from Zone ${zoneForImport}
-                          </button>
-                        </div>
-                      `
-                    : null}
-                  <table class="rates-table">
-                    <thead>
-                      <tr>
-                        <th>Hour</th>
-                        <th>$/kWh</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${inputs.map((val, i) => {
-                        const err = rowErrors[i];
-                        const hourLabel = `${String(i).padStart(2, '0')}:00`;
-                        return html`
-                          <tr data-row=${i}>
-                            <td>${hourLabel}</td>
-                            <td>
-                              <input
-                                type="number"
-                                step="0.001"
-                                min="0"
-                                max="2"
-                                name=${`rate_${i}`}
-                                data-hour=${i}
-                                .value=${val}
-                                class=${err ? 'invalid' : ''}
-                                @input=${(e: Event) =>
-                                  this._onCustomRateInput(
-                                    i,
-                                    (e.target as HTMLInputElement).value,
-                                  )}
-                              />
-                              ${err
-                                ? html`<div class="row-error">${err}</div>`
-                                : ''}
-                            </td>
-                          </tr>
-                        `;
-                      })}
-                    </tbody>
-                  </table>
-                  ${saveError
-                    ? html`<p class="rates-api-error" role="alert">
-                        ${saveError}
-                      </p>`
-                    : ''}
-                  <div class="rates-actions">
-                    <button
-                      type="button"
-                      name="save_rates"
-                      class="primary"
-                      ?disabled=${hasRowError || saving}
-                      @click=${() => void this._saveCustomRates()}
-                    >
-                      Save
-                    </button>
-                    ${rates && hasCustomRates(rates)
-                      ? html`
-                          <button
-                            type="button"
-                            name="clear_override"
-                            ?disabled=${saving}
-                            @click=${() =>
-                              void this._clearCustomRatesOverride()}
-                          >
-                            Clear override
-                          </button>
-                        `
-                      : ''}
-                  </div>
-                </div>
-              `
-            : null}
         </div>
 
         <div class="settings-section" data-section="feedback">
