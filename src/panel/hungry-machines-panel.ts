@@ -93,6 +93,52 @@ function _saveChartSize(size: ChartSize): void {
   }
 }
 
+// Completed-calibration banners are informational — once the user has
+// seen the measured rates they can dismiss the banner, and we also
+// auto-hide it after CALIBRATION_BANNER_TTL_DAYS so it doesn't linger
+// forever for users who never click. Dismissed run ids persist in
+// localStorage keyed by calibration_runs.id so the choice survives
+// panel reloads and HA restarts.
+const CALIBRATION_DISMISS_STORAGE_KEY = 'hm-panel-dismissed-calibrations';
+const CALIBRATION_BANNER_TTL_DAYS = 14;
+
+function _loadDismissedCalibrations(): Set<number> {
+  try {
+    const raw = globalThis.localStorage?.getItem(CALIBRATION_DISMISS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return new Set(parsed.filter((v): v is number => typeof v === 'number'));
+      }
+    }
+  } catch {
+    // happy-dom + private browsing both throw on localStorage — fall through
+  }
+  return new Set();
+}
+
+function _saveDismissedCalibrations(ids: Set<number>): void {
+  try {
+    globalThis.localStorage?.setItem(
+      CALIBRATION_DISMISS_STORAGE_KEY,
+      JSON.stringify([...ids]),
+    );
+  } catch {
+    // best-effort persistence
+  }
+}
+
+// True once a completed calibration is older than the banner TTL. A
+// null/unparseable timestamp is treated as not-expired so the banner
+// still shows (and stays dismissable).
+function _calibrationExpired(completedAt: string | null): boolean {
+  if (!completedAt) return false;
+  const finished = new Date(completedAt).getTime();
+  if (!Number.isFinite(finished)) return false;
+  const ageMs = Date.now() - finished;
+  return ageMs > CALIBRATION_BANNER_TTL_DAYS * 24 * 60 * 60 * 1000;
+}
+
 /**
  * Synthetic schedule used for the "Not Connected" example cards on the
  * dashboard. Every appliance type the user hasn't registered yet still
@@ -391,6 +437,22 @@ export class HungryMachinesPanel extends LitElement {
     .banner-skip[disabled] {
       opacity: 0.55;
       cursor: not-allowed;
+    }
+    .banner-dismiss {
+      background: transparent;
+      border: none;
+      color: var(--hm-muted, #64748B);
+      font: inherit;
+      font-size: 16px;
+      line-height: 1;
+      padding: 2px 6px;
+      border-radius: 6px;
+      cursor: pointer;
+      align-self: flex-start;
+    }
+    .banner-dismiss:hover {
+      color: var(--hm-text, #0F172A);
+      background: rgba(100, 116, 139, 0.12);
     }
     .diagnostics-section {
       margin-bottom: 16px;
@@ -1049,6 +1111,7 @@ export class HungryMachinesPanel extends LitElement {
     // the dashboard loads and refreshed on appliance-updated events.
     _calibrationByAppliance: { state: true },
     _calibrationSkipping: { state: true },
+    _dismissedCalibrations: { state: true },
     _weatherEntityDraft: { state: true },
     _zoneDraft: { state: true },
     _savedFlash: { state: true },
@@ -1103,6 +1166,9 @@ export class HungryMachinesPanel extends LitElement {
   _deleteError: string | null = null;
   _calibrationByAppliance: Record<string, CalibrationStatusResponse> = {};
   _calibrationSkipping = false;
+  // Run ids of completed-calibration banners the user has dismissed.
+  // Hydrated from localStorage so the dismissal sticks across reloads.
+  _dismissedCalibrations: Set<number> = _loadDismissedCalibrations();
   _weatherEntityDraft = '';
   _zoneDraft = 1;
   _savedFlash = false;
@@ -1283,6 +1349,13 @@ export class HungryMachinesPanel extends LitElement {
     } finally {
       this._calibrationSkipping = false;
     }
+  }
+
+  private _onCalibrationDismiss(runId: number): void {
+    const next = new Set(this._dismissedCalibrations);
+    next.add(runId);
+    this._dismissedCalibrations = next;
+    _saveDismissedCalibrations(next);
   }
 
   private _retrySchedules(): void {
@@ -2114,11 +2187,16 @@ export class HungryMachinesPanel extends LitElement {
 
     // Completed: show a small confirmation with the measured rates.
     if (status.is_complete && status.latest_run?.status === 'completed') {
-      const rates = status.latest_run.derived_rates;
+      const run = status.latest_run;
+      const rates = run.derived_rates;
       if (!rates) return null;
       const low = rates.cooling_effect_cool_low;
       const high = rates.cooling_effect_cool_high;
       if (low === null || high === null) return null;
+      // Hide if the user dismissed this run, or it finished long enough
+      // ago that the confirmation is no longer interesting.
+      if (run.id !== null && this._dismissedCalibrations.has(run.id)) return null;
+      if (_calibrationExpired(run.completed_at)) return null;
       // °F/slot → °F/hr for display.
       const lowHr = (low * 2).toFixed(1);
       const highHr = (high * 2).toFixed(1);
@@ -2131,6 +2209,17 @@ export class HungryMachinesPanel extends LitElement {
               ${highHr} °F/hr on High fan.
             </span>
           </div>
+          ${run.id !== null
+            ? html`<button
+                class="banner-dismiss"
+                type="button"
+                aria-label="Dismiss"
+                title="Dismiss"
+                @click=${() => this._onCalibrationDismiss(run.id as number)}
+              >
+                ✕
+              </button>`
+            : null}
         </div>
       `;
     }
