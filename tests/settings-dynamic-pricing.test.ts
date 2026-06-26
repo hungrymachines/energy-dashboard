@@ -52,9 +52,7 @@ function ratesResponse(overrides: Record<string, unknown> = {}): unknown {
     pricing_adder_cents_per_kwh: null,
     available_dynamic_zones: [
       { slug: 'comed', iso: 'PJM', label: 'ComEd (Northern Illinois)' },
-      { slug: 'sdge', iso: 'CAISO', label: 'SDG&E (San Diego, CAISO SP15)' },
-      { slug: 'pge', iso: 'CAISO', label: 'PG&E (Northern California, CAISO NP15)' },
-      { slug: 'coned', iso: 'NYISO', label: 'ConEd (NYC, NYISO Zone J)' },
+      { slug: 'ameren', iso: 'MISO', label: 'Ameren Illinois (Power Smart Pricing)' },
     ],
     ...overrides,
   };
@@ -221,8 +219,9 @@ describe('settings dynamic pricing (US-DYNPRICE-009)', () => {
     const zoneSelect = section.querySelector<HTMLSelectElement>('select[name="dynamic_zone"]');
     expect(zoneSelect).not.toBeNull();
     const slugs = Array.from(zoneSelect!.options).map((o) => o.value);
-    // The multi-ISO registry surfaces all four zones (US-GS-006).
-    expect(slugs).toEqual(['comed', 'sdge', 'pge', 'coned']);
+    // Only utilities that bill residential customers on daily day-ahead
+    // prices: ComEd (PJM) + Ameren Illinois (MISO).
+    expect(slugs).toEqual(['comed', 'ameren']);
     expect(zoneSelect!.value).toBe('comed');
 
     const adderInput = section.querySelector<HTMLInputElement>(
@@ -302,7 +301,7 @@ describe('settings dynamic pricing (US-DYNPRICE-009)', () => {
     expect(section.textContent).toContain('day-ahead pricing');
   });
 
-  it('selecting a CAISO region (PG&E) and saving sends dynamic_zone=pge', async () => {
+  it('selecting a MISO region (Ameren Illinois) and saving sends dynamic_zone=ameren', async () => {
     const { calls } = installFetchStub((url, init) => {
       if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
       if (url.includes('/api/v1/appliances')) return [];
@@ -335,7 +334,7 @@ describe('settings dynamic pricing (US-DYNPRICE-009)', () => {
     await flush(el);
 
     const zoneSelect = section.querySelector<HTMLSelectElement>('select[name="dynamic_zone"]')!;
-    zoneSelect.value = 'pge';
+    zoneSelect.value = 'ameren';
     zoneSelect.dispatchEvent(new Event('change', { bubbles: true }));
     await flush(el);
 
@@ -350,7 +349,7 @@ describe('settings dynamic pricing (US-DYNPRICE-009)', () => {
       dynamic_zone: string;
     };
     expect(body.pricing_source).toBe('dynamic');
-    expect(body.dynamic_zone).toBe('pge');
+    expect(body.dynamic_zone).toBe('ameren');
   });
 
   it('Save is disabled when no changes have been drafted', async () => {
@@ -423,7 +422,7 @@ describe('settings dynamic pricing (US-DYNPRICE-009)', () => {
         return ratesResponse({
           source: 'dynamic',
           pricing_source: 'dynamic',
-          dynamic_zone: 'sdge',
+          dynamic_zone: 'ameren',
           pricing_adder_cents_per_kwh: 7.25,
         });
       }
@@ -443,7 +442,7 @@ describe('settings dynamic pricing (US-DYNPRICE-009)', () => {
     // ComEd fallback) so the user sees their saved choice on first
     // paint.
     const zoneSelect = section.querySelector<HTMLSelectElement>('select[name="dynamic_zone"]')!;
-    expect(zoneSelect.value).toBe('sdge');
+    expect(zoneSelect.value).toBe('ameren');
 
     const adder = section.querySelector<HTMLInputElement>(
       'input[name="pricing_adder_cents_per_kwh"]',
