@@ -106,11 +106,13 @@ function pricingSection(root: ShadowRoot): HTMLElement {
 }
 
 function customRatesSection(root: ShadowRoot): HTMLElement {
-  const section = root.querySelector<HTMLElement>(
-    '.settings-section[data-section="custom-rates"]',
+  // Custom rates merged into the Pricing source section as a `.custom-fields`
+  // block, hidden unless Source = Custom.
+  const fields = root.querySelector<HTMLElement>(
+    '.settings-section[data-section="pricing-source"] .custom-fields',
   );
-  if (!section) throw new Error('custom-rates section not found');
-  return section;
+  if (!fields) throw new Error('custom-fields block not found');
+  return fields;
 }
 
 interface FetchCall {

@@ -247,7 +247,7 @@ describe('hungry-machines-panel settings (v2.0)', () => {
     expect(authStore.state.user?.weather_entity_id).toBe('weather.home');
   });
 
-  it('Save with both fields dirty sends both in one PATCH', async () => {
+  it('Save persists the weather entity via PATCH (zone moved to Pricing source)', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url =
@@ -275,9 +275,6 @@ describe('hungry-machines-panel settings (v2.0)', () => {
     await flush(el);
 
     const root = el.shadowRoot!;
-    const zone = selectByName(root, 'pricing_zone');
-    zone.value = '5';
-    zone.dispatchEvent(new Event('change', { bubbles: true }));
     const weather = selectByName(root, 'weather_entity_id');
     weather.value = 'weather.met_no';
     weather.dispatchEvent(new Event('change', { bubbles: true }));
@@ -290,8 +287,9 @@ describe('hungry-machines-panel settings (v2.0)', () => {
       (c) => c.url.endsWith('/auth/me') && c.init?.method === 'PATCH',
     );
     expect(patchCall).toBeDefined();
+    // The top Save button now persists only the weather entity — the pricing
+    // zone moved into the unified Pricing source section (saved via PUT /rates).
     expect(JSON.parse(String(patchCall!.init!.body))).toEqual({
-      pricing_location: 5,
       weather_entity_id: 'weather.met_no',
     });
     expect(root.textContent).toContain('Saved');
@@ -357,7 +355,7 @@ describe('hungry-machines-panel settings (v2.0)', () => {
     expect(zone1!.textContent ?? '').toMatch(/SDG.?E.*San Diego/);
 
     const zoneSection = Array.from(root.querySelectorAll('.settings-section')).find((s) =>
-      s.querySelector('h3')?.textContent?.includes('Pricing zone'),
+      s.querySelector('h3')?.textContent?.includes('Pricing source'),
     );
     expect(zoneSection).toBeDefined();
     const hint = zoneSection!.querySelector('.zone-hint');

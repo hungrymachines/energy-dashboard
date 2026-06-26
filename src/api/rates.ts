@@ -29,6 +29,7 @@ export interface RatesResponse {
 export interface UpdateRatesBody {
   hourly_rates_cents_per_kwh?: number[] | null;
   pricing_source?: 'zone' | 'custom' | 'dynamic';
+  pricing_location?: number;
   dynamic_zone?: string | null;
   pricing_adder_cents_per_kwh?: number | null;
 }

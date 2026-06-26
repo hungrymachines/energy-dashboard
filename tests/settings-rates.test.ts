@@ -99,8 +99,14 @@ function clickSettings(root: ShadowRoot): void {
 }
 
 function ratesSection(root: ShadowRoot): HTMLElement {
-  const section = root.querySelector<HTMLElement>('.settings-section[data-section="custom-rates"]');
-  if (!section) throw new Error('custom rates section not found');
+  // The custom-rates editor moved into the unified Pricing source section
+  // as a `.custom-fields` block (shown when Source = Custom). The editor
+  // controls live here regardless of the hidden state, so tests can drive
+  // them the same way.
+  const section = root.querySelector<HTMLElement>(
+    '.settings-section[data-section="pricing-source"] .custom-fields',
+  );
+  if (!section) throw new Error('custom-fields block not found');
   return section;
 }
 
@@ -182,8 +188,14 @@ describe('settings custom electricity rates (US-FE-OVR-01)', () => {
     await flush(el);
 
     const section = ratesSection(el.shadowRoot!);
-    expect(section.textContent).toContain('Custom electricity rates');
-    expect(section.textContent).toContain('Currently using: Zone 3 rates');
+    // The custom editor now lives in the Pricing source section's
+    // .custom-fields block; its hint + toggle render here.
+    expect(section.textContent).toContain('rate profile');
+    // The "Currently using" summary lives on the Pricing source section header.
+    const pricingSourceSection = el.shadowRoot!.querySelector(
+      '.settings-section[data-section="pricing-source"]',
+    )!;
+    expect(pricingSourceSection.textContent).toContain('Currently using: Zone 3 rates');
     // With zone source, the toggle reads "Edit custom rates".
     const toggle = findButtonByText(section, 'Edit custom rates');
     expect(toggle).toBeDefined();
@@ -319,7 +331,11 @@ describe('settings custom electricity rates (US-FE-OVR-01)', () => {
 
     expect(getCalls).toBeGreaterThanOrEqual(1);
     const section = ratesSection(el.shadowRoot!);
-    expect(section.textContent).toContain('Currently using: your custom rates');
+    // The "Currently using" summary lives on the Pricing source section header.
+    const pricingSourceSection = el.shadowRoot!.querySelector(
+      '.settings-section[data-section="pricing-source"]',
+    )!;
+    expect(pricingSourceSection.textContent).toContain('Currently using: your custom rates');
 
     // When source=custom, the toggle reads "Edit / Clear override".
     findButtonByText(section, 'Edit / Clear override').click();
