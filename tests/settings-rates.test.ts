@@ -44,6 +44,12 @@ function ratesResponse(overrides: Record<string, unknown> = {}): unknown {
     unit: 'cents/kWh',
     source: 'zone',
     hourly_rates_cents_per_kwh: null,
+    pricing_source: 'zone',
+    dynamic_zone: null,
+    pricing_adder_cents_per_kwh: null,
+    available_dynamic_zones: [
+      { slug: 'comed', iso: 'PJM', label: 'ComEd (Northern Illinois)' },
+    ],
     ...overrides,
   };
 }

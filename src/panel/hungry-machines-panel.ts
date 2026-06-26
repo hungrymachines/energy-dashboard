@@ -23,12 +23,16 @@ import type {
 } from '../api/calibration.js';
 import { patchMe } from '../api/auth.js';
 import { get as getPreferences, update as updatePreferences, type Preferences } from '../api/preferences.js';
+import * as feedbackApi from '../api/feedback.js';
+import type { FeedbackCategory } from '../api/feedback.js';
+import {
+  get as getAppliancePreferences,
+  type AppliancePreferences,
+} from '../api/appliance-preferences.js';
 import { expandHourlyTo48, hasCustomRates, hasHourlyComfortBands } from '../utils/hourly.js';
 import {
-  PRICING_ZONE_LABELS,
   pricingZoneFullLabel,
   pricingZoneOptionLabel,
-  type PricingZone,
 } from '../data/pricing-zones.js';
 
 type HassStateLike = { entity_id?: string; state?: unknown; attributes?: Record<string, unknown> };
@@ -36,10 +40,6 @@ type HassLike = {
   states?: Record<string, HassStateLike>;
   callService?: (domain: string, service: string, data?: Record<string, unknown>) => Promise<unknown> | unknown;
 };
-
-const PRICING_ZONES = Object.keys(PRICING_ZONE_LABELS)
-  .map((k) => Number(k) as PricingZone)
-  .sort((a, b) => a - b);
 
 type View = 'dashboard' | 'settings';
 
@@ -493,6 +493,18 @@ export class HungryMachinesPanel extends LitElement {
       font-weight: 600;
       font-size: 1.3rem;
     }
+    .card .entity-binding {
+      color: var(--hm-muted, #64748B);
+      font-size: 0.9rem;
+      font-family: var(--hm-font-mono, monospace);
+      letter-spacing: 0.01em;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .card .entity-binding[hidden] {
+      display: none;
+    }
     .card .edit-btn {
       align-self: flex-start;
       background: transparent;
@@ -805,6 +817,22 @@ export class HungryMachinesPanel extends LitElement {
       opacity: 0.55;
       cursor: not-allowed;
     }
+    .settings-section textarea {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--hm-muted, #64748B);
+      border-radius: 6px;
+      font: inherit;
+      background: var(--hm-bg, #F8FAFC);
+      color: var(--hm-text, #0F172A);
+      box-sizing: border-box;
+      resize: vertical;
+      min-height: 80px;
+    }
+    .settings-section textarea:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
     .settings-section .zone-error {
       color: var(--hm-error, #DC2626);
       font-size: 13px;
@@ -933,6 +961,25 @@ export class HungryMachinesPanel extends LitElement {
       font-size: 13px;
       margin: 0;
     }
+    .dynamic-fields {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .pricing-adder-input {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--hm-muted, #64748B);
+      border-radius: 6px;
+      font: inherit;
+      background: var(--hm-bg, #F8FAFC);
+      color: var(--hm-text, #0F172A);
+      box-sizing: border-box;
+    }
+    .pricing-adder-input:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
     .settings-actions {
       display: flex;
       align-items: center;
@@ -988,6 +1035,7 @@ export class HungryMachinesPanel extends LitElement {
     _editorApplianceId: { state: true },
     _editorApplianceType: { state: true },
     _editorConstraints: { state: true },
+    _appliancePrefsById: { state: true },
     _addApplianceOpen: { state: true },
     // Appliance currently being edited via the appliance-form overlay.
     // Null when the form is in CREATE mode (or closed entirely).
@@ -1012,10 +1060,21 @@ export class HungryMachinesPanel extends LitElement {
     _customRatesInputs: { state: true },
     _customRatesSaving: { state: true },
     _customRatesSaveError: { state: true },
+    _pricingSourceDraft: { state: true },
+    _dynamicZoneDraft: { state: true },
+    _pricingAdderDraft: { state: true },
+    _pricingSaving: { state: true },
+    _pricingError: { state: true },
+    _pricingSavedFlash: { state: true },
     _recomputing: { state: true },
     _recomputeError: { state: true },
     _chartSize: { state: true },
     _optToggleBusy: { state: true },
+    _feedbackCategory: { state: true },
+    _feedbackMessage: { state: true },
+    _feedbackSubmitting: { state: true },
+    _feedbackError: { state: true },
+    _feedbackSent: { state: true },
   };
 
   hass: unknown = undefined;
@@ -1031,6 +1090,12 @@ export class HungryMachinesPanel extends LitElement {
   _editorApplianceId = '';
   _editorApplianceType: ApplianceType = 'hvac';
   _editorConstraints: Record<string, unknown> | undefined = undefined;
+  // Per-HVAC-appliance preferences cache. Populated
+  // lazily when the user opens the HVAC editor and refreshed in
+  // place when the editor save event fires. Independent of the
+  // user-level _preferences row so two HVACs hold and submit
+  // independent values.
+  _appliancePrefsById: Record<string, AppliancePreferences> = {};
   _addApplianceOpen = false;
   _editingAppliance: Appliance | null = null;
   _deletingAppliance: Appliance | null = null;
@@ -1049,6 +1114,12 @@ export class HungryMachinesPanel extends LitElement {
   _customRatesInputs: string[] = Array.from({ length: 24 }, () => '');
   _customRatesSaving = false;
   _customRatesSaveError: string | null = null;
+  _pricingSourceDraft: 'zone' | 'custom' | 'dynamic' = 'zone';
+  _dynamicZoneDraft = '';
+  _pricingAdderDraft = '';
+  _pricingSaving = false;
+  _pricingError: string | null = null;
+  _pricingSavedFlash = false;
   // User-selected chart size for the dashboard. Persisted to
   // localStorage so the choice survives panel reloads. Defaults to
   // 'large' for first-time users — the v2.4.1 baseline.
@@ -1059,12 +1130,22 @@ export class HungryMachinesPanel extends LitElement {
   // dismissible toast so the user knows the chart didn't update.
   _recomputing = false;
   _recomputeError: string | null = null;
+  // "Send feedback" form (Settings tab). Independent of every other
+  // settings draft — submitting POSTs to /api/v1/feedback and clears.
+  _feedbackCategory: FeedbackCategory = 'comment';
+  _feedbackMessage = '';
+  _feedbackSubmitting = false;
+  _feedbackError: string | null = null;
+  _feedbackSent = false;
 
   private _unsubscribe: (() => void) | null = null;
   private _schedulesFetched = false;
   private _ratesInflight = false;
   private _appliancesById: Record<string, Appliance> = {};
   private _savedFlashTimer: ReturnType<typeof setTimeout> | null = null;
+  private _pricingDraftsInitialized = false;
+  private _pricingSavedFlashTimer: ReturnType<typeof setTimeout> | null = null;
+  private _feedbackSentTimer: ReturnType<typeof setTimeout> | null = null;
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -1097,6 +1178,14 @@ export class HungryMachinesPanel extends LitElement {
       clearTimeout(this._savedFlashTimer);
       this._savedFlashTimer = null;
     }
+    if (this._pricingSavedFlashTimer !== null) {
+      clearTimeout(this._pricingSavedFlashTimer);
+      this._pricingSavedFlashTimer = null;
+    }
+    if (this._feedbackSentTimer !== null) {
+      clearTimeout(this._feedbackSentTimer);
+      this._feedbackSentTimer = null;
+    }
   }
 
   private _selectView(view: View): void {
@@ -1125,6 +1214,7 @@ export class HungryMachinesPanel extends LitElement {
       ]);
       this._schedules = schedules;
       this._rates = rates;
+      this._initPricingDraftsFromRates(rates);
       this._preferences = preferences;
       const map: Record<string, Appliance> = {};
       if (Array.isArray(appliances)) {
@@ -1256,7 +1346,9 @@ export class HungryMachinesPanel extends LitElement {
     this._ratesLoading = true;
     this._ratesError = null;
     try {
-      this._rates = await getRates();
+      const rates = await getRates();
+      this._rates = rates;
+      this._initPricingDraftsFromRates(rates);
     } catch (err) {
       this._ratesError =
         err instanceof Error && err.message ? err.message : 'Could not load rates';
@@ -1354,17 +1446,167 @@ export class HungryMachinesPanel extends LitElement {
     }
   }
 
-  private _openEditor(applianceId: string, type: ApplianceType): void {
-    const appliance = this._appliancesById[applianceId];
-    // HVAC editor edits user preferences, not appliance.config (which is just {hvac_type, home_size_sqft}).
-    const seed: Record<string, unknown> =
-      type === 'hvac'
-        ? ((this._preferences ?? {}) as unknown as Record<string, unknown>)
-        : ((appliance?.config ?? {}) as Record<string, unknown>);
+  private _initPricingDraftsFromRates(rates: RatesResponse): void {
+    const source = rates.pricing_source ?? 'zone';
+    this._pricingSourceDraft = source === 'dynamic' || source === 'custom' ? source : 'zone';
+    const zones = Array.isArray(rates.available_dynamic_zones)
+      ? rates.available_dynamic_zones
+      : [];
+    const storedZone = rates.dynamic_zone ?? '';
+    if (storedZone) {
+      this._dynamicZoneDraft = storedZone;
+    } else if (zones.length > 0) {
+      const comed = zones.find((z) => z.slug.toLowerCase() === 'comed');
+      this._dynamicZoneDraft = (comed ?? zones[0]).slug;
+    } else {
+      this._dynamicZoneDraft = '';
+    }
+    const adder = rates.pricing_adder_cents_per_kwh;
+    this._pricingAdderDraft =
+      typeof adder === 'number' && Number.isFinite(adder) ? String(adder) : '';
+    this._pricingDraftsInitialized = true;
+  }
+
+  private _onPricingSourceChange(value: string): void {
+    if (value === 'zone' || value === 'custom' || value === 'dynamic') {
+      this._pricingSourceDraft = value;
+      this._pricingError = null;
+    }
+  }
+
+  private _onDynamicZoneChange(value: string): void {
+    this._dynamicZoneDraft = value;
+    this._pricingError = null;
+  }
+
+  private _onPricingAdderInput(value: string): void {
+    this._pricingAdderDraft = value;
+    this._pricingError = null;
+  }
+
+  private _isPricingDirty(): boolean {
+    const rates = this._rates;
+    if (!rates) return false;
+    const storedSource = rates.pricing_source ?? 'zone';
+    if (this._pricingSourceDraft !== storedSource) return true;
+    if (this._pricingSourceDraft !== 'dynamic') return false;
+    const storedZone = rates.dynamic_zone ?? '';
+    if (this._dynamicZoneDraft !== storedZone) return true;
+    const storedAdder = rates.pricing_adder_cents_per_kwh;
+    const draftTrim = this._pricingAdderDraft.trim();
+    if (draftTrim === '') {
+      if (storedAdder !== null) return true;
+    } else {
+      const n = Number(draftTrim);
+      if (!Number.isFinite(n) || n !== storedAdder) return true;
+    }
+    return false;
+  }
+
+  private async _savePricingSource(): Promise<void> {
+    const rates = this._rates;
+    if (!rates) return;
+    const draft = this._pricingSourceDraft;
+    const body: {
+      pricing_source: 'zone' | 'custom' | 'dynamic';
+      dynamic_zone?: string | null;
+      pricing_adder_cents_per_kwh?: number | null;
+    } = { pricing_source: draft };
+    if (draft === 'dynamic') {
+      const zone = this._dynamicZoneDraft.trim();
+      if (!zone) {
+        this._pricingError = 'Choose a pricing region before saving.';
+        return;
+      }
+      body.dynamic_zone = zone;
+      const adderTrim = this._pricingAdderDraft.trim();
+      if (adderTrim === '') {
+        body.pricing_adder_cents_per_kwh = null;
+      } else {
+        const n = Number(adderTrim);
+        if (!Number.isFinite(n) || n < 0 || n > 50) {
+          this._pricingError = 'Adder must be between 0 and 50 cents/kWh.';
+          return;
+        }
+        body.pricing_adder_cents_per_kwh = n;
+      }
+    }
+    this._pricingSaving = true;
+    this._pricingError = null;
+    try {
+      const fresh = await updateRates(body);
+      this._rates = fresh;
+      this._initPricingDraftsFromRates(fresh);
+      this._pricingSavedFlash = true;
+      if (this._pricingSavedFlashTimer !== null) {
+        clearTimeout(this._pricingSavedFlashTimer);
+      }
+      this._pricingSavedFlashTimer = setTimeout(() => {
+        this._pricingSavedFlash = false;
+        this._pricingSavedFlashTimer = null;
+      }, 2000);
+    } catch (err) {
+      this._pricingError =
+        err instanceof Error && err.message
+          ? err.message
+          : 'Could not save pricing source';
+    } finally {
+      this._pricingSaving = false;
+    }
+  }
+
+  private _resetPricingDraft(): void {
+    const rates = this._rates;
+    if (rates) {
+      this._initPricingDraftsFromRates(rates);
+    }
+    this._pricingError = null;
+  }
+
+  private async _openEditor(applianceId: string, type: ApplianceType): Promise<void> {
     this._editorApplianceId = applianceId;
     this._editorApplianceType = type;
-    this._editorConstraints = seed;
-    this._editorOpen = true;
+    if (type === 'hvac') {
+      // Per-HVAC-appliance preferences. Always fetch a
+      // fresh row on open so a paused/edited unit's UI reflects the
+      // current server state, not whatever the user last looked at.
+      // Seed from the cached row first so the editor renders without
+      // a flash of the user-level fallback while the GET is in flight.
+      const cached = this._appliancePrefsById[applianceId];
+      if (cached) {
+        this._editorConstraints = cached as unknown as Record<string, unknown>;
+      } else if (this._preferences) {
+        // Pre-MHVAC-017 fallback: a freshly-registered HVAC has no
+        // appliance_preferences row in the cache; show the user-level
+        // values so the form doesn't start blank, then overwrite with
+        // the fetched per-appliance row when it lands.
+        this._editorConstraints = this._preferences as unknown as Record<string, unknown>;
+      } else {
+        this._editorConstraints = undefined;
+      }
+      this._editorOpen = true;
+      try {
+        const prefs = await getAppliancePreferences(applianceId);
+        this._appliancePrefsById = {
+          ...this._appliancePrefsById,
+          [applianceId]: prefs,
+        };
+        // Only overwrite seed if the editor is still open on this
+        // appliance — a fast cancel/reopen should not stomp the new
+        // editor instance's freshly seeded values.
+        if (this._editorOpen && this._editorApplianceId === applianceId) {
+          this._editorConstraints = prefs as unknown as Record<string, unknown>;
+        }
+      } catch {
+        // Best-effort: the editor stays on the cached/user-level seed.
+        // The save path still PUTs to the per-appliance endpoint, so a
+        // failed GET doesn't block the user from editing.
+      }
+    } else {
+      const appliance = this._appliancesById[applianceId];
+      this._editorConstraints = (appliance?.config ?? {}) as Record<string, unknown>;
+      this._editorOpen = true;
+    }
   }
 
   private _onEditorClosed(): void {
@@ -1372,20 +1614,35 @@ export class HungryMachinesPanel extends LitElement {
   }
 
   private _onConstraintsSaved(e: CustomEvent): void {
-    // The editor just persisted to the backend. For HVAC saves, the
-    // payload IS the user_preferences delta — fold it into our cached
-    // `_preferences` so reopening the editor reflects the just-saved
-    // state instead of the value we read at panel mount. Without this
-    // patch, the UI shows stale numbers until a full panel reload, which
-    // is indistinguishable from "save didn't work" to the user.
+    // The editor just persisted to the backend. For HVAC saves the
+    // payload IS the per-appliance preferences delta —
+    // fold it into our per-appliance cache so reopening the editor
+    // reflects the just-saved state instead of the row we read at
+    // panel mount. Without this patch the UI shows stale numbers
+    // until a full panel reload, which is indistinguishable from
+    // "save didn't work" to the user. The user-level _preferences
+    // row is intentionally NOT touched here — the per-HVAC editor
+    // does not edit user-global fields.
     const detail = (e?.detail ?? {}) as {
       applianceId?: string;
       payload?: Record<string, unknown>;
     };
     const payload = detail.payload;
-    if (this._editorApplianceType === 'hvac' && payload && typeof payload === 'object') {
-      const current = this._preferences ?? ({} as Preferences);
-      this._preferences = { ...current, ...(payload as Partial<Preferences>) } as Preferences;
+    const applianceId = detail.applianceId ?? this._editorApplianceId;
+    if (
+      this._editorApplianceType === 'hvac' &&
+      applianceId &&
+      payload &&
+      typeof payload === 'object'
+    ) {
+      const current = (this._appliancePrefsById[applianceId] ?? {}) as AppliancePreferences;
+      this._appliancePrefsById = {
+        ...this._appliancePrefsById,
+        [applianceId]: {
+          ...current,
+          ...(payload as Partial<AppliancePreferences>),
+        } as AppliancePreferences,
+      };
     }
     this._onEditorClosed();
     void this._recomputeNow();
@@ -1588,6 +1845,7 @@ export class HungryMachinesPanel extends LitElement {
         .open=${this._addApplianceOpen || !!this._editingAppliance}
         .hass=${this.hass}
         .editing=${this._editingAppliance ?? null}
+        .existingAppliances=${Object.values(this._appliancesById)}
         @appliance-created=${this._onApplianceCreated}
         @appliance-updated=${this._onApplianceUpdated}
         @cancelled=${this._onApplianceCancelled}
@@ -2013,12 +2271,24 @@ export class HungryMachinesPanel extends LitElement {
       }
     }
 
+    // Per-HVAC entity label so multi-HVAC users can tell which card
+    // controls which climate entity. Falls back to no
+    // line when the appliance has no config / entity bound (e.g. an
+    // older registration or a non-HVAC type).
+    const fullForEntity = this._appliancesById[appliance.appliance_id];
+    const boundEntityId =
+      type === 'hvac' && fullForEntity
+        ? (((fullForEntity.config ?? {}) as Record<string, unknown>)['entity_id'] as
+            | string
+            | undefined)
+        : undefined;
     return html`
       <div class="card" data-appliance-type=${type}>
         <div class="card-head">
           <span class="badge" aria-hidden="true">${label}</span>
           <span class="name">${appliance.name}</span>
         </div>
+        <div class="entity-binding" ?hidden=${!boundEntityId}>${boundEntityId ?? ''}</div>
         <div class="savings">${savings}</div>
         <hm-optimization-chart
           .rates=${rates}
@@ -2112,6 +2382,46 @@ export class HungryMachinesPanel extends LitElement {
     `;
   }
 
+  private _onFeedbackCategoryChange(value: string): void {
+    this._feedbackCategory = value as FeedbackCategory;
+  }
+
+  private _onFeedbackMessageInput(value: string): void {
+    this._feedbackMessage = value;
+    if (this._feedbackError) this._feedbackError = null;
+    if (this._feedbackSent) this._feedbackSent = false;
+  }
+
+  private async _submitFeedback(): Promise<void> {
+    const message = this._feedbackMessage.trim();
+    if (!message) {
+      this._feedbackError = 'Please enter some feedback before sending.';
+      return;
+    }
+    this._feedbackSubmitting = true;
+    this._feedbackError = null;
+    try {
+      await feedbackApi.submit({ message, category: this._feedbackCategory });
+      this._feedbackMessage = '';
+      this._feedbackCategory = 'comment';
+      this._feedbackSent = true;
+      if (this._feedbackSentTimer !== null) {
+        clearTimeout(this._feedbackSentTimer);
+      }
+      this._feedbackSentTimer = setTimeout(() => {
+        this._feedbackSent = false;
+        this._feedbackSentTimer = null;
+      }, 4000);
+    } catch (err) {
+      this._feedbackError =
+        err instanceof Error && err.message
+          ? err.message
+          : 'Could not send feedback. Please try again.';
+    } finally {
+      this._feedbackSubmitting = false;
+    }
+  }
+
   private _renderSettings(): TemplateResult {
     const hass = this.hass as HassLike | undefined;
     const states = hass && typeof hass === 'object' ? hass.states : undefined;
@@ -2136,13 +2446,28 @@ export class HungryMachinesPanel extends LitElement {
     const hasRowError = rowErrors.some((e) => e !== null);
     const ratesSource = rates?.source;
     const zoneForImport = rates?.pricing_location ?? 1;
+    const pricingSourceDraft = this._pricingSourceDraft;
+    const availableDynamicZones = rates?.available_dynamic_zones ?? [];
+    const availableZones = rates?.available_pricing_zones ?? [];
+    // Fallback: if rates haven't loaded yet, render just the current
+    // selection so the dropdown isn't empty.
+    const zoneOptionIds: number[] = availableZones.length > 0
+      ? availableZones.map((z) => z.id)
+      : [pricing];
+    const pricingDirty = this._isPricingDirty();
+    const pricingSaving = this._pricingSaving;
+    const pricingError = this._pricingError;
+    const pricingSavedFlash = this._pricingSavedFlash;
+    const dynamicActive = pricingSourceDraft === 'dynamic';
     const summaryText = !rates
       ? ratesLoading
         ? 'Loading rates…'
         : ratesError ?? 'Rates unavailable'
-      : ratesSource === 'custom'
-        ? 'Currently using: your custom rates'
-        : `Currently using: Zone ${zoneForImport} rates`;
+      : dynamicActive
+        ? 'Currently using: day-ahead pricing'
+        : ratesSource === 'custom'
+          ? 'Currently using: your custom rates'
+          : `Currently using: Zone ${zoneForImport} rates`;
     const toggleLabel =
       ratesSource === 'custom' ? 'Edit / Clear override' : 'Edit custom rates';
 
@@ -2192,14 +2517,14 @@ export class HungryMachinesPanel extends LitElement {
               @change=${(e: Event) =>
                 this._onZoneChange(Number((e.target as HTMLSelectElement).value))}
             >
-              ${PRICING_ZONES.map(
+              ${zoneOptionIds.map(
                 (z) => html`<option value=${String(z)} ?selected=${z === pricing}>
-                  ${pricingZoneOptionLabel(z)}
+                  ${pricingZoneOptionLabel(z, availableZones)}
                 </option>`,
               )}
             </select>
           </label>
-          <p class="zone-hint">${pricingZoneFullLabel(pricing)}</p>
+          <p class="zone-hint">${pricingZoneFullLabel(pricing, availableZones)}</p>
           ${this._zoneError
             ? html`<p class="zone-error" role="alert">${this._zoneError}</p>`
             : null}
@@ -2227,7 +2552,106 @@ export class HungryMachinesPanel extends LitElement {
             : null}
         </div>
 
-        <div class="settings-section" data-section="custom-rates">
+        <div class="settings-section" data-section="pricing-source">
+          <h3>Pricing source</h3>
+          <p class="rates-summary">${summaryText}</p>
+          <label>
+            <span class="label-text">Source</span>
+            <select
+              name="pricing_source"
+              ?disabled=${!rates || pricingSaving}
+              .value=${pricingSourceDraft}
+              @change=${(e: Event) =>
+                this._onPricingSourceChange(
+                  (e.target as HTMLSelectElement).value,
+                )}
+            >
+              <option value="zone" ?selected=${pricingSourceDraft === 'zone'}>Zone</option>
+              <option value="custom" ?selected=${pricingSourceDraft === 'custom'}>Custom</option>
+              <option value="dynamic" ?selected=${pricingSourceDraft === 'dynamic'}>
+                Dynamic (day-ahead pricing)
+              </option>
+            </select>
+          </label>
+          <div class="dynamic-fields" ?hidden=${!dynamicActive}>
+            <p class="hint">
+              Dynamic prices update daily from the wholesale day-ahead market
+              (PJM, CAISO, or NYISO depending on your region). Your flat adder
+              covers delivery, taxes, and supplier fees on top of the hourly
+              wholesale price.
+            </p>
+            <label>
+              <span class="label-text">Region</span>
+              <select
+                name="dynamic_zone"
+                ?disabled=${pricingSaving}
+                .value=${this._dynamicZoneDraft}
+                @change=${(e: Event) =>
+                  this._onDynamicZoneChange(
+                    (e.target as HTMLSelectElement).value,
+                  )}
+              >
+                ${availableDynamicZones.map(
+                  (z) => html`<option value=${z.slug} ?selected=${z.slug === this._dynamicZoneDraft}>
+                    ${z.label}
+                  </option>`,
+                )}
+              </select>
+            </label>
+            <label>
+              <span class="label-text">Flat adder (cents/kWh)</span>
+              <input
+                type="number"
+                step="0.1"
+                min="0"
+                max="50"
+                name="pricing_adder_cents_per_kwh"
+                class="pricing-adder-input"
+                ?disabled=${pricingSaving}
+                .value=${this._pricingAdderDraft}
+                @input=${(e: Event) =>
+                  this._onPricingAdderInput(
+                    (e.target as HTMLInputElement).value,
+                  )}
+              />
+            </label>
+          </div>
+          <p
+            class="rates-api-error"
+            role="alert"
+            ?hidden=${!pricingError}
+          >
+            ${pricingError ?? ''}
+          </p>
+          <div class="rates-actions">
+            <button
+              type="button"
+              name="save_pricing_source"
+              class="primary"
+              ?disabled=${!rates || pricingSaving || !pricingDirty}
+              @click=${() => void this._savePricingSource()}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              name="reset_pricing_source"
+              ?disabled=${!rates || pricingSaving || !pricingDirty}
+              @click=${() => this._resetPricingDraft()}
+            >
+              Reset
+            </button>
+            <span class="saved-flash" role="status" ?hidden=${!pricingSavedFlash}>
+              Saved
+            </span>
+          </div>
+        </div>
+
+        <div
+          class="settings-section"
+          data-section="custom-rates"
+          ?hidden=${dynamicActive}
+        >
           <h3>Custom electricity rates</h3>
           <p class="rates-summary">${summaryText}</p>
           ${rates
@@ -2336,6 +2760,64 @@ export class HungryMachinesPanel extends LitElement {
                 </div>
               `
             : null}
+        </div>
+
+        <div class="settings-section" data-section="feedback">
+          <h3>Send feedback</h3>
+          <p class="hint">
+            Found a bug, have an idea, or just want to tell us how it's going?
+            Your note goes straight to the Hungry Machines team.
+          </p>
+          <label>
+            <span class="label-text">Type</span>
+            <select
+              name="feedback_category"
+              ?disabled=${this._feedbackSubmitting}
+              .value=${this._feedbackCategory}
+              @change=${(e: Event) =>
+                this._onFeedbackCategoryChange(
+                  (e.target as HTMLSelectElement).value,
+                )}
+            >
+              <option value="comment" ?selected=${this._feedbackCategory === 'comment'}>General comment</option>
+              <option value="bug" ?selected=${this._feedbackCategory === 'bug'}>Problem / bug</option>
+              <option value="idea" ?selected=${this._feedbackCategory === 'idea'}>Idea / improvement</option>
+              <option value="other" ?selected=${this._feedbackCategory === 'other'}>Other</option>
+            </select>
+          </label>
+          <label>
+            <span class="label-text">Your feedback</span>
+            <textarea
+              name="feedback_message"
+              class="feedback-message"
+              rows="4"
+              maxlength="5000"
+              placeholder="Tell us what's on your mind…"
+              ?disabled=${this._feedbackSubmitting}
+              .value=${this._feedbackMessage}
+              @input=${(e: Event) =>
+                this._onFeedbackMessageInput(
+                  (e.target as HTMLTextAreaElement).value,
+                )}
+            ></textarea>
+          </label>
+          <p class="zone-error" role="alert" ?hidden=${!this._feedbackError}>
+            ${this._feedbackError ?? ''}
+          </p>
+          <div class="settings-actions">
+            <button
+              type="button"
+              name="send_feedback"
+              class="save-btn"
+              ?disabled=${this._feedbackSubmitting || this._feedbackMessage.trim() === ''}
+              @click=${() => void this._submitFeedback()}
+            >
+              ${this._feedbackSubmitting ? 'Sending…' : 'Send feedback'}
+            </button>
+            <span class="saved-flash" role="status" ?hidden=${!this._feedbackSent}>
+              Thanks — sent!
+            </span>
+          </div>
         </div>
 
         <div class="settings-section">
