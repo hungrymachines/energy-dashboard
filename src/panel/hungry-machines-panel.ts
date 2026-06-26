@@ -2719,9 +2719,9 @@ export class HungryMachinesPanel extends LitElement {
           <div class="dynamic-fields" ?hidden=${pricingSourceDraft !== 'dynamic'}>
             <p class="hint">
               Dynamic prices update daily from the wholesale day-ahead market
-              (PJM, CAISO, or NYISO depending on your region). Your flat adder
-              covers delivery, taxes, and supplier fees on top of the hourly
-              wholesale price.
+              (PJM, CAISO, or NYISO depending on your region). The delivery
+              charge estimate covers delivery, taxes, and supplier fees on top
+              of the hourly wholesale price.
             </p>
             <label>
               <span class="label-text">Region</span>
@@ -2742,7 +2742,7 @@ export class HungryMachinesPanel extends LitElement {
               </select>
             </label>
             <label>
-              <span class="label-text">Flat adder (cents/kWh)</span>
+              <span class="label-text">Delivery charge estimate (cents/kWh)</span>
               <input
                 type="number"
                 step="0.1"
