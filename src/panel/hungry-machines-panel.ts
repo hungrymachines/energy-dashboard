@@ -1043,7 +1043,7 @@ export class HungryMachinesPanel extends LitElement {
     _customRatesSaving: { state: true },
     _customRatesSaveError: { state: true },
     _pricingSourceDraft: { state: true },
-    _pjmNodeDraft: { state: true },
+    _dynamicZoneDraft: { state: true },
     _pricingAdderDraft: { state: true },
     _pricingSaving: { state: true },
     _pricingError: { state: true },
@@ -1092,7 +1092,7 @@ export class HungryMachinesPanel extends LitElement {
   _customRatesSaving = false;
   _customRatesSaveError: string | null = null;
   _pricingSourceDraft: 'zone' | 'custom' | 'dynamic' = 'zone';
-  _pjmNodeDraft = '';
+  _dynamicZoneDraft = '';
   _pricingAdderDraft = '';
   _pricingSaving = false;
   _pricingError: string | null = null;
@@ -1414,15 +1414,17 @@ export class HungryMachinesPanel extends LitElement {
   private _initPricingDraftsFromRates(rates: RatesResponse): void {
     const source = rates.pricing_source ?? 'zone';
     this._pricingSourceDraft = source === 'dynamic' || source === 'custom' ? source : 'zone';
-    const nodes = Array.isArray(rates.available_pjm_nodes) ? rates.available_pjm_nodes : [];
-    const storedNode = rates.pjm_pnode_id ?? '';
-    if (storedNode) {
-      this._pjmNodeDraft = storedNode;
-    } else if (nodes.length > 0) {
-      const comed = nodes.find((n) => n.slug.toLowerCase() === 'comed');
-      this._pjmNodeDraft = (comed ?? nodes[0]).slug;
+    const zones = Array.isArray(rates.available_dynamic_zones)
+      ? rates.available_dynamic_zones
+      : [];
+    const storedZone = rates.dynamic_zone ?? '';
+    if (storedZone) {
+      this._dynamicZoneDraft = storedZone;
+    } else if (zones.length > 0) {
+      const comed = zones.find((z) => z.slug.toLowerCase() === 'comed');
+      this._dynamicZoneDraft = (comed ?? zones[0]).slug;
     } else {
-      this._pjmNodeDraft = '';
+      this._dynamicZoneDraft = '';
     }
     const adder = rates.pricing_adder_cents_per_kwh;
     this._pricingAdderDraft =
@@ -1437,8 +1439,8 @@ export class HungryMachinesPanel extends LitElement {
     }
   }
 
-  private _onPjmNodeChange(value: string): void {
-    this._pjmNodeDraft = value;
+  private _onDynamicZoneChange(value: string): void {
+    this._dynamicZoneDraft = value;
     this._pricingError = null;
   }
 
@@ -1453,12 +1455,8 @@ export class HungryMachinesPanel extends LitElement {
     const storedSource = rates.pricing_source ?? 'zone';
     if (this._pricingSourceDraft !== storedSource) return true;
     if (this._pricingSourceDraft !== 'dynamic') return false;
-    const storedNode = rates.pjm_pnode_id ?? '';
-    if (this._pjmNodeDraft !== storedNode && this._pjmNodeDraft !== '') {
-      const nodes = rates.available_pjm_nodes ?? [];
-      const resolved = nodes.find((n) => n.slug === this._pjmNodeDraft);
-      if ((resolved ? resolved.slug : this._pjmNodeDraft) !== storedNode) return true;
-    }
+    const storedZone = rates.dynamic_zone ?? '';
+    if (this._dynamicZoneDraft !== storedZone) return true;
     const storedAdder = rates.pricing_adder_cents_per_kwh;
     const draftTrim = this._pricingAdderDraft.trim();
     if (draftTrim === '') {
@@ -1476,16 +1474,16 @@ export class HungryMachinesPanel extends LitElement {
     const draft = this._pricingSourceDraft;
     const body: {
       pricing_source: 'zone' | 'custom' | 'dynamic';
-      pjm_node?: string | null;
+      dynamic_zone?: string | null;
       pricing_adder_cents_per_kwh?: number | null;
     } = { pricing_source: draft };
     if (draft === 'dynamic') {
-      const node = this._pjmNodeDraft.trim();
-      if (!node) {
-        this._pricingError = 'Choose a pricing node before saving.';
+      const zone = this._dynamicZoneDraft.trim();
+      if (!zone) {
+        this._pricingError = 'Choose a pricing region before saving.';
         return;
       }
-      body.pjm_node = node;
+      body.dynamic_zone = zone;
       const adderTrim = this._pricingAdderDraft.trim();
       if (adderTrim === '') {
         body.pricing_adder_cents_per_kwh = null;
@@ -2374,7 +2372,7 @@ export class HungryMachinesPanel extends LitElement {
     const ratesSource = rates?.source;
     const zoneForImport = rates?.pricing_location ?? 1;
     const pricingSourceDraft = this._pricingSourceDraft;
-    const availableNodes = rates?.available_pjm_nodes ?? [];
+    const availableDynamicZones = rates?.available_dynamic_zones ?? [];
     const availableZones = rates?.available_pricing_zones ?? [];
     // Fallback: if rates haven't loaded yet, render just the current
     // selection so the dropdown isn't empty.
@@ -2391,7 +2389,7 @@ export class HungryMachinesPanel extends LitElement {
         ? 'Loading rates…'
         : ratesError ?? 'Rates unavailable'
       : dynamicActive
-        ? 'Currently using: PJM day-ahead pricing'
+        ? 'Currently using: day-ahead pricing'
         : ratesSource === 'custom'
           ? 'Currently using: your custom rates'
           : `Currently using: Zone ${zoneForImport} rates`;
@@ -2496,30 +2494,31 @@ export class HungryMachinesPanel extends LitElement {
               <option value="zone" ?selected=${pricingSourceDraft === 'zone'}>Zone</option>
               <option value="custom" ?selected=${pricingSourceDraft === 'custom'}>Custom</option>
               <option value="dynamic" ?selected=${pricingSourceDraft === 'dynamic'}>
-                Dynamic (PJM day-ahead)
+                Dynamic (day-ahead pricing)
               </option>
             </select>
           </label>
           <div class="dynamic-fields" ?hidden=${!dynamicActive}>
             <p class="hint">
-              Dynamic prices update daily from PJM Data Miner 2. Your flat adder
+              Dynamic prices update daily from the wholesale day-ahead market
+              (PJM, CAISO, or NYISO depending on your region). Your flat adder
               covers delivery, taxes, and supplier fees on top of the hourly
               wholesale price.
             </p>
             <label>
-              <span class="label-text">Node</span>
+              <span class="label-text">Region</span>
               <select
-                name="pjm_node"
+                name="dynamic_zone"
                 ?disabled=${pricingSaving}
-                .value=${this._pjmNodeDraft}
+                .value=${this._dynamicZoneDraft}
                 @change=${(e: Event) =>
-                  this._onPjmNodeChange(
+                  this._onDynamicZoneChange(
                     (e.target as HTMLSelectElement).value,
                   )}
               >
-                ${availableNodes.map(
-                  (n) => html`<option value=${n.slug} ?selected=${n.slug === this._pjmNodeDraft}>
-                    ${n.label}
+                ${availableDynamicZones.map(
+                  (z) => html`<option value=${z.slug} ?selected=${z.slug === this._dynamicZoneDraft}>
+                    ${z.label}
                   </option>`,
                 )}
               </select>

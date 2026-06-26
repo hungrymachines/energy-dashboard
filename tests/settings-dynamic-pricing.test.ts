@@ -49,9 +49,16 @@ function ratesResponse(overrides: Record<string, unknown> = {}): unknown {
     hourly_rates_cents_per_kwh: null,
     pricing_source: 'zone',
     pjm_pnode_id: null,
+    dynamic_zone: null,
     pricing_adder_cents_per_kwh: null,
     available_pjm_nodes: [
       { slug: 'comed', label: 'ComEd (Northern Illinois)' },
+    ],
+    available_dynamic_zones: [
+      { slug: 'comed', iso: 'PJM', label: 'ComEd (Northern Illinois)' },
+      { slug: 'sdge', iso: 'CAISO', label: 'SDG&E (San Diego, CAISO SP15)' },
+      { slug: 'pge', iso: 'CAISO', label: 'PG&E (Northern California, CAISO NP15)' },
+      { slug: 'coned', iso: 'NYISO', label: 'ConEd (NYC, NYISO Zone J)' },
     ],
     ...overrides,
   };
@@ -189,7 +196,7 @@ describe('settings dynamic pricing (US-DYNPRICE-009)', () => {
     expect(select!.value).toBe('zone');
   });
 
-  it('selecting Dynamic reveals the node dropdown (ComEd preselected) and the flat-adder input', async () => {
+  it('selecting Dynamic reveals the region dropdown (ComEd preselected) and the flat-adder input', async () => {
     installFetchStub((url) => {
       if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
       if (url.includes('/api/v1/appliances')) return [];
@@ -215,11 +222,12 @@ describe('settings dynamic pricing (US-DYNPRICE-009)', () => {
 
     expect(dynamicFields.hasAttribute('hidden')).toBe(false);
 
-    const nodeSelect = section.querySelector<HTMLSelectElement>('select[name="pjm_node"]');
-    expect(nodeSelect).not.toBeNull();
-    const slugs = Array.from(nodeSelect!.options).map((o) => o.value);
-    expect(slugs).toContain('comed');
-    expect(nodeSelect!.value).toBe('comed');
+    const zoneSelect = section.querySelector<HTMLSelectElement>('select[name="dynamic_zone"]');
+    expect(zoneSelect).not.toBeNull();
+    const slugs = Array.from(zoneSelect!.options).map((o) => o.value);
+    // The multi-ISO registry surfaces all four zones (US-GS-006).
+    expect(slugs).toEqual(['comed', 'sdge', 'pge', 'coned']);
+    expect(zoneSelect!.value).toBe('comed');
 
     const adderInput = section.querySelector<HTMLInputElement>(
       'input[name="pricing_adder_cents_per_kwh"]',
@@ -228,7 +236,7 @@ describe('settings dynamic pricing (US-DYNPRICE-009)', () => {
     expect(adderInput!.type).toBe('number');
   });
 
-  it('clicking Save with Dynamic + adder fires PUT /api/v1/rates with the right body and the custom-rates editor is hidden', async () => {
+  it('clicking Save with Dynamic + adder fires PUT /api/v1/rates with dynamic_zone body and the custom-rates editor is hidden', async () => {
     const { calls } = installFetchStub((url, init) => {
       if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
       if (url.includes('/api/v1/appliances')) return [];
@@ -236,13 +244,13 @@ describe('settings dynamic pricing (US-DYNPRICE-009)', () => {
         if (init?.method === 'PUT') {
           const body = JSON.parse(String(init.body)) as {
             pricing_source: string;
-            pjm_node?: string | null;
+            dynamic_zone?: string | null;
             pricing_adder_cents_per_kwh?: number | null;
           };
           return ratesResponse({
             source: 'dynamic',
             pricing_source: body.pricing_source,
-            pjm_pnode_id: body.pjm_node ?? null,
+            dynamic_zone: body.dynamic_zone ?? null,
             pricing_adder_cents_per_kwh:
               body.pricing_adder_cents_per_kwh ?? null,
           });
@@ -280,11 +288,14 @@ describe('settings dynamic pricing (US-DYNPRICE-009)', () => {
     expect(put).toBeDefined();
     const body = JSON.parse(put!.body!) as {
       pricing_source: string;
-      pjm_node: string;
+      dynamic_zone: string;
       pricing_adder_cents_per_kwh: number;
     };
     expect(body.pricing_source).toBe('dynamic');
-    expect(body.pjm_node).toBe('comed');
+    expect(body.dynamic_zone).toBe('comed');
+    // The legacy pjm_node field is NOT sent — the dropdown now drives
+    // dynamic_zone exclusively (US-GS-006).
+    expect((body as Record<string, unknown>).pjm_node).toBeUndefined();
     expect(body.pricing_adder_cents_per_kwh).toBe(8.5);
 
     // After save, the custom-rates section is hidden.
@@ -292,7 +303,58 @@ describe('settings dynamic pricing (US-DYNPRICE-009)', () => {
     expect(customRates.hasAttribute('hidden')).toBe(true);
 
     // Summary line in the pricing-source section reflects the dynamic active state.
-    expect(section.textContent).toContain('PJM day-ahead pricing');
+    expect(section.textContent).toContain('day-ahead pricing');
+  });
+
+  it('selecting a CAISO region (PG&E) and saving sends dynamic_zone=pge', async () => {
+    const { calls } = installFetchStub((url, init) => {
+      if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
+      if (url.includes('/api/v1/appliances')) return [];
+      if (url.includes('/api/v1/rates')) {
+        if (init?.method === 'PUT') {
+          const body = JSON.parse(String(init.body)) as {
+            pricing_source: string;
+            dynamic_zone?: string | null;
+          };
+          return ratesResponse({
+            source: 'dynamic',
+            pricing_source: body.pricing_source,
+            dynamic_zone: body.dynamic_zone ?? null,
+          });
+        }
+        return ratesResponse();
+      }
+      return null;
+    });
+
+    const el = mountPanel();
+    await flush(el);
+    clickSettings(el.shadowRoot!);
+    await flush(el);
+
+    const section = pricingSection(el.shadowRoot!);
+    const sourceSelect = section.querySelector<HTMLSelectElement>('select[name="pricing_source"]')!;
+    sourceSelect.value = 'dynamic';
+    sourceSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+
+    const zoneSelect = section.querySelector<HTMLSelectElement>('select[name="dynamic_zone"]')!;
+    zoneSelect.value = 'pge';
+    zoneSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+
+    const save = section.querySelector<HTMLButtonElement>('button[name="save_pricing_source"]')!;
+    save.click();
+    await flush(el);
+
+    const put = calls.find((c) => c.url.includes('/api/v1/rates') && c.method === 'PUT');
+    expect(put).toBeDefined();
+    const body = JSON.parse(put!.body!) as {
+      pricing_source: string;
+      dynamic_zone: string;
+    };
+    expect(body.pricing_source).toBe('dynamic');
+    expect(body.dynamic_zone).toBe('pge');
   });
 
   it('Save is disabled when no changes have been drafted', async () => {
@@ -365,7 +427,7 @@ describe('settings dynamic pricing (US-DYNPRICE-009)', () => {
         return ratesResponse({
           source: 'dynamic',
           pricing_source: 'dynamic',
-          pjm_pnode_id: 'comed',
+          dynamic_zone: 'sdge',
           pricing_adder_cents_per_kwh: 7.25,
         });
       }
@@ -380,6 +442,12 @@ describe('settings dynamic pricing (US-DYNPRICE-009)', () => {
     const section = pricingSection(el.shadowRoot!);
     const sourceSelect = section.querySelector<HTMLSelectElement>('select[name="pricing_source"]')!;
     expect(sourceSelect.value).toBe('dynamic');
+
+    // The region dropdown reflects the stored slug (not the default
+    // ComEd fallback) so the user sees their saved choice on first
+    // paint.
+    const zoneSelect = section.querySelector<HTMLSelectElement>('select[name="dynamic_zone"]')!;
+    expect(zoneSelect.value).toBe('sdge');
 
     const adder = section.querySelector<HTMLInputElement>(
       'input[name="pricing_adder_cents_per_kwh"]',

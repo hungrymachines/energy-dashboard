@@ -419,7 +419,9 @@ describe('hungry-machines-panel', () => {
       pricing_zone_id: 1,
       available_pricing_zones: [],
       available_pjm_nodes: [],
+      available_dynamic_zones: [],
       pjm_pnode_id: null,
+      dynamic_zone: null,
       pricing_adder_cents_per_kwh: null,
       rates_cents_per_kwh: [],
     };
@@ -575,7 +577,9 @@ describe('hungry-machines-panel', () => {
       pricing_zone_id: 1,
       available_pricing_zones: [],
       available_pjm_nodes: [],
+      available_dynamic_zones: [],
       pjm_pnode_id: null,
+      dynamic_zone: null,
       pricing_adder_cents_per_kwh: null,
       rates_cents_per_kwh: Array<number>(48).fill(10),
     };
