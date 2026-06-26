@@ -1028,6 +1028,12 @@ export class HungryMachinesPanel extends LitElement {
       flex-direction: column;
       gap: 12px;
     }
+    /* The explicit display above overrides the UA [hidden] rule, so the
+       ?hidden binding wouldn't hide the Region + adder. Re-assert it: these
+       fields only belong under Source = Dynamic. */
+    .dynamic-fields[hidden] {
+      display: none;
+    }
     .pricing-adder-input {
       width: 100%;
       padding: 8px 10px;
