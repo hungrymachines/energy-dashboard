@@ -23,6 +23,8 @@ import type {
 } from '../api/calibration.js';
 import { patchMe } from '../api/auth.js';
 import { get as getPreferences, update as updatePreferences, type Preferences } from '../api/preferences.js';
+import * as feedbackApi from '../api/feedback.js';
+import type { FeedbackCategory } from '../api/feedback.js';
 import {
   get as getAppliancePreferences,
   type AppliancePreferences,
@@ -815,6 +817,22 @@ export class HungryMachinesPanel extends LitElement {
       opacity: 0.55;
       cursor: not-allowed;
     }
+    .settings-section textarea {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--hm-muted, #64748B);
+      border-radius: 6px;
+      font: inherit;
+      background: var(--hm-bg, #F8FAFC);
+      color: var(--hm-text, #0F172A);
+      box-sizing: border-box;
+      resize: vertical;
+      min-height: 80px;
+    }
+    .settings-section textarea:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
     .settings-section .zone-error {
       color: var(--hm-error, #DC2626);
       font-size: 13px;
@@ -1052,6 +1070,11 @@ export class HungryMachinesPanel extends LitElement {
     _recomputeError: { state: true },
     _chartSize: { state: true },
     _optToggleBusy: { state: true },
+    _feedbackCategory: { state: true },
+    _feedbackMessage: { state: true },
+    _feedbackSubmitting: { state: true },
+    _feedbackError: { state: true },
+    _feedbackSent: { state: true },
   };
 
   hass: unknown = undefined;
@@ -1107,6 +1130,13 @@ export class HungryMachinesPanel extends LitElement {
   // dismissible toast so the user knows the chart didn't update.
   _recomputing = false;
   _recomputeError: string | null = null;
+  // "Send feedback" form (Settings tab). Independent of every other
+  // settings draft — submitting POSTs to /api/v1/feedback and clears.
+  _feedbackCategory: FeedbackCategory = 'comment';
+  _feedbackMessage = '';
+  _feedbackSubmitting = false;
+  _feedbackError: string | null = null;
+  _feedbackSent = false;
 
   private _unsubscribe: (() => void) | null = null;
   private _schedulesFetched = false;
@@ -1115,6 +1145,7 @@ export class HungryMachinesPanel extends LitElement {
   private _savedFlashTimer: ReturnType<typeof setTimeout> | null = null;
   private _pricingDraftsInitialized = false;
   private _pricingSavedFlashTimer: ReturnType<typeof setTimeout> | null = null;
+  private _feedbackSentTimer: ReturnType<typeof setTimeout> | null = null;
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -1150,6 +1181,10 @@ export class HungryMachinesPanel extends LitElement {
     if (this._pricingSavedFlashTimer !== null) {
       clearTimeout(this._pricingSavedFlashTimer);
       this._pricingSavedFlashTimer = null;
+    }
+    if (this._feedbackSentTimer !== null) {
+      clearTimeout(this._feedbackSentTimer);
+      this._feedbackSentTimer = null;
     }
   }
 
@@ -2347,6 +2382,46 @@ export class HungryMachinesPanel extends LitElement {
     `;
   }
 
+  private _onFeedbackCategoryChange(value: string): void {
+    this._feedbackCategory = value as FeedbackCategory;
+  }
+
+  private _onFeedbackMessageInput(value: string): void {
+    this._feedbackMessage = value;
+    if (this._feedbackError) this._feedbackError = null;
+    if (this._feedbackSent) this._feedbackSent = false;
+  }
+
+  private async _submitFeedback(): Promise<void> {
+    const message = this._feedbackMessage.trim();
+    if (!message) {
+      this._feedbackError = 'Please enter some feedback before sending.';
+      return;
+    }
+    this._feedbackSubmitting = true;
+    this._feedbackError = null;
+    try {
+      await feedbackApi.submit({ message, category: this._feedbackCategory });
+      this._feedbackMessage = '';
+      this._feedbackCategory = 'comment';
+      this._feedbackSent = true;
+      if (this._feedbackSentTimer !== null) {
+        clearTimeout(this._feedbackSentTimer);
+      }
+      this._feedbackSentTimer = setTimeout(() => {
+        this._feedbackSent = false;
+        this._feedbackSentTimer = null;
+      }, 4000);
+    } catch (err) {
+      this._feedbackError =
+        err instanceof Error && err.message
+          ? err.message
+          : 'Could not send feedback. Please try again.';
+    } finally {
+      this._feedbackSubmitting = false;
+    }
+  }
+
   private _renderSettings(): TemplateResult {
     const hass = this.hass as HassLike | undefined;
     const states = hass && typeof hass === 'object' ? hass.states : undefined;
@@ -2685,6 +2760,64 @@ export class HungryMachinesPanel extends LitElement {
                 </div>
               `
             : null}
+        </div>
+
+        <div class="settings-section" data-section="feedback">
+          <h3>Send feedback</h3>
+          <p class="hint">
+            Found a bug, have an idea, or just want to tell us how it's going?
+            Your note goes straight to the Hungry Machines team.
+          </p>
+          <label>
+            <span class="label-text">Type</span>
+            <select
+              name="feedback_category"
+              ?disabled=${this._feedbackSubmitting}
+              .value=${this._feedbackCategory}
+              @change=${(e: Event) =>
+                this._onFeedbackCategoryChange(
+                  (e.target as HTMLSelectElement).value,
+                )}
+            >
+              <option value="comment" ?selected=${this._feedbackCategory === 'comment'}>General comment</option>
+              <option value="bug" ?selected=${this._feedbackCategory === 'bug'}>Problem / bug</option>
+              <option value="idea" ?selected=${this._feedbackCategory === 'idea'}>Idea / improvement</option>
+              <option value="other" ?selected=${this._feedbackCategory === 'other'}>Other</option>
+            </select>
+          </label>
+          <label>
+            <span class="label-text">Your feedback</span>
+            <textarea
+              name="feedback_message"
+              class="feedback-message"
+              rows="4"
+              maxlength="5000"
+              placeholder="Tell us what's on your mind…"
+              ?disabled=${this._feedbackSubmitting}
+              .value=${this._feedbackMessage}
+              @input=${(e: Event) =>
+                this._onFeedbackMessageInput(
+                  (e.target as HTMLTextAreaElement).value,
+                )}
+            ></textarea>
+          </label>
+          <p class="zone-error" role="alert" ?hidden=${!this._feedbackError}>
+            ${this._feedbackError ?? ''}
+          </p>
+          <div class="settings-actions">
+            <button
+              type="button"
+              name="send_feedback"
+              class="save-btn"
+              ?disabled=${this._feedbackSubmitting || this._feedbackMessage.trim() === ''}
+              @click=${() => void this._submitFeedback()}
+            >
+              ${this._feedbackSubmitting ? 'Sending…' : 'Send feedback'}
+            </button>
+            <span class="saved-flash" role="status" ?hidden=${!this._feedbackSent}>
+              Thanks — sent!
+            </span>
+          </div>
         </div>
 
         <div class="settings-section">
