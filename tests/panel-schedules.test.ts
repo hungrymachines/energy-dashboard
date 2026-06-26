@@ -200,6 +200,67 @@ describe('hungry-machines-panel dashboard (US-FE-07)', () => {
     expect(content.textContent).toContain('Not Connected');
   });
 
+  it('refreshes the price-bar curve when returning to the dashboard (daily rollover / changed rates)', async () => {
+    const NEW_RATES = Array.from({ length: 48 }, () => 99);
+    let ratesCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        if (url.includes('/api/v1/schedules')) return jsonResponse(SCHEDULES_RESPONSE);
+        if (url.includes('/api/v1/rates')) {
+          ratesCalls += 1;
+          return jsonResponse(
+            ratesCalls === 1
+              ? RATES_RESPONSE
+              : { ...RATES_RESPONSE, rates_cents_per_kwh: NEW_RATES },
+          );
+        }
+        if (url.includes('/api/v1/appliances')) return jsonResponse([]);
+        if (url.includes('/api/v1/preferences')) return jsonResponse(PREFS_DEFAULT);
+        return jsonResponse({});
+      }),
+    );
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+
+    const el = mountPanel();
+    el._view = 'dashboard';
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const firstChart = root.querySelector('hm-optimization-chart') as HmOptimizationChart & {
+      rates: number[];
+    };
+    expect(firstChart.rates[0]).toBe(RATES[0]); // initial curve
+
+    // Navigate away and back via the nav tabs (drives _selectView -> _refreshRates).
+    const tab = (text: string): HTMLButtonElement =>
+      Array.from(root.querySelectorAll<HTMLButtonElement>('nav.tabs button')).find(
+        (b) => b.textContent?.trim() === text,
+      )!;
+    tab('Settings').click();
+    await flush(el);
+    tab('Dashboard').click();
+    await flush(el);
+
+    // The rate curve was re-fetched and the price bars reflect the new prices.
+    expect(ratesCalls).toBeGreaterThanOrEqual(2);
+    const chart = root.querySelector('hm-optimization-chart') as HmOptimizationChart & {
+      rates: number[];
+    };
+    expect(chart.rates[0]).toBe(99);
+  });
+
   it('renders example cards for every appliance type when none are registered', async () => {
     installFetchStub({
       '/api/v1/schedules': { date: '2025-11-18', appliances: [] },

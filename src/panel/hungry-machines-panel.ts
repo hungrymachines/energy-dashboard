@@ -1191,7 +1191,15 @@ export class HungryMachinesPanel extends LitElement {
   private _selectView(view: View): void {
     this._view = view;
     if (view === 'dashboard') {
-      void this._loadSchedulesIfNeeded();
+      if (this._schedulesFetched) {
+        // Revisiting the dashboard — refresh just the rate curve so the
+        // price bars reflect today's prices (dynamic LMPs roll over daily)
+        // and any change saved elsewhere. Schedules only change nightly, so
+        // they stay cached.
+        void this._refreshRates();
+      } else {
+        void this._loadSchedulesIfNeeded();
+      }
     } else if (view === 'settings') {
       void this._loadRatesIfNeeded();
     }
@@ -1332,6 +1340,26 @@ export class HungryMachinesPanel extends LitElement {
 
   private _onReset(): void {
     this._weatherEntityDraft = this._auth.user?.weather_entity_id ?? '';
+  }
+
+  /**
+   * Re-fetch the rate curve so the dashboard's price bars track the current
+   * day's prices (dynamic day-ahead LMPs roll over daily) and any change
+   * saved elsewhere. Updates `_rates` only — it does NOT re-seed the pricing
+   * drafts, so an in-progress (unsaved) Settings edit survives a tab switch.
+   */
+  private async _refreshRates(): Promise<void> {
+    if (this._auth.status !== 'authed') return;
+    if (this._ratesInflight) return;
+    this._ratesInflight = true;
+    try {
+      this._rates = await getRates();
+    } catch {
+      // Keep the existing _rates on a transient failure — stale bars beat
+      // blank bars.
+    } finally {
+      this._ratesInflight = false;
+    }
   }
 
   private async _loadRatesIfNeeded(): Promise<void> {
