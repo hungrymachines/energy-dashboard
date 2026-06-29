@@ -4,7 +4,8 @@ Hungry Machines optimizes when your home runs its biggest energy users — HVAC,
 
 This package adds the Hungry Machines control surface to Home Assistant: a sidebar panel for managing schedules and constraints, plus two Lovelace cards for at-a-glance status. Sign in with the same account you create at [hungrymachines.io](https://hungrymachines.io), and your dashboard shows the schedules generated each night.
 
-Learn more at **[hungrymachines.io](https://hungrymachines.io)**. Questions: [info@hungrymachines.io](mailto:info@hungrymachines.io).
+Learn more at **[hungrymachines.io](https://hungrymachines.io)**.
+See how it works and experience the benefits in the [online game](https://hungrymachines.io/feed-your-hungry-machines/). Questions: [info@hungrymachines.io](mailto:info@hungrymachines.io).
 
 ![Hungry Machines HVAC card — the optimizer's predicted indoor-temperature trajectory (solid line) tracked against your high/low comfort limits (dashed) over the day's electricity prices (bars), with the day's savings shown above.](images/hvac-card.png)
 
@@ -27,7 +28,7 @@ All three share one sign-in. Sign in once via the panel and the cards activate e
 3. Each night, Hungry Machines resolves a 24-hour weather forecast and your rates, then runs an optimization per appliance that picks operating intervals to minimize cost while staying inside your comfort and charge constraints.
 4. Your Home Assistant pulls the resulting schedule and, on every 30-minute boundary, applies it to each appliance. For HVAC that means setpoint, mode, and fan; for EV/battery/water heater it switches the device on or off. The panel and cards in this package show what's running, what's coming next, and how much you save.
 
-The optimization itself (per-HVAC thermal models, HVAC scheduling, EV/battery load-shifting, water-heater control, solar coupling) lives entirely in the backend. This package is the user-facing window into it.
+The optimization itself (per-HVAC thermal models, HVAC scheduling, EV/battery load-shifting, water-heater control, solar coupling) lives in the backend. You can visit the [online game](https://hungrymachines.io/feed-your-hungry-machines/) to experience how it works. This package is the user-facing window into it.
 
 ## Requirements
 
