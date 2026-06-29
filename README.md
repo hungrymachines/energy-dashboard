@@ -6,6 +6,8 @@ This package adds the Hungry Machines control surface to Home Assistant: a sideb
 
 Learn more at **[hungrymachines.io](https://hungrymachines.io)**. Questions: [info@hungrymachines.io](mailto:info@hungrymachines.io).
 
+![Hungry Machines HVAC card — the optimizer's predicted indoor-temperature trajectory (solid line) tracked against your high/low comfort limits (dashed) over the day's electricity prices (bars), with the day's savings shown above.](images/hvac-card.png)
+
 ---
 
 ## What you get
