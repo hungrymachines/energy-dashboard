@@ -5,3 +5,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ralph-last-branch
+
+# Internal agent-instruction docs — not for the public HACS repo
+AGENTS.md
+CLAUDE.md
