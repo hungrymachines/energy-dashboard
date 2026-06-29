@@ -5,7 +5,9 @@ Hungry Machines optimizes when your home runs its biggest energy users — HVAC,
 This package adds the Hungry Machines control surface to Home Assistant: a sidebar panel for managing schedules and constraints, plus two Lovelace cards for at-a-glance status. Sign in with the same account you create at [hungrymachines.io](https://hungrymachines.io), and your dashboard shows the schedules generated each night.
 
 Learn more at **[hungrymachines.io](https://hungrymachines.io)**.
-See how it works and experience the benefits in the [online game](https://hungrymachines.io/feed-your-hungry-machines/). 
+
+See how it works and experience the benefits in the [online game](https://hungrymachines.io/feed-your-hungry-machines/).
+
 Questions: [info@hungrymachines.io](mailto:info@hungrymachines.io).
 
 ![Hungry Machines HVAC card — the optimizer's predicted indoor-temperature trajectory (solid line) tracked against your high/low comfort limits (dashed) over the day's electricity prices (bars), with the day's savings shown above.](images/hvac-card.png)
