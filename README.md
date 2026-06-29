@@ -2,7 +2,7 @@
 
 Hungry Machines optimizes when your home runs its biggest energy users — HVAC, EV charger, home battery, water heater — to shift load into the cheapest hours of your time-of-use rate plan, while keeping the comfort and charge constraints you set.
 
-This package adds the Hungry Machines control surface to Home Assistant: a sidebar panel for managing schedules and constraints, plus two Lovelace cards for at-a-glance status. Sign in with the same account you create at [hungrymachines.io](https://hungrymachines.io), and your dashboard mirrors the schedules our backend generates each night.
+This package adds the Hungry Machines control surface to Home Assistant: a sidebar panel for managing schedules and constraints, plus two Lovelace cards for at-a-glance status. Sign in with the same account you create at [hungrymachines.io](https://hungrymachines.io), and your dashboard shows the schedules generated each night.
 
 Learn more at **[hungrymachines.io](https://hungrymachines.io)**. Questions: [info@hungrymachines.io](mailto:info@hungrymachines.io).
 
@@ -10,26 +10,26 @@ Learn more at **[hungrymachines.io](https://hungrymachines.io)**. Questions: [in
 
 ## What you get
 
-- **`hungry-machines-panel`** — full-page sidebar entry. Sign in, see today's optimized schedule for every appliance you've registered, edit the comfort and charge constraints the optimizer respects, and choose your time-of-use pricing zone.
-- **`hm-thermostat-card`** — Lovelace card with current indoor/outdoor temperature, today's HVAC schedule, and a savings-level slider.
-- **`hm-savings-card`** — Lovelace card with today's average savings, current home power draw, and the next scheduled appliance run.
+- **`hungry-machines-panel`** — full-page sidebar entry. Sign in, then **add the appliances you want optimized** (one or more HVACs, plus an EV charger, home battery, water heater, or solar array), map each one to its Home Assistant entities, edit the comfort and charge constraints the optimizer respects, choose your pricing, and review a per-appliance diagnostics view that flags sensor or connection problems.
+- **`hm-thermostat-card`** — Lovelace card with current indoor/outdoor temperature, an optimization chart (your comfort limits + the optimizer's predicted temperature trajectory over a 24-hour price backdrop), and a savings-level slider. Pin it to one HVAC with `appliance_id` when you run more than one.
+- **`hm-savings-card`** — Lovelace card with today's estimated savings, current home power draw, and the next scheduled appliance run. Scope it to a single HVAC with `appliance_id`, or leave it whole-home.
 
-All three share one sign-in. Sign in once via the panel and the cards activate everywhere on your dashboard — your token persists in your browser's localStorage.
+All three share one sign-in. Sign in once via the panel and the cards activate everywhere on your dashboard — your token persists in your browser's localStorage. Each card also shows a small health badge when its underlying sensors look stale, so you're never silently optimizing on bad data.
 
 ## How it works
 
-1. You connect your appliances and preferences via the panel inside Home Assistant.
-2. Throughout the day, your Home Assistant pushes a sensor reading (indoor temperature, HVAC state, target setpoint, humidity) to the Hungry Machines API every 5 minutes. The optimizer uses this stream to fit a per-home thermal model — without it, no real optimization is possible and the backend falls back to flat defaults.
-3. Each night, the Hungry Machines API fetches a 24-hour weather forecast and your time-of-use rates, then runs an optimization that picks operating intervals to minimize cost while staying inside your comfort and charge constraints.
-4. Your Home Assistant pulls the resulting schedule the next morning and applies the setpoints on every 30-minute boundary throughout the day. The panel and cards in this package show what's running, what's coming next, and what you'll pay.
+1. You register your appliances and set your preferences in the panel inside Home Assistant. Each HVAC is mapped to its own climate entity (and optional indoor-temperature, humidity, and power sensors); EV chargers, batteries, and water heaters are mapped to their own entities; solar is forecast-only for now.
+2. Throughout the day, your Home Assistant captures readings from each appliance (HVAC: indoor temperature, HVAC state and mode, fan, target setpoint, humidity, power) and pushes them to the Hungry Machines Optimization API. The optimizer uses this stream to fit a **per-HVAC thermal model** — without it, the backend falls back to default rates and the optimization is significantly less exact. On the first warm day after you add an HVAC, the backend runs a short one-time **calibration window** (a forced morning cooling pattern) so it can learn how that unit responds; the panel shows a banner while it's running, with a **Skip** option.
+3. Each night, Hungry Machines resolves a 24-hour weather forecast and your rates, then runs an optimization per appliance that picks operating intervals to minimize cost while staying inside your comfort and charge constraints.
+4. Your Home Assistant pulls the resulting schedule and, on every 30-minute boundary, applies it to each appliance. For HVAC that means setpoint, mode, and fan; for EV/battery/water heater it switches the device on or off. The panel and cards in this package show what's running, what's coming next, and how much you save.
 
-The optimization itself (per-home thermal models, HVAC scheduling, EV/battery load-shifting, water-heater control) lives entirely in the backend. This package is the user-facing window into it.
+The optimization itself (per-HVAC thermal models, HVAC scheduling, EV/battery load-shifting, water-heater control, solar coupling) lives entirely in the backend. This package is the user-facing window into it.
 
 ## Requirements
 
 - Home Assistant with [HACS](https://hacs.xyz/docs/setup/download) installed.
 - A Hungry Machines account — sign up at [hungrymachines.io](https://hungrymachines.io).
-- At least an indoor temperature sensor and a home power sensor in HA. You'll map them in the panel's **Settings** tab after sign-in.
+- For each HVAC you want optimized, a `climate.*` entity in Home Assistant. A power sensor, a dedicated indoor-temperature sensor, and a humidity sensor are optional but improve the model (you map all of these per-appliance when you add it in the panel). A `weather.*` entity is optional too; pick it in the panel's **Settings** tab to feed the optimizer your local forecast (the backend falls back to generic data if you don't).
 
 ---
 
@@ -52,15 +52,19 @@ Go to **[hungrymachines.io](https://hungrymachines.io)** and sign up. Confirm yo
 
 1. Open **Settings → Devices & Services → Add Integration**.
 2. Search for **Hungry Machines** and click it.
-3. Enter your **hungrymachines.io email and password** (the same credentials you use on the website and inside the panel) and pick the **HVAC climate entity** that should follow the optimized schedule. Click **Submit**.
+3. Enter your **hungrymachines.io email and password** (the same credentials you use on the website and inside the panel) and click **Submit**. That's the only thing the config flow asks for — you pick your appliances and their entities later, in the panel (Step 4).
 
-   Your password is sent once to `api.hungrymachines.io` so the integration can obtain access + refresh tokens. **Only the tokens** are persisted in Home Assistant — your password is never stored locally. If your tokens ever stop working, Home Assistant will prompt you to re-enter your password to refresh them.
+A **Hungry Machines** entry now appears in your sidebar, and the two Lovelace cards become available in the dashboard card picker. The integration also begins its background tasks: it captures readings from each registered appliance (buffered and pushed periodically, so the optimizer math can learn how your home responds), once a day it pushes your weather forecast, and each morning it fetches today's optimized schedules and applies them to the appliances.
 
-A **Hungry Machines** entry now appears in your sidebar, and the two Lovelace cards become available in the dashboard card picker. The integration also begins two background tasks: it polls the climate entity every 5 minutes and pushes a sensor reading to the API (so the optimizer can learn from how your home responds), and it fetches today's optimized HVAC schedule each morning and writes the targets to the climate entity on every 30-minute boundary.
+### Step 4 — Sign in and add your appliances
 
-### Step 4 — Sign in to the panel
+Click the **Hungry Machines** entry in the sidebar and enter the same hungrymachines.io email and password to load your dashboard. The first time in, the dashboard is empty — use **Add appliance** to register each device you want optimized:
 
-Click the **Hungry Machines** entry in the sidebar. Enter the same hungrymachines.io email and password to load your dashboard — today's optimized schedules for whatever appliances you've registered, plus the constraint editor and Settings tab.
+- Pick a type (HVAC, EV charger, home battery, water heater, or solar).
+- For HVAC, choose the `climate.*` entity it controls and, optionally, dedicated indoor-temperature / humidity / power sensors. Add a card per HVAC if you have more than one — each gets its own thermal model and schedule.
+- For EV charger / battery / water heater, choose the switch and any state-of-charge or tank-temperature sensor.
+
+Each appliance card then shows today's optimized schedule, an **Edit constraints** button, and a per-appliance pause toggle. You can edit or delete an appliance at any time.
 
 ### Step 5 — Add the cards (optional)
 
@@ -94,11 +98,14 @@ Sign-in is shared with the panel — once you've signed in, the cards light up i
 
 Everything you'd expect to tune lives inside the panel's **Settings** tab:
 
-- **Home Assistant entities** — pick which `sensor.*` entities feed indoor/outdoor temperature and home power. The panel and cards both read this map.
-- **Pricing zone** — choose your time-of-use rate plan (1–8 preset zones covering common US utilities, including SDG&E, ConEd, and Xcel). Hourly rate overrides are supported if your utility doesn't fit a preset.
-- **Account** — sign out, or email [info@hungrymachines.io](mailto:info@hungrymachines.io) if you want your account deleted.
+- **Weather entity** — optionally pick the `weather.*` entity whose forecast is pushed to the optimizer each day. (Per-appliance HVAC sensor entities are chosen when you add the appliance, not here.)
+- **Pricing source** — one section with two modes:
+  - **Static (time-of-use zone)** — choose a preset rate plan from the catalog (the list covers common US utilities). If none fits, switch on **hourly rate overrides** and enter your own per-hour ¢/kWh. If you would like to add a new area or location, please contact us at [info@hungrymachines.io](mailto:info@hungrymachines.io). 
+  - **Dynamic (changes daily)** — follow real-time and dynamic prices for a supported grid region instead of a fixed TOU schedule. Pick your **Region** (currently ComEd and Ameren Illinois) and a **delivery charge estimate** (a flat ¢/kWh added to the wholesale price to approximate delivery, capacity, and taxes). The Region and delivery-charge fields only appear when Source = Dynamic. If you have another area or location to add, please contact us at [info@hungrymachines.io](mailto:info@hungrymachines.io). 
+- **Send feedback** — a short form to send a comment, bug report, or feature request to the team without leaving Home Assistant.
+- **Account** — sign out, or email info@hungrymachines.io if you want your account deleted.
 
-Comfort and charge constraints are edited per-appliance from the **Dashboard** — each appliance card has an **Edit constraints** button that opens a per-type editor:
+Comfort and charge constraints are edited per-appliance from the **Dashboard** — each appliance card has an **Edit constraints** button that opens a per-type editor, plus a **pause toggle** that excludes that one appliance from optimization without deleting it (there's also a master optimization switch that pauses everything):
 
 - **HVAC** — base temperature, savings level (1 = tight ±2°F, 2 = moderate ±6°F, 3 = aggressive ±12°F), optimization mode (`cool`, `heat`, `auto`, `off`), and `time_away` / `time_home` (HH:MM, the times you typically leave and return). An optional **hourly comfort bands** override lets advanced users specify a per-hour low/high in °F across all 24 hours instead of the symmetric base±band — useful if your comfort needs change throughout the day in ways the base+savings-level abstraction can't capture.
 - **EV charger** — target charge %, minimum charge %, current charge %, deadline time (HH:MM by which the target must be reached).
@@ -137,17 +144,6 @@ npm test           # vitest suite
 
 The Python integration is a thin shim that registers the bundled JS file as a Lovelace resource and registers the sidebar panel. All product logic lives in the TypeScript bundle.
 
-## Regenerating the API types
-
-`src/api/generated.ts` is produced by [`openapi-typescript`](https://www.npmjs.com/package/openapi-typescript) from the committed `openapi.snapshot.json`, which is itself produced from the FastAPI app object in the sibling `the API ` repo. When the backend lands a contract change, regenerate from the monorepo root:
-
-```bash
-cd ../the API  && python -c "import json; from app.main import app; print(json.dumps(app.openapi(), indent=2))" > ../hungry-machines_base-frontend/openapi.snapshot.json && cd ../hungry-machines_base-frontend && npm run codegen && npm test
-```
-
-Commit the resulting `openapi.snapshot.json` and `src/api/generated.ts` deltas in the same PR as the consuming change. The snapshot pins to **committed master-branch API code**, not whatever is deployed on the VPS — that's the point. Live deployment can lag the generated types and contract tests will still tell you the truth about the wire format the frontend has agreed to.
-
-`tests/contract.test.ts` enforces structural compatibility between the hand-typed wrappers in `src/api/*.ts` and the generated paths bundle: each interface (e.g. `Preferences`, `RatesResponse`, `Appliance`, `HvacScheduleResponse`, `SchedulesResponse`, `UserMe`, `Session`, `ApplianceSchedule`) has a module-scope `extends` assertion against `paths['<endpoint>']['<method>']['responses']['200']['content']['application/json']`. The drift gate is **`npm run check:contract`** (alias for `tsc --noEmit`); the runtime vitest case in the same file is just a placeholder so the file is counted in `npm test`. Run `npm run check:contract` before you push when changing `src/api/*.ts` or `openapi.snapshot.json`. CI runs it on every push and PR to `master` via `.github/workflows/contract.yml`.
 
 ## Changelog
 

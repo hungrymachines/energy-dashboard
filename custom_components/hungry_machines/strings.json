@@ -3,11 +3,10 @@
     "step": {
       "user": {
         "title": "Hungry Machines",
-        "description": "Enter your hungrymachines.io credentials. We use these to fetch your optimized schedules and apply them to your thermostat. Your password is sent once to api.hungrymachines.io to obtain access tokens; only the tokens are stored locally in Home Assistant.",
+        "description": "Enter your hungrymachines.io credentials. We use these to fetch your optimized schedules and apply them to your appliances. Your password is sent once to api.hungrymachines.io to obtain access tokens; only the tokens are stored locally in Home Assistant. You choose which appliances and entities to optimize later, in the Hungry Machines panel.",
         "data": {
           "email": "Email",
-          "password": "Password",
-          "climate_entity": "HVAC climate entity"
+          "password": "Password"
         }
       },
       "reauth_confirm": {
@@ -24,17 +23,6 @@
     "abort": {
       "single_instance_allowed": "Hungry Machines is already configured.",
       "reauth_successful": "Hungry Machines credentials updated."
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Hungry Machines settings",
-        "description": "Change which climate entity receives the optimized schedule.",
-        "data": {
-          "climate_entity": "HVAC climate entity"
-        }
-      }
     }
   }
 }
