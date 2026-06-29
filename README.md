@@ -8,6 +8,8 @@ Learn more at **[hungrymachines.io](https://hungrymachines.io)**. Questions: [in
 
 ![Hungry Machines HVAC card — the optimizer's predicted indoor-temperature trajectory (solid line) tracked against your high/low comfort limits (dashed) over the day's electricity prices (bars), with the day's savings shown above.](images/hvac-card.png)
 
+![The Hungry Machines panel dashboard — one card per registered appliance (HVAC, EV charger, home battery, water heater, solar). Each shows its optimized schedule, today's savings, and per-appliance constraint controls, with an "Add another appliance" button to register more.](images/base-dashboard.png)
+
 ---
 
 ## What you get
