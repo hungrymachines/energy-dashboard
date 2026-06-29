@@ -4,8 +4,11 @@ custom_components/hungry_machines/frontend/hungry-machines.js
 __pycache__/
 *.py[cod]
 .pytest_cache/
-.ralph-last-branch
 
-# Internal agent-instruction docs — not for the public HACS repo
+# Internal / local-only files — not part of the distributed package
+.ralph-last-branch
+ralph.sh
+progress.txt
+prd.json
 AGENTS.md
 CLAUDE.md

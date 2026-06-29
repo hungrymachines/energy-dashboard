@@ -2,7 +2,7 @@
 
 Deep reference for **`hungry-machines_base-frontend`**, the Home Assistant integration package distributed via HACS. Everything below is observed from the files in this directory; nothing here describes the backend, marketing site, or docs site (those live in their own repos).
 
-This file is the deep reference; `CLAUDE.md` is the quick reference. Read this when you need exact component contracts, the Python integration shape, the build pipeline, or the auth/store/API-client wiring.
+This is the deep architecture reference — read it when you need exact component contracts, the Python integration shape, the build pipeline, or the auth/store/API-client wiring.
 
 ---
 
@@ -83,11 +83,6 @@ hungry-machines_base-frontend/
 ├── rollup.config.mjs                    # single-ESM bundle, inlineDynamicImports, terser max_line_len 120
 ├── tsconfig.json
 ├── vitest.config.ts
-├── prd.json                             # RALPH story tracker (per-feature)
-├── progress.txt                         # RALPH iteration log + Codebase Patterns
-├── AGENTS.md                            # (if present) consolidated agent learnings
-├── ralph.sh                             # RALPH autonomous loop driver
-├── CLAUDE.md                            # quick reference for agents
 └── structure.md                         # this file
 ```
 
@@ -335,7 +330,7 @@ tests/
 Patterns:
 - **Stub `globalThis.fetch`** with `vi.fn(...)` per test; assert URL + method + headers + body.
 - **happy-dom** for shadow DOM querying. Use `await el.updateComplete` after Lit property writes before asserting the rendered tree.
-- **No real network.** A test that requires a live API is wrong — see the Env Var Policy in `CLAUDE.md`.
+- **No real network.** A test that requires a live API is wrong — mock it.
 - **`authStore` is shared state.** Tests that set tokens must clear them in `afterEach` (or use a fresh `localStorage` per test) to avoid leakage.
 
 ---
@@ -399,7 +394,7 @@ Code in this repo never touches Supabase tables directly, never calls Stripe, ne
 
 ## 11. Minimum Bootstrapping Checklist
 
-For a fresh contributor (or a fresh RALPH iteration on a clean checkout):
+For a fresh contributor on a clean checkout:
 
 1. `npm install` — installs Lit + dev tooling.
 2. `npm run build` — produces `custom_components/hungry_machines/frontend/hungry-machines.js`.

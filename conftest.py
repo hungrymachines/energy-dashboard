@@ -1,10 +1,10 @@
 """Top-level conftest for the Python integration tests.
 
 The integration code imports ``homeassistant.*``, ``aiohttp``, and
-``voluptuous`` at module load time. RALPH stories must run offline with no
-real Home Assistant install (see CLAUDE.md "Env Var Policy"), so this
-conftest installs lightweight stubs into ``sys.modules`` before any test
-module is collected. Tests then patch behavior on these stubs as needed.
+``voluptuous`` at module load time. The test suite must run offline with no
+real Home Assistant install, so this conftest installs lightweight stubs
+into ``sys.modules`` before any test module is collected. Tests then patch
+behavior on these stubs as needed.
 """
 from __future__ import annotations
 
