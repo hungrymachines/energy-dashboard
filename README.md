@@ -147,6 +147,7 @@ The Python integration is a thin shim that registers the bundled JS file as a Lo
 
 ## Changelog
 
+- **v3.0.5** — chore: repository housekeeping — trimmed internal development/process files from the published repo and tidied the contributor docs. No functional change; the integration is identical to v3.0.4.
 - **v3.0.4** — docs: refresh the README to match the v3.x feature set (multi-HVAC appliances, the credential-only config flow, dynamic wholesale pricing, the diagnostics view, the calibration banner, the in-app feedback form, and per-appliance pause). Removed the stale `climate_entity` field and dead options-flow strings from `strings.json` / `translations/en.json` so the "Add integration" dialog matches the credentials-only flow. No functional/runtime change.
 - **v3.0.3** — docs: the dynamic-pricing "Flat adder" field is now labeled **Delivery charge estimate** to make clear what the ¢/kWh add-on represents.
 - **v3.0.2** — fix: the dynamic-pricing **Region** and delivery-charge fields are hidden unless **Source = Dynamic**, so static-zone users don't see irrelevant controls.
