@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   findPricingZone,
+  groupPricingZones,
   pricingZoneFullLabel,
   pricingZoneOptionLabel,
 } from '../src/data/pricing-zones.js';
@@ -63,6 +64,22 @@ describe('pricingZoneFullLabel (data-driven)', () => {
 
   it('falls back to "Zone N" when the id is unknown', () => {
     expect(pricingZoneFullLabel(99, AVAILABLE)).toBe('Zone 99');
+  });
+});
+
+describe('groupPricingZones', () => {
+  it('groups zones by provider, preserving first-seen order', () => {
+    // Pre-ordered as the backend sends them: ConEd first, then SDG&E.
+    const ordered: PricingZoneOption[] = [AVAILABLE[1], AVAILABLE[0], AVAILABLE[2]];
+    const groups = groupPricingZones(ordered);
+    expect(groups.map((g) => g.utility)).toEqual(['ConEd', 'SDG&E']);
+    expect(groups[0].key).toBe('ConEd — New York City, NY');
+    // The two SDG&E zones collapse into one group.
+    expect(groups[1].zones.map((z) => z.id)).toEqual([1, 5]);
+  });
+
+  it('returns an empty array for no zones', () => {
+    expect(groupPricingZones([])).toEqual([]);
   });
 });
 

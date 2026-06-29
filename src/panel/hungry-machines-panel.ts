@@ -31,6 +31,7 @@ import {
 } from '../api/appliance-preferences.js';
 import { expandHourlyTo48, hasCustomRates, hasHourlyComfortBands } from '../utils/hourly.js';
 import {
+  groupPricingZones,
   pricingZoneFullLabel,
   pricingZoneOptionLabel,
 } from '../data/pricing-zones.js';
@@ -2707,11 +2708,24 @@ export class HungryMachinesPanel extends LitElement {
                 @change=${(e: Event) =>
                   this._onZoneChange(Number((e.target as HTMLSelectElement).value))}
               >
-                ${zoneOptionIds.map(
-                  (z) => html`<option value=${String(z)} ?selected=${z === pricing}>
-                    ${pricingZoneOptionLabel(z, availableZones)}
-                  </option>`,
-                )}
+                ${availableZones.length > 0
+                  ? groupPricingZones(availableZones).map(
+                      (group) => html`<optgroup label=${group.key}>
+                        ${group.zones.map(
+                          (z) => html`<option
+                            value=${String(z.id)}
+                            ?selected=${z.id === pricing}
+                          >
+                            ${z.plan}
+                          </option>`,
+                        )}
+                      </optgroup>`,
+                    )
+                  : zoneOptionIds.map(
+                      (z) => html`<option value=${String(z)} ?selected=${z === pricing}>
+                        ${pricingZoneOptionLabel(z, availableZones)}
+                      </option>`,
+                    )}
               </select>
             </label>
             <p class="zone-hint">${pricingZoneFullLabel(pricing, availableZones)}</p>

@@ -26,3 +26,29 @@ export function pricingZoneFullLabel(
   const found = findPricingZone(id, available);
   return found ? `${found.utility} — ${found.region}` : `Zone ${id}`;
 }
+
+export interface PricingZoneGroup {
+  key: string; // utility + region — used as the <optgroup> label
+  utility: string;
+  region: string;
+  zones: PricingZoneOption[];
+}
+
+// Group zones by provider for the dropdown's <optgroup> headers. Groups appear
+// in the order their utility is first seen in `available`, so the backend
+// controls provider ordering (ConEd → SDG&E → PG&E) and we just preserve it.
+export function groupPricingZones(
+  available: readonly PricingZoneOption[],
+): PricingZoneGroup[] {
+  const groups: PricingZoneGroup[] = [];
+  for (const z of available) {
+    const key = `${z.utility} — ${z.region}`;
+    let group = groups.find((g) => g.key === key);
+    if (!group) {
+      group = { key, utility: z.utility, region: z.region, zones: [] };
+      groups.push(group);
+    }
+    group.zones.push(z);
+  }
+  return groups;
+}

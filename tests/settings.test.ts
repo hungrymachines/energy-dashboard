@@ -32,15 +32,16 @@ const SAMPLE_USER = {
   weather_entity_id: '',
 };
 
+// Ordered as the backend sends them: provider-grouped, ConEd (NYC) first.
 const AVAILABLE_PRICING_ZONES = [
+  { id: 2, slug: 'coned_nyc', utility: 'ConEd', plan: 'TOU', region: 'New York City, NY',
+    label: 'ConEd Residential TOU — NYC', notes: '' },
   { id: 1, slug: 'sdge_tou_dr1', utility: 'SDG&E', plan: 'TOU-DR1', region: 'San Diego, CA',
     label: 'SDG&E TOU-DR1 — San Diego', notes: '' },
-  { id: 2, slug: 'coned_nyc', utility: 'ConEd', plan: 'Default', region: 'New York City, NY',
-    label: 'ConEd — New York City', notes: '' },
   { id: 3, slug: 'sdge_tou_dr2', utility: 'SDG&E', plan: 'TOU-DR2', region: 'San Diego, CA',
     label: 'SDG&E TOU-DR2 — San Diego', notes: '' },
   { id: 4, slug: 'sdge_tou_elec', utility: 'SDG&E', plan: 'TOU-ELEC', region: 'San Diego, CA',
-    label: 'SDG&E TOU-ELEC — San Diego', notes: 'TO-VERIFY OP/SOP window placement' },
+    label: 'SDG&E TOU-ELEC — San Diego', notes: '' },
   { id: 5, slug: 'sdge_ev_tou_5', utility: 'SDG&E', plan: 'EV-TOU-5', region: 'San Diego, CA',
     label: 'SDG&E EV-TOU-5 — San Diego', notes: '' },
 ];
@@ -352,7 +353,15 @@ describe('hungry-machines-panel settings (v2.0)', () => {
 
     const zone1 = Array.from(zone.options).find((o) => o.value === '1');
     expect(zone1).toBeDefined();
-    expect(zone1!.textContent ?? '').toMatch(/SDG.?E.*San Diego/);
+    // Option text is the plan code; the provider lives in the <optgroup> label.
+    expect(zone1!.textContent ?? '').toMatch(/TOU-DR1/);
+    // Zones are grouped by provider, ConEd (NYC) first.
+    const groups = Array.from(root.querySelectorAll('optgroup'));
+    expect(groups.length).toBeGreaterThanOrEqual(2);
+    expect(groups[0].label).toMatch(/ConEd/);
+    const sdgeGroup = groups.find((g) => /SDG.?E.*San Diego/.test(g.label));
+    expect(sdgeGroup).toBeDefined();
+    expect(sdgeGroup!.querySelector('option[value="1"]')).not.toBeNull();
 
     const zoneSection = Array.from(root.querySelectorAll('.settings-section')).find((s) =>
       s.querySelector('h3')?.textContent?.includes('Pricing source'),
