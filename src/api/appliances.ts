@@ -5,7 +5,8 @@ export type ApplianceType =
   | 'ev_charger'
   | 'home_battery'
   | 'water_heater'
-  | 'solar';
+  | 'solar'
+  | 'dehumidifier';
 
 export interface Appliance {
   id: string;
@@ -101,6 +102,15 @@ export function setConstraints(id: string, body: Record<string, unknown>): Promi
     method: 'POST',
     body: JSON.stringify(body),
   });
+}
+
+// Read the stored constraints for a non-HVAC appliance. The appliance list
+// projection omits the `constraints` column (it's optimizer-facing), so the
+// editor fetches them here to re-display what the user last saved.
+export function getConstraints(id: string): Promise<ConstraintsResponse> {
+  return apiFetch<ConstraintsResponse>(
+    `/api/v1/appliances/${encodeURIComponent(id)}/constraints`,
+  );
 }
 
 // post-Phase-1 contract: source is always 'optimization' or 'defaults'

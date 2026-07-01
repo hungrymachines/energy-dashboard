@@ -17,6 +17,7 @@ const TYPE_OPTIONS: Array<{ type: ApplianceType; label: string; description: str
   { type: 'home_battery', label: 'Home battery', description: 'Battery storage system' },
   { type: 'water_heater', label: 'Water heater', description: 'Electric water heater' },
   { type: 'solar', label: 'Solar PV', description: 'Rooftop solar generation' },
+  { type: 'dehumidifier', label: 'Dehumidifier', description: 'Records room temp/humidity (data only)' },
 ];
 
 // Per-type allowed control-entity domains. The integration applies the
@@ -30,6 +31,10 @@ const CONTROL_DOMAINS: Record<ApplianceType, ReadonlyArray<string>> = {
   home_battery: ['switch'],
   water_heater: ['switch', 'climate'],
   solar: [],
+  // HA models dehumidifiers under the `humidifier` domain (device_class
+  // dehumidifier). Data-collection only — no schedule is applied, but the
+  // entity is still the thing we observe on/off/mode + current_humidity.
+  dehumidifier: ['humidifier'],
 };
 
 // Optional auxiliary sensor entities — when present, the readings poller
@@ -79,6 +84,31 @@ const HVAC_INDOOR_HUMIDITY_FIELD = {
   name: 'indoor_humidity_entity_id',
   label: 'Indoor humidity sensor (optional)',
   help: 'sensor.* exposing indoor relative humidity (0-100%). Used when the climate entity doesn\'t expose current_humidity (Tuya / IR-blaster). Humid weather drops AC capacity 30-50% — this lets the optimizer account for that.',
+  domain: 'sensor',
+} as const;
+
+// Dehumidifier aux sensors. Unlike HVAC (which reads temp off the climate
+// entity), a `humidifier.*` entity has no thermistor, so the room-temp
+// sensor is REQUIRED — it's the only temp source and every sensor reading
+// needs indoor_temp. Humidity + power are optional extras.
+const DEHU_TEMP_FIELD = {
+  name: 'indoor_temp_entity_id',
+  label: 'Room temperature sensor (required)',
+  help: 'sensor.* exposing room temp in °F. Required — a dehumidifier entity has no built-in thermometer and every reading needs a temperature.',
+  domain: 'sensor',
+} as const;
+
+const DEHU_HUMIDITY_FIELD = {
+  name: 'indoor_humidity_entity_id',
+  label: 'Room humidity sensor (optional)',
+  help: 'sensor.* exposing room relative humidity (0-100%). Falls back to the dehumidifier entity\'s current_humidity attribute when left unset.',
+  domain: 'sensor',
+} as const;
+
+const DEHU_POWER_FIELD = {
+  name: 'power_sensor_entity_id',
+  label: 'Power sensor (optional)',
+  help: 'sensor.* exposing the dehumidifier\'s power draw in W or kW (built-in meter or smart plug). Records how much it runs.',
   domain: 'sensor',
 } as const;
 
@@ -400,6 +430,17 @@ export class HmApplianceForm extends LitElement {
           azimuth_degrees: '180',
           tilt_degrees: '20',
         };
+      case 'dehumidifier':
+        // Data-collection only. Control entity + required room-temp sensor
+        // + optional humidity/power + optional nameplate capacity.
+        return {
+          name: '',
+          entity_id: '',
+          indoor_temp_entity_id: '',
+          indoor_humidity_entity_id: '',
+          power_sensor_entity_id: '',
+          capacity_pints_per_day: '',
+        };
     }
   }
 
@@ -500,6 +541,22 @@ export class HmApplianceForm extends LitElement {
         reqInRange('azimuth_degrees', 0, 360, 'Must be 0-360°');
         reqInRange('tilt_degrees', 0, 90, 'Must be 0-90°');
         break;
+      case 'dehumidifier': {
+        // Room-temp sensor is mandatory (the only temp source, and every
+        // reading needs indoor_temp).
+        if ((values['indoor_temp_entity_id'] ?? '').trim() === '') {
+          errors['indoor_temp_entity_id'] = 'Pick a room temperature sensor';
+        }
+        // Capacity is an optional nameplate spec; validate only if given.
+        const cap = (values['capacity_pints_per_day'] ?? '').trim();
+        if (cap !== '') {
+          const n = Number(cap);
+          if (!Number.isFinite(n) || n <= 0 || n > 200) {
+            errors['capacity_pints_per_day'] = 'Must be 0–200';
+          }
+        }
+        break;
+      }
     }
 
     // entity_id is required for every type with a non-empty CONTROL_DOMAINS
@@ -578,6 +635,18 @@ export class HmApplianceForm extends LitElement {
           azimuth_degrees: Number(v['azimuth_degrees']),
           tilt_degrees: Number(v['tilt_degrees']),
         };
+      case 'dehumidifier': {
+        const humidityValue = (v['indoor_humidity_entity_id'] ?? '').trim();
+        const powerValue = (v['power_sensor_entity_id'] ?? '').trim();
+        const capValue = (v['capacity_pints_per_day'] ?? '').trim();
+        return {
+          entity_id: entityId,
+          indoor_temp_entity_id: (v['indoor_temp_entity_id'] ?? '').trim(),
+          ...(humidityValue ? { indoor_humidity_entity_id: humidityValue } : {}),
+          ...(powerValue ? { power_sensor_entity_id: powerValue } : {}),
+          ...(capValue ? { capacity_pints_per_day: Number(capValue) } : {}),
+        };
+      }
       default:
         return {};
     }
@@ -889,6 +958,30 @@ export class HmApplianceForm extends LitElement {
             : null}
         </label>
       `;
+    } else if (t === 'dehumidifier') {
+      typeFields = html`
+        <p class="hint" style="margin:0">
+          Data collection only — Hungry Machines records this dehumidifier's
+          temperature, humidity, power, and on/off state to study its effect
+          on the room. It isn't scheduled or controlled yet.
+        </p>
+        <label>
+          <span class="label-text">Capacity (pints/day, optional)</span>
+          <input
+            name="capacity_pints_per_day"
+            type="number"
+            min="1"
+            max="200"
+            step="1"
+            .value=${v['capacity_pints_per_day'] ?? ''}
+            @input=${onInput('capacity_pints_per_day')}
+          />
+          <small class="label-text">Nameplate moisture-removal spec. Optional — informational only for now.</small>
+          ${errs['capacity_pints_per_day']
+            ? html`<div class="field-error">${errs['capacity_pints_per_day']}</div>`
+            : null}
+        </label>
+      `;
     } else {
       // solar — forecast-only, system size + orientation only.
       typeFields = html`
@@ -955,7 +1048,9 @@ export class HmApplianceForm extends LitElement {
         ? 'climate.* — sets target temps every 30 min'
         : t === 'water_heater'
           ? 'switch.* (resistive) or climate.* — toggled every 30 min'
-          : 'switch.* — toggled on/off every 30 min';
+          : t === 'dehumidifier'
+            ? 'humidifier.* — observed only (Hungry Machines sends no commands)'
+            : 'switch.* — toggled on/off every 30 min';
     const aux = AUX_FIELDS[t];
     const auxOptions = aux ? this._entityList([aux.domain]) : [];
     const auxName = aux ? aux.name : '';
@@ -1043,6 +1138,55 @@ export class HmApplianceForm extends LitElement {
                         )}
                       </select>
                       <small class="hint">${HVAC_INDOOR_HUMIDITY_FIELD.help}</small>
+                    </label>
+                  `
+                : null}
+              ${t === 'dehumidifier'
+                ? html`
+                    <label>
+                      <span class="label-text">${DEHU_TEMP_FIELD.label}</span>
+                      <select
+                        name=${DEHU_TEMP_FIELD.name}
+                        .value=${v[DEHU_TEMP_FIELD.name] ?? ''}
+                        @change=${onSelect(DEHU_TEMP_FIELD.name)}
+                      >
+                        <option value="" ?selected=${(v[DEHU_TEMP_FIELD.name] ?? '') === ''}>— pick one —</option>
+                        ${this._entityList([DEHU_TEMP_FIELD.domain]).map(
+                          (id) => html`<option value=${id} ?selected=${id === v[DEHU_TEMP_FIELD.name]}>${id}</option>`,
+                        )}
+                      </select>
+                      <small class="hint">${DEHU_TEMP_FIELD.help}</small>
+                      ${errs['indoor_temp_entity_id']
+                        ? html`<div class="field-error">${errs['indoor_temp_entity_id']}</div>`
+                        : null}
+                    </label>
+                    <label>
+                      <span class="label-text">${DEHU_HUMIDITY_FIELD.label}</span>
+                      <select
+                        name=${DEHU_HUMIDITY_FIELD.name}
+                        .value=${v[DEHU_HUMIDITY_FIELD.name] ?? ''}
+                        @change=${onSelect(DEHU_HUMIDITY_FIELD.name)}
+                      >
+                        <option value="" ?selected=${(v[DEHU_HUMIDITY_FIELD.name] ?? '') === ''}>— none —</option>
+                        ${this._entityList([DEHU_HUMIDITY_FIELD.domain]).map(
+                          (id) => html`<option value=${id} ?selected=${id === v[DEHU_HUMIDITY_FIELD.name]}>${id}</option>`,
+                        )}
+                      </select>
+                      <small class="hint">${DEHU_HUMIDITY_FIELD.help}</small>
+                    </label>
+                    <label>
+                      <span class="label-text">${DEHU_POWER_FIELD.label}</span>
+                      <select
+                        name=${DEHU_POWER_FIELD.name}
+                        .value=${v[DEHU_POWER_FIELD.name] ?? ''}
+                        @change=${onSelect(DEHU_POWER_FIELD.name)}
+                      >
+                        <option value="" ?selected=${(v[DEHU_POWER_FIELD.name] ?? '') === ''}>— none —</option>
+                        ${this._entityList([DEHU_POWER_FIELD.domain]).map(
+                          (id) => html`<option value=${id} ?selected=${id === v[DEHU_POWER_FIELD.name]}>${id}</option>`,
+                        )}
+                      </select>
+                      <small class="hint">${DEHU_POWER_FIELD.help}</small>
                     </label>
                   `
                 : null}

@@ -281,12 +281,22 @@ export class HmConstraintEditor extends LitElement {
 
   override willUpdate(changed: Map<string, unknown>): void {
     const key = `${this.applianceType}|${this.applianceId}|${this.open ? '1' : '0'}`;
+    // The panel opens the editor seeded with a synchronous fallback
+    // (the user-level preferences row) and THEN reassigns
+    // `currentConstraints` to the per-appliance row once its async GET
+    // lands — same applianceId/type/open, so `key` is unchanged. Keying
+    // the reseed only on `key` would ignore that second assignment and
+    // leave the form showing the stale fallback until a cancel+reopen.
+    // So treat a fresh `currentConstraints` reference as its own reset
+    // trigger. (User field edits live in `_values`/`_hourly*` state, not
+    // `currentConstraints`, so typing never spuriously re-seeds.)
+    const constraintsChanged = changed.has('currentConstraints');
     const shouldReset =
       changed.has('open') ||
       changed.has('applianceId') ||
       changed.has('applianceType') ||
-      changed.has('currentConstraints');
-    if (shouldReset && key !== this._lastKey) {
+      constraintsChanged;
+    if (shouldReset && (key !== this._lastKey || constraintsChanged)) {
       this._lastKey = key;
       this._values = this._seedValues();
       this._errors = {};

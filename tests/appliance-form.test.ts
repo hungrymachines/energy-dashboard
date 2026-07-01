@@ -36,6 +36,8 @@ const TEST_HASS = {
     'sensor.tank_temp': { entity_id: 'sensor.tank_temp' },
     'sensor.indoor_temp': { entity_id: 'sensor.indoor_temp' },
     'sensor.ac_power': { entity_id: 'sensor.ac_power' },
+    'humidifier.basement': { entity_id: 'humidifier.basement' },
+    'sensor.basement_rh': { entity_id: 'sensor.basement_rh' },
   },
 };
 
@@ -88,16 +90,17 @@ describe('hm-appliance-form', () => {
     clearTokens();
   });
 
-  it('initial render shows step 1 with all five type buttons', async () => {
+  it('initial render shows step 1 with all six type buttons', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
     const el = mountForm();
     await flush(el);
 
     const root = el.shadowRoot!;
     const typeButtons = root.querySelectorAll<HTMLButtonElement>('button.type-btn');
-    expect(typeButtons.length).toBe(5);
+    expect(typeButtons.length).toBe(6);
     const types = Array.from(typeButtons).map((b) => b.dataset.type);
     expect(types.sort()).toEqual([
+      'dehumidifier',
       'ev_charger',
       'home_battery',
       'hvac',
@@ -494,7 +497,7 @@ describe('hm-appliance-form', () => {
     el.open = true;
     await flush(el);
     const root = el.shadowRoot!;
-    expect(root.querySelectorAll('button.type-btn').length).toBe(5);
+    expect(root.querySelectorAll('button.type-btn').length).toBe(6);
     expect(root.querySelector('input[name="name"]')).toBeNull();
   });
 
@@ -594,6 +597,81 @@ describe('hm-appliance-form', () => {
 
     const submitBtn = buttonByText(root, 'Add');
     expect(submitBtn!.disabled).toBe(true);
+  });
+
+  it('dehumidifier: submit posts humidifier entity + required temp sensor and optional extras', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        calls.push({ url, init });
+        return jsonResponse({ appliance_id: 'app-dehu-1' });
+      }),
+    );
+
+    const el = mountForm();
+    await flush(el);
+    buttonByDataType(el.shadowRoot!, 'dehumidifier')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Basement Dehu';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    // Aux sensors are set directly in form state — the nested conditional
+    // <select>s don't materialize under happy-dom (same pre-existing
+    // aux-render quirk the HVAC power-sensor test works around). This pins
+    // the contract: given the state, the POST body carries the right keys.
+    (el as unknown as { _values: Record<string, string> })._values = {
+      ...(el as unknown as { _values: Record<string, string> })._values,
+      indoor_temp_entity_id: 'sensor.indoor_temp',
+      indoor_humidity_entity_id: 'sensor.basement_rh',
+    };
+    // pickEntity fires last so _setValue re-validates the merged values
+    // (clearing the required-temp error) and the entity picker renders.
+    pickEntity(root, 'humidifier.basement');
+    await flush(el);
+
+    const submitBtn = buttonByText(root, 'Add');
+    expect(submitBtn!.disabled).toBe(false);
+    submitBtn!.click();
+    await flush(el);
+
+    const postCall = calls.find(
+      (c) => c.url.endsWith('/api/v1/appliances') && c.init?.method === 'POST',
+    );
+    expect(postCall).toBeDefined();
+    const body = JSON.parse(String(postCall!.init!.body));
+    expect(body.appliance_type).toBe('dehumidifier');
+    expect(body.name).toBe('Basement Dehu');
+    expect(body.config.entity_id).toBe('humidifier.basement');
+    expect(body.config.indoor_temp_entity_id).toBe('sensor.indoor_temp');
+    expect(body.config.indoor_humidity_entity_id).toBe('sensor.basement_rh');
+    // No power sensor picked → omitted; capacity omitted.
+    expect(body.config.power_sensor_entity_id).toBeUndefined();
+    expect(body.config.capacity_pints_per_day).toBeUndefined();
+  });
+
+  it('dehumidifier: missing required room-temp sensor blocks submit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+    buttonByDataType(el.shadowRoot!, 'dehumidifier')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Basement Dehu';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    pickEntity(root, 'humidifier.basement');
+    // indoor_temp_entity_id left unset.
+    await flush(el);
+
+    expect(buttonByText(root, 'Add')!.disabled).toBe(true);
   });
 
   // -----------------------------------------------------------------------

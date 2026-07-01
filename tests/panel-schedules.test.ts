@@ -496,6 +496,14 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
     // the bare `/api/v1/appliances` route (the stub uses `includes`).
     installFetchStub({
       '/api/v1/appliances/hvac-1/preferences': hvac1Prefs,
+      '/api/v1/appliances/ev-1/constraints': {
+        status: 'ok',
+        constraints: {
+          target_charge_pct: 80,
+          min_charge_pct: 40,
+          deadline_time: '07:00',
+        },
+      },
       '/api/v1/schedules': SCHEDULES_RESPONSE,
       '/api/v1/rates': RATES_RESPONSE,
       '/api/v1/preferences': prefs,
@@ -533,7 +541,10 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
     expect('hvac_type' in constraintsHvac).toBe(false);
     expect('home_size_sqft' in constraintsHvac).toBe(false);
 
-    // Non-HVAC: editor is still seeded from appliance.config.
+    // Non-HVAC: editor seeds from the constraints endpoint, NOT
+    // appliance.config. The constraint fields (target/min charge, deadline)
+    // live in the `constraints` column the list projection omits, so config
+    // never carried them — the editor fetches GET /constraints on open.
     (el as unknown as { _openEditor: (id: string, t: string) => Promise<void> })._openEditor(
       'ev-1',
       'ev_charger',
@@ -541,8 +552,11 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
     await flush(el);
     const constraintsEv = (el as unknown as { _editorConstraints: Record<string, unknown> })
       ._editorConstraints;
-    expect(constraintsEv['battery_capacity_kwh']).toBe(75);
-    expect(constraintsEv['max_charge_rate_kw']).toBe(11);
+    expect(constraintsEv['target_charge_pct']).toBe(80);
+    expect(constraintsEv['min_charge_pct']).toBe(40);
+    expect(constraintsEv['deadline_time']).toBe('07:00');
+    // config-only fields are NOT part of the constraints seed
+    expect('battery_capacity_kwh' in constraintsEv).toBe(false);
   });
 
   it('still renders the dashboard when /preferences fetch fails', async () => {
