@@ -51,6 +51,7 @@ const TYPE_LABELS: Record<ApplianceType, string> = {
   home_battery: 'Battery',
   water_heater: 'Water',
   solar: 'Solar',
+  dehumidifier: 'Dehumidifier',
 };
 
 function asNumberArray(value: unknown): number[] | undefined {
@@ -363,6 +364,7 @@ function _exampleNameFor(type: ApplianceType): string {
     case 'home_battery': return 'Home battery';
     case 'water_heater': return 'Water heater';
     case 'solar': return 'Solar PV';
+    case 'dehumidifier': return 'Dehumidifier';
   }
 }
 
@@ -2584,6 +2586,10 @@ export class HungryMachinesPanel extends LitElement {
       return this._renderSolarCard(appliance, label);
     }
 
+    if (type === 'dehumidifier') {
+      return this._renderDehumidifierCard(appliance, label);
+    }
+
     // Every appliance type gets the same user-facing optimization chart:
     // background hourly price bars + up to three line series (high limit,
     // low limit, optimizer target). The data wired in differs by type.
@@ -2756,6 +2762,58 @@ export class HungryMachinesPanel extends LitElement {
             type="button"
             @click=${() => this._openEditAppliance(appliance.appliance_id)}
             title="Edit solar system size and orientation"
+          >
+            Edit appliance
+          </button>
+          <button
+            class="edit-btn danger"
+            type="button"
+            @click=${() => this._openDeleteAppliance(appliance.appliance_id)}
+            title="Delete this appliance"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Compact informational tile for a dehumidifier.
+   *
+   * Data-collection only (v1) — there's no schedule to render and no
+   * constraints to edit; Hungry Machines just records the device's
+   * temp / humidity / power / on-off state. The tile confirms it's
+   * registered and being observed, and offers Edit-appliance (to fix the
+   * entity/sensor bindings) + Delete. No "Edit constraints" button.
+   */
+  private _renderDehumidifierCard(
+    appliance: ApplianceScheduleEntry,
+    label: string,
+  ): TemplateResult {
+    const fullAppliance = this._appliancesById[appliance.appliance_id];
+    const config = (fullAppliance?.config ?? {}) as Record<string, unknown>;
+    const boundEntityId =
+      typeof config['entity_id'] === 'string' ? (config['entity_id'] as string) : '';
+    return html`
+      <div class="card" data-appliance-type="dehumidifier">
+        <div class="card-head">
+          <span class="badge" aria-hidden="true">${label}</span>
+          <span class="name">${appliance.name}</span>
+        </div>
+        <div class="entity-binding" ?hidden=${!boundEntityId}>${boundEntityId}</div>
+        <div class="savings">Recording data</div>
+        <p style="margin: 8px 0 0; color: var(--hm-muted, #64748B); font-size: 14px;">
+          Hungry Machines is recording this dehumidifier's temperature, humidity,
+          power, and on/off state to study its effect on the room. It isn't
+          scheduled or controlled yet.
+        </p>
+        <div class="card-actions">
+          <button
+            class="edit-btn secondary"
+            type="button"
+            @click=${() => this._openEditAppliance(appliance.appliance_id)}
+            title="Edit the dehumidifier entity and sensors"
           >
             Edit appliance
           </button>

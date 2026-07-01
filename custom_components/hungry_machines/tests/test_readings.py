@@ -149,6 +149,95 @@ async def test_capture_two_hvacs_tag_their_own_appliance_ids() -> None:
 
 
 @pytest.mark.asyncio
+async def test_capture_dehumidifier_appends_to_home_bucket() -> None:
+    """A dehumidifier (data-collection v1) records room temp + humidity, its
+    on/off-mode state (DRY when running), operating mode, and power into the
+    home bucket, tagged with its appliance_id — same stream as HVAC."""
+    appliance = {
+        "id": "dehu-1",
+        "appliance_type": "dehumidifier",
+        "config": {
+            "entity_id": "humidifier.basement",
+            "indoor_temp_entity_id": "sensor.basement_temp",
+            "indoor_humidity_entity_id": "sensor.basement_rh",
+            "power_sensor_entity_id": "sensor.basement_power",
+        },
+    }
+    dehu = MagicMock()
+    dehu.state = "on"
+    dehu.entity_id = "humidifier.basement"
+    dehu.attributes = {"action": "drying", "mode": "continuous", "current_humidity": None}
+    temp = MagicMock(state="73.4", attributes={})
+    rh = MagicMock(state="57", attributes={})
+    power = MagicMock(state="465", attributes={"unit_of_measurement": "W"})
+    hass = _hass({
+        "humidifier.basement": dehu,
+        "sensor.basement_temp": temp,
+        "sensor.basement_rh": rh,
+        "sensor.basement_power": power,
+    })
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        n = await readings.capture_readings(hass, entry)
+
+    assert n == 1
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["appliance_id"] == "dehu-1"
+    assert posted["indoor_temp"] == 73.4
+    assert posted["indoor_humidity"] == 57.0
+    assert posted["hvac_state"] == "DRY"
+    assert posted["fan_mode"] == "continuous"
+    assert posted["power_watts"] == 465.0
+
+
+@pytest.mark.asyncio
+async def test_capture_dehumidifier_skipped_without_temp() -> None:
+    """No usable room-temp sensor → reading skipped (backend requires
+    indoor_temp), so nothing is buffered."""
+    appliance = {
+        "id": "dehu-1",
+        "appliance_type": "dehumidifier",
+        "config": {
+            "entity_id": "humidifier.basement",
+            "indoor_temp_entity_id": "sensor.missing_temp",
+        },
+    }
+    dehu = MagicMock()
+    dehu.state = "on"
+    dehu.entity_id = "humidifier.basement"
+    dehu.attributes = {"action": "drying", "current_humidity": 55}
+    hass = _hass({"humidifier.basement": dehu})  # temp sensor absent
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        n = await readings.capture_readings(hass, entry)
+
+    assert n == 0
+    assert readings.buffered_count(hass) == 0
+
+
+def test_resolve_dehumidifier_state() -> None:
+    """action wins when present (idle → OFF even while powered on); else the
+    on/off state is used."""
+    def st(state, attrs):
+        m = MagicMock()
+        m.state = state
+        m.attributes = attrs
+        return m
+
+    assert readings._resolve_dehumidifier_state(st("on", {"action": "drying"})) == "DRY"
+    assert readings._resolve_dehumidifier_state(st("on", {"action": "idle"})) == "OFF"
+    assert readings._resolve_dehumidifier_state(st("off", {"action": "off"})) == "OFF"
+    assert readings._resolve_dehumidifier_state(st("on", {})) == "DRY"
+    assert readings._resolve_dehumidifier_state(st("off", {})) == "OFF"
+
+
+@pytest.mark.asyncio
 async def test_capture_hvac_records_fan_mode() -> None:
     """Regression: fan_mode was accepted by the API but the integration
     never read state.attributes["fan_mode"], so every sensor_readings

@@ -467,6 +467,99 @@ def _build_hvac_home_reading(
     return reading
 
 
+def _resolve_dehumidifier_state(state: Any) -> str:
+    """Map an HA `humidifier.*` (dehumidifier device_class) entity to DRY/OFF.
+
+    Dehumidifiers live under HA's `humidifier` domain: `state.state` is
+    "on"/"off" and newer cores expose an `action` attribute
+    ("drying"/"idle"/"off"). We record DRY while it's actively removing
+    moisture and OFF otherwise — the same two-value on/off signal the model
+    (later) needs, expressed with the existing `hvac_state` vocabulary (the
+    backend normalizer already treats DRY as the dehumidify state).
+
+    Strategy: prefer `action` when present (idle → OFF even though the unit
+    is powered on); else fall back to the on/off state.
+    """
+    action = str(state.attributes.get("action") or "").strip().lower()
+    if action:
+        return "DRY" if action in ("drying", "dehumidifying", "humidifying") else "OFF"
+    return "DRY" if str(state.state or "").strip().lower() == "on" else "OFF"
+
+
+def _build_dehumidifier_reading(
+    hass: HomeAssistant,
+    state: Any,
+    indoor_temp_entity_id: str | None = None,
+    indoor_humidity_entity_id: str | None = None,
+    power_sensor_entity_id: str | None = None,
+    appliance_id: str | None = None,
+) -> dict | None:
+    """Build a /api/v1/readings payload for a dehumidifier (data-collection).
+
+    v1 records the room temp + humidity, the device's on/off-mode state, and
+    its power draw so we can later analyse its effect on the room. Posted to
+    the home bucket (POST /api/v1/readings) tagged with `appliance_id`, the
+    same stream as HVAC — the backend accepts dehumidifier-tagged rows.
+
+    Indoor temp comes ONLY from `indoor_temp_entity_id` (a humidifier entity
+    has no thermistor); it's required config, and the backend requires
+    `indoor_temp` on every row, so we skip the reading (returning None) when
+    the temp sensor is missing / non-numeric — mirroring the HVAC path.
+    Humidity comes from the entity's `current_humidity` attribute, falling
+    back to `indoor_humidity_entity_id`.
+    """
+    indoor_temp: float | None = None
+    if indoor_temp_entity_id:
+        ts = hass.states.get(indoor_temp_entity_id) if hass.states else None
+        if ts is None:
+            _record_aux_status(
+                hass, indoor_temp_entity_id,
+                status="entity_missing", purpose="indoor temperature",
+            )
+        else:
+            raw = getattr(ts, "state", None)
+            indoor_temp = _coerce_float(raw)
+            _record_aux_status(
+                hass, indoor_temp_entity_id,
+                status="ok" if indoor_temp is not None else "invalid_state",
+                purpose="indoor temperature",
+                last_value=indoor_temp if indoor_temp is not None else raw,
+            )
+    if indoor_temp is None:
+        _LOGGER.info(
+            "Hungry Machines: dehumidifier '%s' has no usable indoor temperature "
+            "(indoor_temp_entity_id=%s); reading skipped. A room temperature "
+            "sensor is required to record dehumidifier readings.",
+            state.entity_id, indoor_temp_entity_id,
+        )
+        return None
+
+    reading: dict[str, Any] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "indoor_temp": indoor_temp,
+        "hvac_state": _resolve_dehumidifier_state(state),
+    }
+    if appliance_id:
+        reading["appliance_id"] = appliance_id
+    indoor_humidity = _read_indoor_humidity(
+        hass, state, indoor_humidity_entity_id,
+    )
+    if indoor_humidity is not None:
+        reading["indoor_humidity"] = indoor_humidity
+    # The device's operating mode ("auto"/"continuous"/"comfort"/…) — a
+    # per-manufacturer string recorded verbatim in the free-form `fan_mode`
+    # column so the observed SETTING is captured alongside the on/off state.
+    # (These rows are keyed to a dehumidifier appliance_id, so `fan_mode`
+    # carrying an operating mode here never collides with HVAC fan speeds.)
+    mode = state.attributes.get("mode")
+    if mode is not None:
+        reading["fan_mode"] = str(mode)
+    power_watts = _read_power_watts(hass, power_sensor_entity_id)
+    if power_watts is not None:
+        reading["power_watts"] = power_watts
+    return reading
+
+
 def _on_off_state(state_str: str) -> str:
     """Map an HA switch state to one of the documented appliance states."""
     s = (state_str or "").lower()
@@ -592,6 +685,25 @@ async def capture_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
             if reading is None:
                 continue
             _append(hass, aid, reading)
+            captured += 1
+        elif atype == "dehumidifier":
+            # Data-collection only (v1): record the room temp/humidity, the
+            # device's on/off-mode state, and its power into the HOME bucket
+            # (POST /api/v1/readings) tagged with the dehumidifier's
+            # appliance_id — same sensor_readings stream as HVAC.
+            reading = _build_dehumidifier_reading(
+                hass, control_state,
+                config.get("indoor_temp_entity_id")
+                if isinstance(config, dict) else None,
+                config.get("indoor_humidity_entity_id")
+                if isinstance(config, dict) else None,
+                config.get("power_sensor_entity_id")
+                if isinstance(config, dict) else None,
+                appliance_id=aid if isinstance(aid, str) else None,
+            )
+            if reading is None:
+                continue
+            _append(hass, _HOME_BUCKET, reading)
             captured += 1
         else:
             _LOGGER.info(

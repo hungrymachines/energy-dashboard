@@ -5,7 +5,8 @@ export type ApplianceType =
   | 'ev_charger'
   | 'home_battery'
   | 'water_heater'
-  | 'solar';
+  | 'solar'
+  | 'dehumidifier';
 
 export interface Appliance {
   id: string;
