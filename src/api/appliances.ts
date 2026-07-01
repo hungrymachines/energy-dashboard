@@ -103,6 +103,15 @@ export function setConstraints(id: string, body: Record<string, unknown>): Promi
   });
 }
 
+// Read the stored constraints for a non-HVAC appliance. The appliance list
+// projection omits the `constraints` column (it's optimizer-facing), so the
+// editor fetches them here to re-display what the user last saved.
+export function getConstraints(id: string): Promise<ConstraintsResponse> {
+  return apiFetch<ConstraintsResponse>(
+    `/api/v1/appliances/${encodeURIComponent(id)}/constraints`,
+  );
+}
+
 // post-Phase-1 contract: source is always 'optimization' or 'defaults'
 export function getSchedule(id: string): Promise<ApplianceSchedule> {
   return apiFetch<ApplianceSchedule>(`/api/v1/appliances/${encodeURIComponent(id)}/schedule`);

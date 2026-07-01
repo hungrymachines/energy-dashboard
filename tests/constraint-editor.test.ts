@@ -217,6 +217,41 @@ describe('hm-constraint-editor', () => {
     expect(homeInput.value).toBe('18:00');
   });
 
+  it('re-seeds when currentConstraints is reassigned while open (per-appliance GET lands after open)', async () => {
+    captureFetch(jsonResponse({}));
+    // Open seeded with the user-level fallback the panel uses before its
+    // async per-appliance preferences GET resolves.
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: {
+        base_temperature: 72,
+        savings_level: 3,
+        optimization_mode: 'auto',
+      },
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(root.querySelector<HTMLInputElement>('input[name="base_temperature"]')!.value).toBe('72');
+
+    // Panel reassigns currentConstraints to the per-appliance row once the
+    // GET lands — same applianceId/type/open. The form must re-seed instead
+    // of clinging to the stale fallback (the "shows old data until I cancel
+    // and reopen" bug).
+    el.currentConstraints = {
+      base_temperature: 68,
+      savings_level: 1,
+      optimization_mode: 'cool',
+    };
+    await flush(el);
+
+    expect(root.querySelector<HTMLInputElement>('input[name="base_temperature"]')!.value).toBe('68');
+    expect(root.querySelector<HTMLInputElement>('input[name="savings_level"]')!.value).toBe('1');
+    expect(root.querySelector<HTMLSelectElement>('select[name="optimization_mode"]')!.value).toBe('cool');
+  });
+
   it('submits hvac with time_away set, time_home omitted when empty (US-FE-HVAC-EDITOR-PREFS-01 b)', async () => {
     const { calls } = captureFetch(
       jsonResponse({

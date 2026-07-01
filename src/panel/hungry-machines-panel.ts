@@ -14,6 +14,7 @@ import {
 import {
   list as listAppliances,
   remove as appliancesApiRemove,
+  getConstraints as getApplianceConstraints,
   type Appliance,
   type ApplianceType,
 } from '../api/appliances.js';
@@ -126,6 +127,144 @@ function _saveDismissedCalibrations(ids: Set<number>): void {
     );
   } catch {
     // best-effort persistence
+  }
+}
+
+// User-level and per-appliance preferences are cached in localStorage so
+// the constraint editor shows last-known values on its first open after a
+// fresh panel mount — without this the editor briefly seeds from the
+// user-level fallback (per-appliance rows are fetched lazily on open),
+// which reads as "my changes reset" to the user. Each blob is stamped with
+// the `user_id` it belongs to so a different account logging in on the same
+// browser can never read the prior user's cache (the network fetch is still
+// the source of truth and refreshes these the moment it lands).
+const APPLIANCE_PREFS_STORAGE_KEY = 'hm-panel-appliance-prefs';
+const USER_PREFS_STORAGE_KEY = 'hm-panel-user-prefs';
+
+function _loadAppliancePrefs(userId: string): Record<string, AppliancePreferences> {
+  if (!userId) return {};
+  try {
+    const raw = globalThis.localStorage?.getItem(APPLIANCE_PREFS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as {
+        user_id?: unknown;
+        prefs?: unknown;
+      };
+      if (
+        parsed &&
+        parsed.user_id === userId &&
+        parsed.prefs &&
+        typeof parsed.prefs === 'object'
+      ) {
+        return parsed.prefs as Record<string, AppliancePreferences>;
+      }
+    }
+  } catch {
+    // happy-dom + private browsing both throw on localStorage — fall through
+  }
+  return {};
+}
+
+function _saveAppliancePrefs(
+  userId: string,
+  prefs: Record<string, AppliancePreferences>,
+): void {
+  if (!userId) return;
+  try {
+    globalThis.localStorage?.setItem(
+      APPLIANCE_PREFS_STORAGE_KEY,
+      JSON.stringify({ user_id: userId, prefs }),
+    );
+  } catch {
+    // best-effort persistence
+  }
+}
+
+function _loadUserPrefs(userId: string): Preferences | null {
+  if (!userId) return null;
+  try {
+    const raw = globalThis.localStorage?.getItem(USER_PREFS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as { user_id?: unknown; prefs?: unknown };
+      if (
+        parsed &&
+        parsed.user_id === userId &&
+        parsed.prefs &&
+        typeof parsed.prefs === 'object'
+      ) {
+        return parsed.prefs as Preferences;
+      }
+    }
+  } catch {
+    // happy-dom + private browsing both throw on localStorage — fall through
+  }
+  return null;
+}
+
+function _saveUserPrefs(userId: string, prefs: Preferences | null): void {
+  if (!userId || !prefs) return;
+  try {
+    globalThis.localStorage?.setItem(
+      USER_PREFS_STORAGE_KEY,
+      JSON.stringify({ user_id: userId, prefs }),
+    );
+  } catch {
+    // best-effort persistence
+  }
+}
+
+// Non-HVAC appliance constraints (EV target/deadline, battery bounds, water
+// heater min/max) live in a separate `constraints` column the appliance-list
+// projection omits, so the editor lazily fetches them per open. Cache them
+// the same way as HVAC prefs so a fresh mount shows last-known values without
+// waiting on the GET. Stamped with user_id for the same cross-user safety.
+const APPLIANCE_CONSTRAINTS_STORAGE_KEY = 'hm-panel-appliance-constraints';
+
+function _loadApplianceConstraints(
+  userId: string,
+): Record<string, Record<string, unknown>> {
+  if (!userId) return {};
+  try {
+    const raw = globalThis.localStorage?.getItem(APPLIANCE_CONSTRAINTS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as { user_id?: unknown; constraints?: unknown };
+      if (
+        parsed &&
+        parsed.user_id === userId &&
+        parsed.constraints &&
+        typeof parsed.constraints === 'object'
+      ) {
+        return parsed.constraints as Record<string, Record<string, unknown>>;
+      }
+    }
+  } catch {
+    // happy-dom + private browsing both throw on localStorage — fall through
+  }
+  return {};
+}
+
+function _saveApplianceConstraints(
+  userId: string,
+  constraints: Record<string, Record<string, unknown>>,
+): void {
+  if (!userId) return;
+  try {
+    globalThis.localStorage?.setItem(
+      APPLIANCE_CONSTRAINTS_STORAGE_KEY,
+      JSON.stringify({ user_id: userId, constraints }),
+    );
+  } catch {
+    // best-effort persistence
+  }
+}
+
+function _clearPersistedPrefs(): void {
+  try {
+    globalThis.localStorage?.removeItem(APPLIANCE_PREFS_STORAGE_KEY);
+    globalThis.localStorage?.removeItem(USER_PREFS_STORAGE_KEY);
+    globalThis.localStorage?.removeItem(APPLIANCE_CONSTRAINTS_STORAGE_KEY);
+  } catch {
+    // best-effort
   }
 }
 
@@ -1105,6 +1244,7 @@ export class HungryMachinesPanel extends LitElement {
     _editorApplianceType: { state: true },
     _editorConstraints: { state: true },
     _appliancePrefsById: { state: true },
+    _applianceConstraintsById: { state: true },
     _addApplianceOpen: { state: true },
     // Appliance currently being edited via the appliance-form overlay.
     // Null when the form is in CREATE mode (or closed entirely).
@@ -1166,6 +1306,11 @@ export class HungryMachinesPanel extends LitElement {
   // user-level _preferences row so two HVACs hold and submit
   // independent values.
   _appliancePrefsById: Record<string, AppliancePreferences> = {};
+  // Per-appliance constraints cache for NON-HVAC units (EV/battery/water).
+  // Same lazy-fetch-on-open + localStorage-persist story as
+  // _appliancePrefsById, but keyed to the `constraints` column instead of
+  // the appliance-preferences row.
+  _applianceConstraintsById: Record<string, Record<string, unknown>> = {};
   _addApplianceOpen = false;
   _editingAppliance: Appliance | null = null;
   _deletingAppliance: Appliance | null = null;
@@ -1225,12 +1370,19 @@ export class HungryMachinesPanel extends LitElement {
     this._auth = authStore.state;
     this._zoneDraft = this._auth.user?.pricing_location ?? 1;
     this._weatherEntityDraft = this._auth.user?.weather_entity_id ?? '';
+    // authStore is a module singleton, so a panel remount within the same
+    // session lands here already 'authed' — hydrate the persisted prefs
+    // caches now so the first editor open shows last-known values.
+    if (this._auth.status === 'authed') {
+      this._hydratePrefsCaches();
+    }
     this._unsubscribe = authStore.subscribe((s) => {
       const prevStatus = this._auth.status;
       this._auth = s;
       if (prevStatus !== 'authed' && s.status === 'authed') {
         this._zoneDraft = s.user?.pricing_location ?? 1;
         this._weatherEntityDraft = s.user?.weather_entity_id ?? '';
+        this._hydratePrefsCaches();
         void this._loadSchedulesIfNeeded();
       }
       if (s.status !== 'authed') {
@@ -1278,6 +1430,46 @@ export class HungryMachinesPanel extends LitElement {
     }
   }
 
+  private _currentUserId(): string {
+    return this._auth.user?.user_id ?? '';
+  }
+
+  // Seed the in-memory preference caches from localStorage once we know
+  // who the user is. Fresh in-memory rows win — the persisted blob only
+  // fills gaps (e.g. per-appliance rows we haven't lazily fetched yet),
+  // so the network fetch in _loadSchedulesIfNeeded still overrides it.
+  private _hydratePrefsCaches(): void {
+    const userId = this._currentUserId();
+    if (!userId) return;
+    const persisted = _loadAppliancePrefs(userId);
+    if (Object.keys(persisted).length > 0) {
+      this._appliancePrefsById = { ...persisted, ...this._appliancePrefsById };
+    }
+    const persistedConstraints = _loadApplianceConstraints(userId);
+    if (Object.keys(persistedConstraints).length > 0) {
+      this._applianceConstraintsById = {
+        ...persistedConstraints,
+        ...this._applianceConstraintsById,
+      };
+    }
+    if (!this._preferences) {
+      const userPrefs = _loadUserPrefs(userId);
+      if (userPrefs) this._preferences = userPrefs;
+    }
+  }
+
+  private _persistAppliancePrefs(): void {
+    _saveAppliancePrefs(this._currentUserId(), this._appliancePrefsById);
+  }
+
+  private _persistApplianceConstraints(): void {
+    _saveApplianceConstraints(this._currentUserId(), this._applianceConstraintsById);
+  }
+
+  private _persistUserPrefs(): void {
+    _saveUserPrefs(this._currentUserId(), this._preferences);
+  }
+
   private async _loadSchedulesIfNeeded(): Promise<void> {
     if (this._schedulesFetched) return;
     if (this._auth.status !== 'authed') return;
@@ -1297,6 +1489,7 @@ export class HungryMachinesPanel extends LitElement {
       this._rates = rates;
       this._initPricingDraftsFromRates(rates);
       this._preferences = preferences;
+      this._persistUserPrefs();
       const map: Record<string, Appliance> = {};
       if (Array.isArray(appliances)) {
         for (const a of appliances) map[a.id] = a;
@@ -1371,6 +1564,13 @@ export class HungryMachinesPanel extends LitElement {
   }
 
   private _onSignOut = (): void => {
+    // Drop the cached prefs on explicit sign-out so they don't linger in
+    // localStorage. (Cross-user safety is already covered by the user_id
+    // stamp on each blob, but clearing on logout is the privacy-clean move.)
+    _clearPersistedPrefs();
+    this._appliancePrefsById = {};
+    this._applianceConstraintsById = {};
+    this._preferences = null;
     authStore.logout();
   };
 
@@ -1718,6 +1918,7 @@ export class HungryMachinesPanel extends LitElement {
           ...this._appliancePrefsById,
           [applianceId]: prefs,
         };
+        this._persistAppliancePrefs();
         // Only overwrite seed if the editor is still open on this
         // appliance — a fast cancel/reopen should not stomp the new
         // editor instance's freshly seeded values.
@@ -1730,9 +1931,29 @@ export class HungryMachinesPanel extends LitElement {
         // failed GET doesn't block the user from editing.
       }
     } else {
-      const appliance = this._appliancesById[applianceId];
-      this._editorConstraints = (appliance?.config ?? {}) as Record<string, unknown>;
+      // Non-HVAC constraints (EV/battery/water) live in the `constraints`
+      // column, which the appliance-list projection omits — so config never
+      // carries the charge/deadline/temp fields the editor reads. Seed from
+      // the cache first (avoids a blank flash / stale-config values), then
+      // fetch the authoritative row and re-seed when it lands.
+      const cached = this._applianceConstraintsById[applianceId];
+      this._editorConstraints = cached ?? {};
       this._editorOpen = true;
+      try {
+        const resp = await getApplianceConstraints(applianceId);
+        const constraints = (resp?.constraints ?? {}) as Record<string, unknown>;
+        this._applianceConstraintsById = {
+          ...this._applianceConstraintsById,
+          [applianceId]: constraints,
+        };
+        this._persistApplianceConstraints();
+        if (this._editorOpen && this._editorApplianceId === applianceId) {
+          this._editorConstraints = constraints;
+        }
+      } catch {
+        // Best-effort: editor stays on the cached seed; the POST save path
+        // is unaffected by a failed GET.
+      }
     }
   }
 
@@ -1770,6 +1991,17 @@ export class HungryMachinesPanel extends LitElement {
           ...(payload as Partial<AppliancePreferences>),
         } as AppliancePreferences,
       };
+      this._persistAppliancePrefs();
+    } else if (applianceId && payload && typeof payload === 'object') {
+      // Non-HVAC constraints: the editor POSTed the full constraints object
+      // to the `constraints` column. Mirror it into our cache so a
+      // same-session reopen (and the next mount) shows the just-saved
+      // values instead of a blank form.
+      this._applianceConstraintsById = {
+        ...this._applianceConstraintsById,
+        [applianceId]: { ...payload },
+      };
+      this._persistApplianceConstraints();
     }
     this._onEditorClosed();
     void this._recomputeNow();
@@ -1888,6 +2120,20 @@ export class HungryMachinesPanel extends LitElement {
       const next = { ...this._appliancesById };
       delete next[target.id];
       this._appliancesById = next;
+      // Drop the deleted appliance's cached prefs/constraints so they don't
+      // linger in memory or localStorage as dead entries.
+      if (this._appliancePrefsById[target.id]) {
+        const prefsNext = { ...this._appliancePrefsById };
+        delete prefsNext[target.id];
+        this._appliancePrefsById = prefsNext;
+        this._persistAppliancePrefs();
+      }
+      if (this._applianceConstraintsById[target.id]) {
+        const consNext = { ...this._applianceConstraintsById };
+        delete consNext[target.id];
+        this._applianceConstraintsById = consNext;
+        this._persistApplianceConstraints();
+      }
       if (this._schedules) {
         this._schedules = {
           ...this._schedules,
@@ -2131,6 +2377,7 @@ export class HungryMachinesPanel extends LitElement {
       this._preferences = await updatePreferences({
         optimization_enabled: next,
       });
+      this._persistUserPrefs();
     } catch {
       // PUT failed — leave _preferences untouched so the toggle
       // reflects the server's actual state.
