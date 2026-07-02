@@ -975,3 +975,62 @@ async def test_hvac_prefers_climate_current_temperature_over_fallback() -> None:
     assert n == 1
     posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
     assert posted["indoor_temp"] == 71.5  # NOT 99.9
+
+
+@pytest.mark.asyncio
+async def test_capture_hvac_records_raw_hvac_action() -> None:
+    """The raw hvac_action attribute is recorded as its own field —
+    the backend reconciler uses it for runtime verification when no
+    trustworthy power signal exists (central thermostats duty-cycle
+    inside COOL mode; the action is the only per-reading signal that
+    separates compressor-on from idle-in-mode)."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    state = _state(
+        "cool",
+        {
+            "current_temperature": 74.0,
+            "temperature": 70.0,
+            "hvac_action": "idle",
+        },
+    )
+    hass = _hass({"climate.living_room": state})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    # Folded state says OFF (idle), and the raw action rides along.
+    assert posted["hvac_state"] == "OFF"
+    assert posted["hvac_action"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_capture_hvac_omits_hvac_action_when_not_exposed() -> None:
+    """Entities without an hvac_action attribute produce readings with
+    no hvac_action key at all (backend stores NULL — 'no claim')."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    state = _state(
+        "cool",
+        {"current_temperature": 74.0, "temperature": 70.0},
+    )
+    hass = _hass({"climate.living_room": state})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert "hvac_action" not in posted

@@ -443,6 +443,19 @@ def _build_hvac_home_reading(
     if fan_mode is not None:
         reading["fan_mode"] = str(fan_mode)
 
+    # Activity claim ("cooling", "heating", "idle", "off", "fan", ...).
+    # Recorded verbatim as its OWN field even though _resolve_hvac_state
+    # already folds it into hvac_state: the backend reconciler uses the
+    # raw action as the runtime-verification fallback when no
+    # (trustworthy) power signal exists — a central thermostat sits in
+    # COOL mode all day while the compressor duty-cycles, and the
+    # action is the only per-reading signal that distinguishes
+    # compressor-on from idle-in-mode. NULL when the entity doesn't
+    # expose hvac_action.
+    hvac_action = state.attributes.get("hvac_action")
+    if hvac_action is not None:
+        reading["hvac_action"] = str(hvac_action)
+
     # Ground-truth signal — what the scheduler last commanded for this
     # entity. The reconciler uses commanded values to detect when the
     # climate entity reports stale or default state (a common Tuya /
