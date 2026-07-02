@@ -1564,3 +1564,28 @@ async def test_apply_hvac_log_includes_appliance_name() -> None:
     formatted = fmt % apply_call.args[1:]
     assert "Bedroom" in formatted
     assert "climate.living_room" in formatted
+
+
+@pytest.mark.asyncio
+async def test_apply_hvac_skips_fan_when_entity_has_no_matching_tier() -> None:
+    """An auto-only central thermostat (fan_modes=["Auto", "On"]) has
+    no label that matches canonical 'low'/'high'. The integration must
+    skip set_fan_mode entirely rather than send a value the entity
+    would reject — the delivery-point half of the fan-capability gate
+    (the backend also suppresses fan schedules for such units, but a
+    stale schedule blob must stay safe too)."""
+    hass = _hass(_climate_state(
+        "cool", supports_range=False,
+        fan_modes=["Auto", "On"],
+    ))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(
+        setpoint=72.0, fan_mode_schedule=["low"] * 48,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    services = [c.args[1] for c in hass.services.async_call.await_args_list]
+    assert services == ["set_temperature"], (
+        f"expected only set_temperature, got {services}"
+    )
