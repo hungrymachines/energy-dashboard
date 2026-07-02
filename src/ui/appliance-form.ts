@@ -76,7 +76,7 @@ const AUX_FIELDS: Partial<Record<ApplianceType, { name: string; label: string; h
 const HVAC_POWER_FIELD = {
   name: 'power_sensor_entity_id',
   label: 'AC power sensor (optional)',
-  help: 'sensor.* exposing instantaneous draw in W or kW (built-in meter or smart plug). Lets the model verify the AC is actually running when the climate entity reports stale state — common on Tuya / mini-split units.',
+  help: 'Optional. sensor.* exposing instantaneous draw in W or kW (built-in meter or smart plug). Lets the model verify the AC is actually running when the climate entity reports stale state — common on Tuya / mini-split units. Must measure this unit only: if the meter also covers another AC or other equipment (whole-house or shared-circuit meter), leave this blank — a shared reading teaches the model the wrong run times.',
   domain: 'sensor',
 } as const;
 
