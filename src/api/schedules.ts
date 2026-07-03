@@ -52,6 +52,30 @@ export interface SchedulesResponse {
   appliances: ApplianceScheduleEntry[];
 }
 
+/**
+ * Per-appliance outcome of one recompute run (POST /schedule/recompute).
+ *
+ * - `ok` — a fresh optimized row was written.
+ * - `failed` — this appliance's optimization raised (`detail` carries
+ *   the error); its entry in `appliances` is the stale pre-save row.
+ * - `calibration` — the calibration state machine preempted the
+ *   optimizer for this HVAC; constraint changes won't reflect on its
+ *   chart until calibration completes.
+ * - `forecast` / `observe` / `skipped` — nothing to optimize (solar,
+ *   dehumidifier, unknown type).
+ */
+export interface RecomputeApplianceResult {
+  appliance_id: string;
+  appliance_type: ApplianceType;
+  name: string;
+  status: 'ok' | 'failed' | 'calibration' | 'forecast' | 'observe' | 'skipped';
+  detail?: string;
+}
+
+export interface RecomputeResponse extends SchedulesResponse {
+  results?: RecomputeApplianceResult[];
+}
+
 export function getAllSchedules(): Promise<SchedulesResponse> {
   return apiFetch<SchedulesResponse>('/api/v1/schedules');
 }
@@ -68,8 +92,8 @@ export function getHvacSchedule(): Promise<HvacScheduleResponse> {
  * bounded backtrack budget). Callers should show a progress
  * indicator while this is in flight.
  */
-export function recomputeSchedule(): Promise<SchedulesResponse> {
-  return apiFetch<SchedulesResponse>('/api/v1/schedule/recompute', {
+export function recomputeSchedule(): Promise<RecomputeResponse> {
+  return apiFetch<RecomputeResponse>('/api/v1/schedule/recompute', {
     method: 'POST',
   });
 }

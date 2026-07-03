@@ -321,6 +321,108 @@ describe('two-HVAC dashboard display (multi-HVAC validation)', () => {
     expect(downChart.lowLimits).toEqual(Array<number>(48).fill(66));
   });
 
+  it('recompute results with a failed appliance surface a toast naming it', async () => {
+    // The recompute HTTP call succeeds even when one appliance's
+    // optimization failed server-side — the panel must read the new
+    // per-appliance `results` array and tell the user which machine
+    // kept its stale schedule instead of silently showing old data.
+    const el = await mountWithPrefs(PREFS_NO_BANDS);
+
+    const recomputed = {
+      date: '2026-07-02',
+      appliances: [HVAC_A, HVAC_B],
+      results: [
+        {
+          appliance_id: 'hvac-a',
+          appliance_type: 'hvac',
+          name: 'Upstairs Zone',
+          status: 'ok',
+        },
+        {
+          appliance_id: 'hvac-b',
+          appliance_type: 'hvac',
+          name: 'Downstairs Zone',
+          status: 'failed',
+          detail: 'weather fetch failed',
+        },
+      ],
+    };
+    installFetchStub({
+      '/api/v1/schedule/recompute': recomputed,
+      '/api/v1/schedules': { date: '2026-07-02', appliances: [HVAC_A, HVAC_B] },
+    });
+
+    await (el as unknown as { _recomputeNow(): Promise<void> })._recomputeNow();
+    await flush(el);
+
+    // `_recomputeError` is the reactive state that drives the toast
+    // (`_renderRecomputeToast`). We assert the state rather than the
+    // rendered `.recompute-error` node because happy-dom mangles the
+    // trailing child-part comment markers of the authed template (the
+    // delete-confirm / toast / overlay expressions after
+    // <hm-appliance-form> never commit under happy-dom; browsers parse
+    // them fine).
+    const error = (el as unknown as { _recomputeError: string | null })._recomputeError;
+    expect(error).not.toBeNull();
+    expect(error).toContain('Downstairs Zone');
+    expect(error).toContain('could not be re-optimized');
+    expect(error).not.toContain('Upstairs Zone');
+  });
+
+  it('recompute results with a calibration preemption explain the pending run', async () => {
+    const el = await mountWithPrefs(PREFS_NO_BANDS);
+
+    installFetchStub({
+      '/api/v1/schedule/recompute': {
+        date: '2026-07-02',
+        appliances: [HVAC_A, HVAC_B],
+        results: [
+          {
+            appliance_id: 'hvac-a',
+            appliance_type: 'hvac',
+            name: 'Upstairs Zone',
+            status: 'ok',
+          },
+          {
+            appliance_id: 'hvac-b',
+            appliance_type: 'hvac',
+            name: 'Downstairs Zone',
+            status: 'calibration',
+          },
+        ],
+      },
+    });
+
+    await (el as unknown as { _recomputeNow(): Promise<void> })._recomputeNow();
+    await flush(el);
+
+    const error = (el as unknown as { _recomputeError: string | null })._recomputeError;
+    expect(error).toContain('Downstairs Zone');
+    expect(error).toContain('calibration');
+  });
+
+  it('recompute results all-ok leaves no error toast', async () => {
+    const el = await mountWithPrefs(PREFS_NO_BANDS);
+
+    installFetchStub({
+      '/api/v1/schedule/recompute': {
+        date: '2026-07-02',
+        appliances: [HVAC_A, HVAC_B],
+        results: [
+          { appliance_id: 'hvac-a', appliance_type: 'hvac', name: 'Upstairs Zone', status: 'ok' },
+          { appliance_id: 'hvac-b', appliance_type: 'hvac', name: 'Downstairs Zone', status: 'ok' },
+        ],
+      },
+    });
+
+    await (el as unknown as { _recomputeNow(): Promise<void> })._recomputeNow();
+    await flush(el);
+
+    expect(
+      (el as unknown as { _recomputeError: string | null })._recomputeError,
+    ).toBeNull();
+  });
+
   it('each machine\'s own saved hourly bands win over its baked schedule row', async () => {
     // Fresh per-appliance band edits (appliance_preferences) should show
     // on that machine's chart immediately — without waiting for tonight's
