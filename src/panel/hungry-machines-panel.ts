@@ -4,6 +4,7 @@ import {
   getAllSchedules,
   recomputeSchedule,
   type ApplianceScheduleEntry,
+  type RecomputeApplianceResult,
   type SchedulesResponse,
 } from '../api/schedules.js';
 import {
@@ -57,6 +58,35 @@ const TYPE_LABELS: Record<ApplianceType, string> = {
 function asNumberArray(value: unknown): number[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.every((v) => typeof v === 'number') ? (value as number[]) : undefined;
+}
+
+/**
+ * Human-readable summary of the per-appliance problems in a recompute
+ * response, or null when every appliance re-optimized cleanly. Only
+ * `failed` and `calibration` are user-visible problems — the other
+ * statuses (ok/forecast/observe/skipped) are expected outcomes.
+ */
+function describeRecomputeProblems(
+  results: RecomputeApplianceResult[] | undefined,
+): string | null {
+  if (!Array.isArray(results)) return null;
+  const failed = results.filter((r) => r.status === 'failed');
+  const calibrating = results.filter((r) => r.status === 'calibration');
+  const parts: string[] = [];
+  if (failed.length > 0) {
+    parts.push(
+      `${failed.map((r) => r.name).join(', ')} could not be re-optimized — ` +
+        'the chart may show an older schedule. Your changes were saved; ' +
+        "tonight's run will retry.",
+    );
+  }
+  if (calibrating.length > 0) {
+    parts.push(
+      `${calibrating.map((r) => r.name).join(', ')}: a calibration run is ` +
+        'scheduled, so constraint changes will take effect after it completes.',
+    );
+  }
+  return parts.length > 0 ? parts.join(' ') : null;
 }
 
 function asBooleanArray(value: unknown): boolean[] | undefined {
@@ -2054,6 +2084,12 @@ export class HungryMachinesPanel extends LitElement {
       const fresh = await recomputeSchedule();
       this._schedules = fresh;
       this._schedulesFetched = true;
+      // Per-appliance outcome of THIS run. The HTTP call succeeds even
+      // when one appliance's optimization failed or was preempted by
+      // calibration — without this check a failed zone silently keeps
+      // its stale chart and the save looks like it worked.
+      const problem = describeRecomputeProblems(fresh.results);
+      if (problem) this._recomputeError = problem;
       // Ask the integration to refetch + apply immediately so the
       // thermostat reflects the new schedule on the next service call
       // instead of waiting for the next :00/:30 boundary (up to 30 min).
