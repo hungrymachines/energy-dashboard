@@ -1501,6 +1501,12 @@ export class HungryMachinesPanel extends LitElement {
       // are swallowed; the banner just won't render. Runs after the
       // appliance list lands so we know which ids to query.
       void this._refreshCalibrationStatuses();
+      // Per-appliance preferences — one fetch per HVAC so each card's
+      // comfort-band overlay reflects that machine's own saved band
+      // without the user having to open its editor first. Best-effort:
+      // a failed fetch leaves the card on the band baked into its
+      // schedule row (or the persisted cache from a prior session).
+      void this._refreshAppliancePrefs();
     } catch (err) {
       this._schedulesError =
         err instanceof Error && err.message
@@ -1532,6 +1538,27 @@ export class HungryMachinesPanel extends LitElement {
       }),
     );
     this._calibrationByAppliance = next;
+  }
+
+  private async _refreshAppliancePrefs(): Promise<void> {
+    const hvacIds = Object.values(this._appliancesById)
+      .filter((a) => a.appliance_type === 'hvac')
+      .map((a) => a.id);
+    if (hvacIds.length === 0) return;
+    const fetched: Record<string, AppliancePreferences> = {};
+    await Promise.all(
+      hvacIds.map(async (id) => {
+        try {
+          fetched[id] = await getAppliancePreferences(id);
+        } catch {
+          // Best effort — the card falls back to its schedule row's
+          // baked band (or a previously cached prefs row).
+        }
+      }),
+    );
+    if (Object.keys(fetched).length === 0) return;
+    this._appliancePrefsById = { ...this._appliancePrefsById, ...fetched };
+    this._persistAppliancePrefs();
   }
 
   private async _onCalibrationSkip(applianceId: string): Promise<void> {
@@ -2623,10 +2650,13 @@ export class HungryMachinesPanel extends LitElement {
       targetValues =
         asNumberArray(sched['setpoint_temps']) ??
         asNumberArray(sched['temp_trajectory']);
-      const prefs = this._preferences;
-      // The user's saved comfort band wins over whatever the nightly job
-      // happened to bake into this row, so live edits don't wait until
-      // tomorrow's run to show up on the chart.
+      // THIS appliance's saved comfort band wins over whatever the
+      // nightly job happened to bake into this row, so live edits don't
+      // wait until tomorrow's run to show up on the chart. Bands live on
+      // appliance_preferences (migration 027) — the user-level row is
+      // only a seed default and must NOT paint over every HVAC card, or
+      // two machines with different bands look identical (US-MHVAC).
+      const prefs = this._appliancePrefsById[appliance.appliance_id];
       highLimits =
         prefs && hasHourlyComfortBands(prefs)
           ? expandHourlyTo48(prefs.hourly_high_temps_f as number[])
