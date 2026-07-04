@@ -11,7 +11,13 @@ import {
   update as updatePreferences,
   type Preferences,
 } from '../api/preferences.js';
+import {
+  get as getAppliancePreferences,
+  update as updateAppliancePreferences,
+  type AppliancePreferences,
+} from '../api/appliance-preferences.js';
 import { get as getRates, type RatesResponse } from '../api/rates.js';
+import { hasHourlyComfortBands } from '../utils/hourly.js';
 
 export interface HmThermostatCardConfig {
   type?: string;
@@ -232,6 +238,12 @@ export class HmThermostatCard extends LitElement {
       font-weight: 700;
       color: var(--hm-primary, #1E3A8A);
     }
+    .bands-hint {
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--hm-muted, #64748B);
+      padding: 0 4px;
+    }
   `;
 
   static override properties = {
@@ -241,6 +253,7 @@ export class HmThermostatCard extends LitElement {
     _rates: { state: true },
     _scheduleError: { state: true },
     _savingsLevel: { state: true },
+    _appliancePrefs: { state: true },
   };
 
   hass: HassLike | undefined = undefined;
@@ -249,6 +262,16 @@ export class HmThermostatCard extends LitElement {
   _rates: RatesResponse | null = null;
   _scheduleError: string | null = null;
   _savingsLevel = 3;
+  /**
+   * Per-appliance preferences for the resolved HVAC. Preferences are
+   * per-appliance since US-MHVAC-017 — the user-level row is only a
+   * fallback for HVACs with no row yet, so both the savings-slider
+   * write and the "custom hourly limits active" hint key off this.
+   */
+  _appliancePrefs: AppliancePreferences | null = null;
+
+  /** Which appliance `_appliancePrefs` belongs to (guards stale fetches). */
+  private _appliancePrefsFor: string | null = null;
 
   private _config: HmThermostatCardConfig = {};
   private _unsubscribe: (() => void) | null = null;
@@ -313,6 +336,28 @@ export class HmThermostatCard extends LitElement {
       if (preferences && typeof preferences.savings_level === 'number') {
         this._savingsLevel = this._clampLevel(preferences.savings_level);
       }
+      // Preferences live on the per-appliance row (US-MHVAC-017); the
+      // user-level value read above is only the fallback for an HVAC
+      // that has no row yet. Without this, the slider showed — and
+      // wrote — a user-level value the optimizer never reads once a
+      // per-appliance row exists.
+      const appliance = this._resolveAppliance();
+      if (appliance) {
+        try {
+          const prefs = await getAppliancePreferences(appliance.appliance_id);
+          this._appliancePrefs = prefs;
+          this._appliancePrefsFor = appliance.appliance_id;
+          if (typeof prefs.savings_level === 'number') {
+            this._savingsLevel = this._clampLevel(prefs.savings_level);
+          }
+        } catch {
+          // Best-effort: keep the user-level seed; the write path
+          // still targets the per-appliance endpoint.
+        }
+      } else {
+        this._appliancePrefs = null;
+        this._appliancePrefsFor = null;
+      }
     } catch (err) {
       this._scheduleError =
         err instanceof Error && err.message
@@ -368,7 +413,20 @@ export class HmThermostatCard extends LitElement {
     }
     this._preferencesTimer = setTimeout(() => {
       this._preferencesTimer = null;
-      void updatePreferences({ savings_level: level }).catch(() => {
+      // Write to the per-appliance row when this card resolves to an
+      // HVAC — the nightly optimizer reads per-appliance preferences
+      // and ignores the user-level value once a row exists, so the
+      // user-level PUT alone was a silent no-op (US-MHVAC-017).
+      const appliance = this._resolveAppliance();
+      const write = appliance
+        ? updateAppliancePreferences(appliance.appliance_id, {
+            savings_level: level,
+          }).then((prefs) => {
+            this._appliancePrefs = prefs;
+            this._appliancePrefsFor = appliance.appliance_id;
+          })
+        : updatePreferences({ savings_level: level }).then(() => undefined);
+      void write.catch(() => {
         /* swallow — retry on next change */
       });
     }, PREFERENCES_DEBOUNCE_MS);
@@ -439,6 +497,14 @@ export class HmThermostatCard extends LitElement {
     const name = entry?.name ?? 'Thermostat';
     const health = entry?.integration_health;
     const healthHidden = !health || health.status === 'healthy';
+    // The savings slider only drives the SIMPLE comfort schedule.
+    // When this appliance runs custom hourly limits, say so instead of
+    // presenting a control that silently does nothing.
+    const customBandsActive =
+      !!entry &&
+      this._appliancePrefsFor === entry.appliance_id &&
+      !!this._appliancePrefs &&
+      hasHourlyComfortBands(this._appliancePrefs);
 
     return html`
       <div class="card" data-appliance-type="hvac">
@@ -500,11 +566,19 @@ export class HmThermostatCard extends LitElement {
             min="1"
             max="3"
             step="1"
+            ?disabled=${customBandsActive}
             .value=${String(this._savingsLevel)}
             @input=${(e: Event) => this._onSavingsInput(e)}
           />
           <span class="slider-value">${this._savingsLevel}</span>
         </div>
+        ${customBandsActive
+          ? html`<div class="bands-hint">
+              Custom hourly limits are active for this device, so the
+              savings level doesn't apply. Switch back to the simple
+              schedule in the Hungry Machines panel to use it.
+            </div>`
+          : null}
       </div>
     `;
   }

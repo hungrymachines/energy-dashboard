@@ -83,6 +83,7 @@ type FetchCall = { url: string; init: RequestInit | undefined };
 
 function installFetchStub(
   schedules: Record<string, unknown> = makeSchedules([makeHvacAppliance()]),
+  appliancePrefs: Record<string, unknown> = PREFERENCES_RESPONSE,
 ): FetchCall[] {
   const calls: FetchCall[] = [];
   vi.stubGlobal(
@@ -96,6 +97,9 @@ function installFetchStub(
             : input.url;
       calls.push({ url, init });
       if (url.endsWith('/api/v1/schedules')) return jsonResponse(schedules);
+      if (/\/api\/v1\/appliances\/[^/]+\/preferences$/.test(url)) {
+        return jsonResponse(appliancePrefs);
+      }
       if (url.endsWith('/api/v1/preferences')) return jsonResponse(PREFERENCES_RESPONSE);
       if (url.endsWith('/api/v1/rates')) return jsonResponse(RATES_RESPONSE);
       return new Response('{}', {
@@ -115,7 +119,11 @@ function mountCard(init: Partial<HmThermostatCard> = {}): CardEl {
 }
 
 async function flush(el: CardEl): Promise<void> {
-  for (let i = 0; i < 5; i++) {
+  // The card fires two dependent async loads on mount: getAllSchedules /
+  // getPreferences / getRates in parallel, THEN a per-appliance
+  // getAppliancePreferences that depends on the resolved schedule. Give
+  // the extra await chain enough microtask turns to settle.
+  for (let i = 0; i < 10; i++) {
     await el.updateComplete;
     await Promise.resolve();
   }
@@ -179,7 +187,7 @@ describe('hm-thermostat-card', () => {
     expect(outdoor!.textContent).toContain('55');
   });
 
-  it('debounces slider changes and calls PUT /api/v1/preferences after 500ms', async () => {
+  it('debounces slider changes and PUTs the per-appliance preferences after 500ms', async () => {
     const calls = installFetchStub();
     vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] });
 
@@ -211,15 +219,20 @@ describe('hm-thermostat-card', () => {
 
     // Before timer fires, no PUT.
     const beforePut = calls.slice(startIdx).find(
-      (c) => c.url.endsWith('/api/v1/preferences') && c.init?.method === 'PUT',
+      (c) => c.url.includes('/preferences') && c.init?.method === 'PUT',
     );
     expect(beforePut).toBeUndefined();
 
     await vi.advanceTimersByTimeAsync(500);
     await flush(el);
 
+    // The write targets the PER-APPLIANCE preferences row — the nightly
+    // optimizer ignores the user-level savings_level once an
+    // appliance_preferences row exists (US-MHVAC-017).
     const putCall = calls.slice(startIdx).find(
-      (c) => c.url.endsWith('/api/v1/preferences') && c.init?.method === 'PUT',
+      (c) =>
+        c.url.endsWith('/api/v1/appliances/hvac-1/preferences') &&
+        c.init?.method === 'PUT',
     );
     expect(putCall).toBeDefined();
     const body = JSON.parse(String(putCall!.init!.body));
@@ -250,6 +263,67 @@ describe('hm-thermostat-card', () => {
     expect(slider).not.toBeNull();
     expect(slider!.getAttribute('max')).toBe('3');
     expect(slider!.getAttribute('min')).toBe('1');
+  });
+
+  it('seeds the slider from the PER-APPLIANCE preferences row, not the user-level one', async () => {
+    // User-level says savings_level 2 (the PREFERENCES_RESPONSE fixture);
+    // this HVAC's own row says 1. The card must show the appliance value.
+    installFetchStub(makeSchedules([makeHvacAppliance()]), {
+      ...PREFERENCES_RESPONSE,
+      savings_level: 1,
+    });
+    const el = mountCard({
+      hass: {
+        states: {
+          'sensor.living_room_temp': {
+            entity_id: 'sensor.living_room_temp',
+            state: '72',
+          },
+        },
+      },
+    });
+    el.setConfig({
+      type: 'custom:hm-thermostat-card',
+      entities: { indoor_temp: 'sensor.living_room_temp' },
+    });
+    await flush(el);
+
+    const sliderValue = el.shadowRoot!.querySelector('.slider-value');
+    expect(sliderValue!.textContent).toBe('1');
+  });
+
+  it('disables the savings slider and shows a hint when custom hourly limits are active', async () => {
+    installFetchStub(makeSchedules([makeHvacAppliance()]), {
+      ...PREFERENCES_RESPONSE,
+      hourly_low_temps_f: Array<number>(24).fill(68),
+      hourly_high_temps_f: Array<number>(24).fill(78),
+    });
+    const el = mountCard({
+      hass: {
+        states: {
+          'sensor.living_room_temp': {
+            entity_id: 'sensor.living_room_temp',
+            state: '72',
+          },
+        },
+      },
+    });
+    el.setConfig({
+      type: 'custom:hm-thermostat-card',
+      entities: { indoor_temp: 'sensor.living_room_temp' },
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const slider = root.querySelector<HTMLInputElement>(
+      'input[name="savings_level"]',
+    );
+    expect(slider).not.toBeNull();
+    expect(slider!.disabled).toBe(true);
+    expect(root.querySelector('.bands-hint')).not.toBeNull();
+    expect(root.querySelector('.bands-hint')!.textContent).toContain(
+      'Custom hourly limits',
+    );
   });
 
   it('_clampLevel clamps above 3 down to 3 and below 1 up to 1', () => {
@@ -301,7 +375,9 @@ describe('hm-thermostat-card', () => {
     await flush(el);
 
     const putCall = calls.slice(startIdx).find(
-      (c) => c.url.endsWith('/api/v1/preferences') && c.init?.method === 'PUT',
+      (c) =>
+        c.url.endsWith('/api/v1/appliances/hvac-1/preferences') &&
+        c.init?.method === 'PUT',
     );
     expect(putCall).toBeDefined();
     const body = JSON.parse(String(putCall!.init!.body));

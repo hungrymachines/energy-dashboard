@@ -421,17 +421,18 @@ describe('hm-constraint-editor', () => {
     expect(root.querySelector('input[name="time_away"]')).not.toBeNull();
     expect(root.querySelector('input[name="time_home"]')).not.toBeNull();
 
-    // Open the hourly-bands panel and toggle the use-hourly-bands checkbox.
-    const toggle = root.querySelector<HTMLButtonElement>('button.hourly-toggle')!;
-    toggle.click();
-    await flush(el);
-    const useHourly = root.querySelector<HTMLInputElement>('input[name="use_hourly_bands"]')!;
-    useHourly.checked = true;
-    useHourly.dispatchEvent(new Event('change', { bubbles: true }));
+    // Switch the comfort schedule style to custom hourly limits.
+    const customRadio = root.querySelector<HTMLInputElement>(
+      'input[name="comfort_style"][value="custom"]',
+    )!;
+    customRadio.checked = true;
+    customRadio.dispatchEvent(new Event('change', { bubbles: true }));
     await flush(el);
 
     expect(root.querySelector('input[name="time_away"]')).toBeNull();
     expect(root.querySelector('input[name="time_home"]')).toBeNull();
+    // The savings slider only drives the simple style — hidden too.
+    expect(root.querySelector('input[name="savings_level"]')).toBeNull();
   });
 
   it('renders a per-appliance pause toggle that defaults ON and submits false when unchecked (US-MHVAC-017)', async () => {

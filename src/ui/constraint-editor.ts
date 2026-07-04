@@ -173,17 +173,6 @@ export class HmConstraintEditor extends LitElement {
     .hourly-content {
       margin-top: 8px;
     }
-    .hourly-checkbox {
-      display: flex;
-      align-items: flex-start;
-      gap: 8px;
-      font-size: 13px;
-      margin-bottom: 8px;
-    }
-    .hourly-checkbox input {
-      width: auto;
-      margin-top: 3px;
-    }
     fieldset.opt-toggles {
       border: 1px solid rgba(100, 116, 139, 0.3);
       border-radius: 8px;
@@ -279,6 +268,17 @@ export class HmConstraintEditor extends LitElement {
 
   private _lastKey = '';
 
+  /**
+   * True once the user has edited ANY field in the currently-open
+   * editor. While dirty, a reassignment of `currentConstraints` (the
+   * panel's async per-appliance GET landing late) must NOT re-seed the
+   * form: doing so silently reverted in-progress edits — worst of all
+   * the "Use my hourly bands" uncheck, where Lit's dirty-check left the
+   * checkbox LOOKING unchecked while `_hourlyEnabled` flipped back to
+   * true, so Save re-sent the custom bands the user just turned off.
+   */
+  private _dirty = false;
+
   override willUpdate(changed: Map<string, unknown>): void {
     const key = `${this.applianceType}|${this.applianceId}|${this.open ? '1' : '0'}`;
     // The panel opens the editor seeded with a synchronous fallback
@@ -288,20 +288,25 @@ export class HmConstraintEditor extends LitElement {
     // the reseed only on `key` would ignore that second assignment and
     // leave the form showing the stale fallback until a cancel+reopen.
     // So treat a fresh `currentConstraints` reference as its own reset
-    // trigger. (User field edits live in `_values`/`_hourly*` state, not
-    // `currentConstraints`, so typing never spuriously re-seeds.)
+    // trigger — but only while the form is pristine. Once the user has
+    // touched anything (`_dirty`), their in-progress edits win over the
+    // late-arriving row.
     const constraintsChanged = changed.has('currentConstraints');
     const shouldReset =
       changed.has('open') ||
       changed.has('applianceId') ||
       changed.has('applianceType') ||
       constraintsChanged;
-    if (shouldReset && (key !== this._lastKey || constraintsChanged)) {
+    if (
+      shouldReset &&
+      (key !== this._lastKey || (constraintsChanged && !this._dirty))
+    ) {
       this._lastKey = key;
       this._values = this._seedValues();
       this._errors = {};
       this._topError = null;
       this._saving = false;
+      this._dirty = false;
       this._seedHourlyBands();
     }
   }
@@ -317,8 +322,10 @@ export class HmConstraintEditor extends LitElement {
       hourly_low_temps_f: isFiniteNumberArray(low) ? low : undefined,
     };
     if (hasHourlyComfortBands(prefsLike)) {
+      // Custom-hourly style: the editable table renders unconditionally,
+      // so `_hourlyOpen` (the simple-style preview collapsible) is moot.
       this._hourlyEnabled = true;
-      this._hourlyOpen = true;
+      this._hourlyOpen = false;
       this._hourlyHigh = (prefsLike.hourly_high_temps_f as number[]).map((n) => String(n));
       this._hourlyLow = (prefsLike.hourly_low_temps_f as number[]).map((n) => String(n));
     } else {
@@ -435,6 +442,7 @@ export class HmConstraintEditor extends LitElement {
   }
 
   private _setValue(name: string, value: string): void {
+    this._dirty = true;
     this._values = { ...this._values, [name]: value };
     // Re-validate on change so the Save button enable/disable tracks live.
     this._errors = this._validate(this._values);
@@ -651,12 +659,14 @@ export class HmConstraintEditor extends LitElement {
     const onSel = (name: string) => (e: Event) =>
       this._setValue(name, (e.target as HTMLSelectElement).value);
     const onHourlyLow = (i: number) => (e: Event) => {
+      this._dirty = true;
       const next = [...this._hourlyLow];
       next[i] = (e.target as HTMLInputElement).value;
       this._hourlyLow = next;
       this._errors = this._validate(this._values);
     };
     const onHourlyHigh = (i: number) => (e: Event) => {
+      this._dirty = true;
       const next = [...this._hourlyHigh];
       next[i] = (e.target as HTMLInputElement).value;
       this._hourlyHigh = next;
@@ -665,15 +675,18 @@ export class HmConstraintEditor extends LitElement {
     const toggleHourlyOpen = () => {
       this._hourlyOpen = !this._hourlyOpen;
     };
-    const onHourlyEnabled = (e: Event) => {
-      const checked = (e.target as HTMLInputElement).checked;
-      this._hourlyEnabled = checked;
-      // When the user unchecks the override, refresh the displayed
+    const onComfortStyle = (e: Event) => {
+      const custom = (e.target as HTMLInputElement).value === 'custom';
+      if (custom === this._hourlyEnabled) return;
+      this._dirty = true;
+      this._hourlyEnabled = custom;
+      // When the user switches back to the simple style, refresh the
       // hourly table to mirror the band the optimizer will actually use
       // (derived from base_temperature + savings_level + time_away/home).
       // Without this the table sits with stale custom values and looks
-      // inconsistent with what's about to be saved.
-      if (!checked) {
+      // inconsistent with what's about to be saved. Switching TO custom
+      // keeps the displayed band as the editing starting point.
+      if (!custom) {
         this._loadDerivedHourlyBands();
       }
       this._errors = this._validate(this._values);
@@ -867,24 +880,65 @@ export class HmConstraintEditor extends LitElement {
                     ? html`<div class="field-error">${errs['base_temperature']}</div>`
                     : null}
                 </label>
-                <label>
-                  <span class="label-text">Savings level (1–3)</span>
-                  <div class="slider-row">
+                <fieldset class="opt-toggles comfort-style">
+                  <legend>Comfort schedule style</legend>
+                  <p class="opt-toggles-help">
+                    Pick ONE way to describe your comfort limits — the
+                    other style's settings are ignored while it's not
+                    selected.
+                  </p>
+                  <label class="opt-toggle">
                     <input
-                      name="savings_level"
-                      type="range"
-                      min="1"
-                      max="3"
-                      step="1"
-                      .value=${v['savings_level'] ?? '3'}
-                      @input=${onNum('savings_level')}
+                      name="comfort_style"
+                      type="radio"
+                      value="simple"
+                      .checked=${!this._hourlyEnabled}
+                      @change=${onComfortStyle}
                     />
-                    <span class="slider-value">${v['savings_level'] ?? '3'}</span>
-                  </div>
-                  ${errs['savings_level']
-                    ? html`<div class="field-error">${errs['savings_level']}</div>`
-                    : null}
-                </label>
+                    <span>
+                      <strong>Simple schedule</strong> — one target
+                      temperature plus your home/away times; away hours
+                      widen the limits by your savings level.
+                    </span>
+                  </label>
+                  <label class="opt-toggle">
+                    <input
+                      name="comfort_style"
+                      type="radio"
+                      value="custom"
+                      .checked=${this._hourlyEnabled}
+                      @change=${onComfortStyle}
+                    />
+                    <span>
+                      <strong>Custom hourly limits</strong> — set your own
+                      low/high temperature for each hour of the day.
+                    </span>
+                  </label>
+                </fieldset>
+                <div class="savings-field">
+                  ${this._hourlyEnabled
+                    ? null
+                    : html`
+                        <label>
+                          <span class="label-text">Savings level (1–3)</span>
+                          <div class="slider-row">
+                            <input
+                              name="savings_level"
+                              type="range"
+                              min="1"
+                              max="3"
+                              step="1"
+                              .value=${v['savings_level'] ?? '3'}
+                              @input=${onNum('savings_level')}
+                            />
+                            <span class="slider-value">${v['savings_level'] ?? '3'}</span>
+                          </div>
+                          ${errs['savings_level']
+                            ? html`<div class="field-error">${errs['savings_level']}</div>`
+                            : null}
+                        </label>
+                      `}
+                </div>
                 <label>
                   <span class="label-text">HVAC mode</span>
                   <select
@@ -1008,27 +1062,35 @@ export class HmConstraintEditor extends LitElement {
                       `}
                 </div>
                 <div class="hourly-bands">
-                  <button
-                    class="hourly-toggle ${this._hourlyOpen ? 'open' : ''}"
-                    type="button"
-                    aria-expanded=${this._hourlyOpen ? 'true' : 'false'}
-                    @click=${() => toggleHourlyOpen()}
-                  >
-                    <span>Hourly bands (advanced)</span>
-                    <span class="chevron" aria-hidden="true">▶</span>
-                  </button>
-                  ${this._hourlyOpen
+                  ${this._hourlyEnabled
+                    ? html`
+                        <span class="label-text">
+                          Hourly comfort limits (°F)
+                        </span>
+                      `
+                    : html`
+                        <button
+                          class="hourly-toggle ${this._hourlyOpen ? 'open' : ''}"
+                          type="button"
+                          aria-expanded=${this._hourlyOpen ? 'true' : 'false'}
+                          @click=${() => toggleHourlyOpen()}
+                        >
+                          <span>Preview hourly limits</span>
+                          <span class="chevron" aria-hidden="true">▶</span>
+                        </button>
+                      `}
+                  ${this._hourlyEnabled || this._hourlyOpen
                     ? html`
                         <div class="hourly-content">
-                          <label class="hourly-checkbox">
-                            <input
-                              name="use_hourly_bands"
-                              type="checkbox"
-                              .checked=${this._hourlyEnabled}
-                              @change=${onHourlyEnabled}
-                            />
-                            <span>Use my hourly bands (otherwise the optimizer uses base temperature + home/away schedule)</span>
-                          </label>
+                          ${this._hourlyEnabled
+                            ? null
+                            : html`
+                                <p class="opt-toggles-help">
+                                  These are the limits your simple schedule
+                                  produces. Switch to “Custom hourly limits”
+                                  above to edit them per hour.
+                                </p>
+                              `}
                           <table class="hourly-table ${this._hourlyEnabled ? '' : 'disabled'}">
                             <thead>
                               <tr>

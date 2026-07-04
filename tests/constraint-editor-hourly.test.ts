@@ -63,6 +63,20 @@ function saveButton(root: ShadowRoot): HTMLButtonElement {
   return btn;
 }
 
+function styleRadio(root: ShadowRoot, value: 'simple' | 'custom'): HTMLInputElement {
+  const el = root.querySelector<HTMLInputElement>(
+    `input[name="comfort_style"][value="${value}"]`,
+  );
+  if (!el) throw new Error(`comfort_style radio "${value}" not found`);
+  return el;
+}
+
+function selectStyle(root: ShadowRoot, value: 'simple' | 'custom'): void {
+  const radio = styleRadio(root, value);
+  radio.checked = true;
+  radio.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
 function setRowInput(
   root: ShadowRoot,
   side: 'low' | 'high',
@@ -90,7 +104,7 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
     clearTokens();
   });
 
-  it('(a) renders Hourly bands section closed; clicking toggle reveals 24 rows derived from base+savings+home/away', async () => {
+  it('(a) defaults to the simple style; the preview toggle reveals 24 disabled rows derived from base+savings+home/away', async () => {
     captureFetch(jsonResponse({}));
 
     // base=72, savings=3 (offset 12), away 08:00-17:00.
@@ -112,13 +126,16 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
     await flush(el);
 
     const root = el.shadowRoot!;
-    // Closed by default: no rows in DOM.
-    expect(root.querySelectorAll('tr[data-row]').length).toBe(0);
-    // Section title exists.
-    expect(root.textContent).toContain('Hourly bands (advanced)');
+    // The style choice is always visible, simple pre-selected.
+    expect(styleRadio(root, 'simple').checked).toBe(true);
+    expect(styleRadio(root, 'custom').checked).toBe(false);
 
-    // Click toggle to open.
-    findButtonByText(root, 'Hourly bands (advanced)').click();
+    // Preview collapsed by default: no rows in DOM.
+    expect(root.querySelectorAll('tr[data-row]').length).toBe(0);
+    expect(root.textContent).toContain('Preview hourly limits');
+
+    // Click toggle to open the derived preview.
+    findButtonByText(root, 'Preview hourly limits').click();
     await flush(el);
 
     const rows = root.querySelectorAll<HTMLTableRowElement>('tr[data-row]');
@@ -129,20 +146,16 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
     const high0 = root.querySelector<HTMLInputElement>('input[name="hourly_high_0"]')!;
     expect(low0.value).toBe('71');
     expect(high0.value).toBe('73');
+    expect(low0.disabled).toBe(true);
+    expect(high0.disabled).toBe(true);
     // Hour 12 is AWAY (08:00-17:00) → wide ±12 band (savings level 3).
     const low12 = root.querySelector<HTMLInputElement>('input[name="hourly_low_12"]')!;
     const high12 = root.querySelector<HTMLInputElement>('input[name="hourly_high_12"]')!;
     expect(low12.value).toBe('60');
     expect(high12.value).toBe('84');
-
-    // Checkbox is unchecked by default — the user has not opted into hourly overrides.
-    const checkbox = root.querySelector<HTMLInputElement>(
-      'input[name="use_hourly_bands"]',
-    )!;
-    expect(checkbox.checked).toBe(false);
   });
 
-  it('(b) checking the box, modifying row 0 to low=70/high=74, then Save fires PUT with the expected arrays', async () => {
+  it('(b) selecting the custom style, modifying row 0 to low=70/high=74, then Save fires PUT with the expected arrays', async () => {
     const { calls } = captureFetch(
       jsonResponse({
         base_temperature: 72,
@@ -168,16 +181,12 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
     await flush(el);
 
     const root = el.shadowRoot!;
-    findButtonByText(root, 'Hourly bands (advanced)').click();
+    // Switch to the custom style — the editable table appears without
+    // any extra collapsible toggle.
+    selectStyle(root, 'custom');
     await flush(el);
 
-    // Check the "Use my hourly bands" box.
-    const checkbox = root.querySelector<HTMLInputElement>(
-      'input[name="use_hourly_bands"]',
-    )!;
-    checkbox.checked = true;
-    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush(el);
+    expect(root.querySelectorAll('tr[data-row]').length).toBe(24);
 
     // Modify row 0 (a HOME hour given away=08:00, home=18:00).
     setRowInput(root, 'low', 0, '70');
@@ -224,7 +233,7 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
     expect(body.optimization_mode).toBe('auto');
   });
 
-  it('(c) leaving the box unchecked and clicking Save fires PUT with both fields explicitly null', async () => {
+  it('(c) leaving the simple style selected and clicking Save fires PUT with both fields explicitly null', async () => {
     const { calls } = captureFetch(
       jsonResponse({
         base_temperature: 72,
@@ -248,7 +257,7 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
     await flush(el);
 
     const root = el.shadowRoot!;
-    // Don't open the section, don't check the box. Save should still fire with nulls.
+    // Don't touch the style radios. Save should still fire with nulls.
     const save = saveButton(root);
     expect(save.disabled).toBe(false);
     save.click();
@@ -283,14 +292,7 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
     await flush(el);
 
     const root = el.shadowRoot!;
-    findButtonByText(root, 'Hourly bands (advanced)').click();
-    await flush(el);
-
-    const checkbox = root.querySelector<HTMLInputElement>(
-      'input[name="use_hourly_bands"]',
-    )!;
-    checkbox.checked = true;
-    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+    selectStyle(root, 'custom');
     await flush(el);
 
     setRowInput(root, 'low', 5, '75');
@@ -307,7 +309,7 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
     expect(save.title).toBe('Fix hourly bands errors');
   });
 
-  it('(e) when currentConstraints contains both 24-element arrays, section opens pre-checked and pre-filled', async () => {
+  it('(e) when currentConstraints contains both 24-element arrays, the custom style is pre-selected with the table pre-filled', async () => {
     captureFetch(jsonResponse({}));
 
     const lows = Array.from({ length: 24 }, (_, i) => 65 + (i % 3));
@@ -328,13 +330,13 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
     await flush(el);
 
     const root = el.shadowRoot!;
-    // Section is open by default when both arrays are pre-supplied.
-    const checkbox = root.querySelector<HTMLInputElement>(
-      'input[name="use_hourly_bands"]',
-    );
-    expect(checkbox).not.toBeNull();
-    expect(checkbox!.checked).toBe(true);
+    expect(styleRadio(root, 'custom').checked).toBe(true);
+    expect(styleRadio(root, 'simple').checked).toBe(false);
+    // Custom style hides the simple-only fields.
+    expect(root.querySelector('input[name="savings_level"]')).toBeNull();
+    expect(root.querySelector('input[name="time_away"]')).toBeNull();
 
+    // The editable table renders immediately — no collapsible in the way.
     for (let i = 0; i < 24; i++) {
       const lowEl = root.querySelector<HTMLInputElement>(
         `input[name="hourly_low_${i}"]`,
@@ -344,6 +346,148 @@ describe('hm-constraint-editor hourly bands (US-FE-OVR-02)', () => {
       )!;
       expect(Number(lowEl.value)).toBe(lows[i]);
       expect(Number(highEl.value)).toBe(highs[i]);
+      expect(lowEl.disabled).toBe(false);
+      expect(highEl.disabled).toBe(false);
     }
+  });
+
+  it('(f) switching a bands-enabled appliance back to the simple style and saving PUTs both fields explicitly null', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+
+    const lows = Array.from({ length: 24 }, () => 68);
+    const highs = Array.from({ length: 24 }, () => 78);
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: {
+        base_temperature: 72,
+        savings_level: 3,
+        optimization_mode: 'auto',
+        time_away: '08:00',
+        time_home: '18:00',
+        hourly_low_temps_f: lows,
+        hourly_high_temps_f: highs,
+        optimization_enabled: true,
+      },
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(styleRadio(root, 'custom').checked).toBe(true);
+
+    // The user goes back to the simple schedule.
+    selectStyle(root, 'simple');
+    await flush(el);
+
+    // Simple-only fields come back and the table shows the derived
+    // preview instead of the stale custom values.
+    expect(root.querySelector('input[name="savings_level"]')).not.toBeNull();
+    expect(root.querySelector('input[name="time_away"]')).not.toBeNull();
+
+    const save = saveButton(root);
+    expect(save.disabled).toBe(false);
+    save.click();
+    await flush(el);
+
+    expect(calls.length).toBe(1);
+    const body = JSON.parse(String(calls[0]![1]?.body)) as {
+      hourly_high_temps_f: number[] | null;
+      hourly_low_temps_f: number[] | null;
+    };
+    expect(body.hourly_high_temps_f).toBeNull();
+    expect(body.hourly_low_temps_f).toBeNull();
+  });
+
+  it('(g) a late currentConstraints reassignment does NOT revert an in-progress style switch (Lit checked-stomp regression)', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+
+    const lows = Array.from({ length: 24 }, () => 68);
+    const highs = Array.from({ length: 24 }, () => 78);
+    const bandsRow = {
+      base_temperature: 72,
+      savings_level: 3,
+      optimization_mode: 'auto',
+      time_away: '08:00',
+      time_home: '18:00',
+      hourly_low_temps_f: lows,
+      hourly_high_temps_f: highs,
+      optimization_enabled: true,
+    };
+
+    // Panel opens the editor seeded from its cache…
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: { ...bandsRow },
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(styleRadio(root, 'custom').checked).toBe(true);
+
+    // …the user switches back to simple while the panel's async
+    // per-appliance GET is still in flight…
+    selectStyle(root, 'simple');
+    await flush(el);
+    expect(styleRadio(root, 'simple').checked).toBe(true);
+
+    // …and the GET lands afterwards, reassigning currentConstraints to a
+    // fresh object that still carries the (now stale) custom bands.
+    // Before the dirty-guard fix this silently flipped the editor back
+    // to bands-enabled while the radio kept LOOKING like "simple", so
+    // Save re-sent the custom arrays the user had just turned off.
+    el.currentConstraints = { ...bandsRow };
+    await flush(el);
+
+    expect(styleRadio(root, 'simple').checked).toBe(true);
+    expect(styleRadio(root, 'custom').checked).toBe(false);
+
+    saveButton(root).click();
+    await flush(el);
+
+    expect(calls.length).toBe(1);
+    const body = JSON.parse(String(calls[0]![1]?.body)) as {
+      hourly_high_temps_f: number[] | null;
+      hourly_low_temps_f: number[] | null;
+    };
+    expect(body.hourly_high_temps_f).toBeNull();
+    expect(body.hourly_low_temps_f).toBeNull();
+  });
+
+  it('(h) a late currentConstraints reassignment still reseeds a PRISTINE editor (34874ae behavior preserved)', async () => {
+    captureFetch(jsonResponse({}));
+
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: {
+        base_temperature: 72,
+        savings_level: 3,
+        optimization_mode: 'auto',
+      },
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(styleRadio(root, 'simple').checked).toBe(true);
+
+    // The per-appliance GET lands with custom bands and the user hasn't
+    // touched anything — the form must adopt the fresh row.
+    el.currentConstraints = {
+      base_temperature: 70,
+      savings_level: 2,
+      optimization_mode: 'cool',
+      hourly_low_temps_f: Array.from({ length: 24 }, () => 66),
+      hourly_high_temps_f: Array.from({ length: 24 }, () => 76),
+    };
+    await flush(el);
+
+    expect(styleRadio(root, 'custom').checked).toBe(true);
+    expect(
+      root.querySelector<HTMLInputElement>('input[name="base_temperature"]')!.value,
+    ).toBe('70');
   });
 });
