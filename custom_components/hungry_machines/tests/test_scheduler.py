@@ -1218,12 +1218,12 @@ async def test_comfort_override_cools_when_off_slot_and_indoor_above_band() -> N
 
 
 @pytest.mark.asyncio
-async def test_comfort_override_stays_off_when_indoor_within_margin() -> None:
-    """Indoor 74.5°F against a 74°F band + 1°F margin → no override;
-    the OFF slot applies as scheduled (no active service calls)."""
+async def test_comfort_override_stays_off_when_indoor_in_band() -> None:
+    """Indoor 73.5°F, inside the 74°F high band → no override; the OFF
+    slot applies as scheduled (no active service calls)."""
     state = _climate_state("off", supports_range=False,
                            hvac_modes=["off", "cool"])
-    state.attributes["current_temperature"] = 74.5
+    state.attributes["current_temperature"] = 73.5
     hass = _hass(state)
     entry = _entry()
     hass.data[DOMAIN] = _override_cache()
@@ -1237,6 +1237,31 @@ async def test_comfort_override_stays_off_when_indoor_within_margin() -> None:
     ]
     cached = scheduler.get_last_commanded(hass, "climate.living_room")
     assert cached["hvac_mode"] == "OFF"
+
+
+@pytest.mark.asyncio
+async def test_comfort_override_fires_the_moment_past_the_band_edge() -> None:
+    """Comfort-first trigger: indoor 74.5°F just past a 74°F high band —
+    no grace margin — commands COOL at the edge. (The release deadband +
+    min-on-time, not a trigger margin, are what prevent short-cycling.)"""
+    state = _climate_state("off", supports_range=False,
+                           hvac_modes=["off", "cool"])
+    state.attributes["current_temperature"] = 74.5
+    hass = _hass(state)
+    entry = _entry()
+    hass.data[DOMAIN] = _override_cache()
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.apply_current_slot(hass, entry)
+
+    mode_calls = [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_hvac_mode"
+    ]
+    assert mode_calls and mode_calls[0].args[2]["hvac_mode"] == "cool"
+    cached = scheduler.get_last_commanded(hass, "climate.living_room")
+    assert cached["hvac_mode"] == "COOL"
+    assert cached["setpoint"] == 74.0
 
 
 @pytest.mark.asyncio
@@ -1328,6 +1353,160 @@ async def test_comfort_override_ignores_cool_breach_in_heat_mode() -> None:
         c for c in hass.services.async_call.await_args_list
         if c.args[1] in ("set_hvac_mode", "set_temperature")
     ]
+
+
+# ---------------------------------------------------------------------------
+# Comfort watchdog — the 5-min closed-loop check that runs BETWEEN slot
+# boundaries so a fast-drifting building doesn't sit out of band for most
+# of a half-hour before the next :00/:30 apply looks.
+# ---------------------------------------------------------------------------
+
+def _old_since(minutes: int = 20):
+    """A latch `since` far enough in the past that MIN_ON_SECONDS is met."""
+    return datetime.now(timezone.utc) - timedelta(minutes=minutes)
+
+
+@pytest.mark.asyncio
+async def test_watchdog_cools_off_slot_that_drifted_out_of_band() -> None:
+    """The core fix: a scheduled-OFF HVAC sitting above its high band is
+    commanded back on at the band edge on a watchdog tick — no need to
+    wait for the next slot boundary."""
+    state = _climate_state("off", supports_range=False,
+                           hvac_modes=["off", "cool"])
+    state.attributes["current_temperature"] = 80.0
+    hass = _hass(state)
+    entry = _entry()
+    hass.data[DOMAIN] = _override_cache()
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.comfort_watchdog(hass, entry)
+
+    calls = hass.services.async_call.await_args_list
+    mode_calls = [c for c in calls if c.args[1] == "set_hvac_mode"]
+    temp_calls = [c for c in calls if c.args[1] == "set_temperature"]
+    assert mode_calls and mode_calls[0].args[2]["hvac_mode"] == "cool"
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 74.0
+    # Latch is engaged so subsequent ticks / the slot apply agree.
+    latch = hass.data[DOMAIN]["comfort_latch"]["climate.living_room"]
+    assert latch["active"] is True and latch["direction"] == "cool"
+
+
+@pytest.mark.asyncio
+async def test_watchdog_noop_when_in_band_and_not_latched() -> None:
+    """An in-band OFF slot with no active override must NOT issue any
+    service call — the watchdog can't re-command OFF every 5 minutes."""
+    state = _climate_state("off", supports_range=False,
+                           hvac_modes=["off", "cool"])
+    state.attributes["current_temperature"] = 72.0
+    hass = _hass(state)
+    entry = _entry()
+    hass.data[DOMAIN] = _override_cache()
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.comfort_watchdog(hass, entry)
+
+    assert not hass.services.async_call.await_args_list
+
+
+@pytest.mark.asyncio
+async def test_watchdog_holds_override_before_min_on_even_if_recovered() -> None:
+    """Latched for only 5 min: even though the room is back at the edge,
+    the watchdog keeps conditioning (short-cycle guard) rather than
+    releasing to the scheduled OFF."""
+    state = _climate_state("cool", supports_range=False,
+                           hvac_modes=["off", "cool"])
+    state.attributes["current_temperature"] = 74.0  # back at the edge
+    hass = _hass(state)
+    entry = _entry()
+    hass.data[DOMAIN] = _override_cache()
+    hass.data[DOMAIN]["comfort_latch"] = {
+        "climate.living_room": {
+            "active": True, "direction": "cool", "since": _old_since(5),
+        }
+    }
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.comfort_watchdog(hass, entry)
+
+    calls = hass.services.async_call.await_args_list
+    # Held: still driving the band-edge setpoint, and NOT released to OFF.
+    # (The unit already reports 'cool', so set_hvac_mode is idempotently
+    # skipped — the tell is the retained latch + no OFF command.)
+    off_calls = [
+        c for c in calls
+        if c.args[1] == "set_hvac_mode" and c.args[2]["hvac_mode"] == "off"
+    ]
+    temp_calls = [c for c in calls if c.args[1] == "set_temperature"]
+    assert not off_calls
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 74.0
+    assert hass.data[DOMAIN]["comfort_latch"].get("climate.living_room")
+
+
+@pytest.mark.asyncio
+async def test_watchdog_releases_to_off_once_recovered_and_min_on_met() -> None:
+    """Latched >10 min and the room is back inside by the release margin
+    → release: the watchdog hands the unit back to the scheduled OFF and
+    clears the latch."""
+    state = _climate_state("cool", supports_range=False,
+                           hvac_modes=["off", "cool"])
+    state.attributes["current_temperature"] = 72.0  # inside by >1°F
+    hass = _hass(state)
+    entry = _entry()
+    hass.data[DOMAIN] = _override_cache()
+    hass.data[DOMAIN]["comfort_latch"] = {
+        "climate.living_room": {
+            "active": True, "direction": "cool", "since": _old_since(20),
+        }
+    }
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.comfort_watchdog(hass, entry)
+
+    mode_calls = [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_hvac_mode"
+    ]
+    # Released → the scheduled OFF is commanded (unit was reporting cool).
+    assert mode_calls and mode_calls[0].args[2]["hvac_mode"] == "off"
+    assert "climate.living_room" not in hass.data[DOMAIN].get("comfort_latch", {})
+
+
+@pytest.mark.asyncio
+async def test_watchdog_respects_master_pause() -> None:
+    """A globally-paused user gets no watchdog action even while out of
+    band — pause means the integration leaves the unit under manual
+    control."""
+    state = _climate_state("off", supports_range=False,
+                           hvac_modes=["off", "cool"])
+    state.attributes["current_temperature"] = 85.0
+    hass = _hass(state)
+    entry = _entry()
+    cache = _override_cache()
+    cache["schedule"]["optimization_enabled"] = False
+    hass.data[DOMAIN] = cache
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.comfort_watchdog(hass, entry)
+
+    assert not hass.services.async_call.await_args_list
+
+
+@pytest.mark.asyncio
+async def test_watchdog_skips_active_conditioning_slot() -> None:
+    """When the slot already commands COOL (not OFF), the watchdog does
+    nothing — the schedule is actively conditioning, so there's nothing
+    to fail safe over."""
+    state = _climate_state("cool", supports_range=False,
+                           hvac_modes=["off", "cool"])
+    state.attributes["current_temperature"] = 80.0
+    hass = _hass(state)
+    entry = _entry()
+    hass.data[DOMAIN] = _override_cache(hvac_mode_schedule=["COOL"] * 48)
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.comfort_watchdog(hass, entry)
+
+    assert not hass.services.async_call.await_args_list
 
 
 # ---------------------------------------------------------------------------

@@ -39,6 +39,12 @@ Apply logic per type (called once on each :00 / :30 boundary):
 * `water_heater` — same boolean → switch service mapping.
 
 A misconfigured / missing entity is logged and skipped, never crashes.
+
+Closed-loop comfort failsafe: the per-slot apply is open-loop (it trusts
+the optimizer's overnight trajectory). `comfort_watchdog` runs every 5 min
+and, for a scheduled-OFF HVAC that has actually drifted out of band,
+commands it back on at the band edge with hysteresis — see
+`_comfort_band_override` and the pure state machine in `comfort.py`.
 """
 from __future__ import annotations
 
@@ -53,11 +59,17 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_call_later
 
 from . import api
+from . import comfort
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
 _SLOTS_PER_DAY = 48
+
+# Per-entity comfort-override latch (see comfort.decide). Persists across
+# apply/watchdog calls so the hysteresis min-on-time and release deadband
+# survive between the 5-min watchdog ticks and the 30-min slot applies.
+_COMFORT_LATCH_KEY = "comfort_latch"
 
 
 def _domain_data(hass: HomeAssistant) -> dict[str, Any]:
@@ -472,25 +484,21 @@ def _match_entity_option(
     return None
 
 
-# Comfort-band failsafe margin. The override only fires once the live
-# indoor temperature is this far past the band edge — small enough to
-# matter for comfort, large enough that sensor noise and thermostat
-# deadband wobble don't flap the unit on and off across slot applies.
-_COMFORT_OVERRIDE_MARGIN_F = 1.0
-
-
 def _comfort_band_override(
     hass: HomeAssistant,
     entity_id: str,
     schedule: dict,
     slot: int,
     mode_canonical: str | None,
+    now: datetime | None = None,
 ) -> tuple[str, float] | None:
     """Decide whether a scheduled-OFF slot must be overridden because
     the house has drifted outside the comfort band.
 
     Returns `(override_mode, override_setpoint)` — e.g. `("COOL", 75.0)`
-    — or None when the schedule should apply as-is.
+    — or None when the schedule should apply as-is. The pure hysteresis
+    logic lives in `comfort.decide`; this wrapper supplies the entity
+    read, the persisted latch, and the transition logging.
 
     The backend schedule is OPEN-LOOP: computed during the night from a
     predicted temperature trajectory. When reality diverges from the
@@ -500,6 +508,15 @@ def _comfort_band_override(
     June 11 incident is the motivating case: the house was 80°F at 8am
     while the schedule — whose trajectory predicted in-band — kept
     commanding OFF.
+
+    Stateful across calls: the override LATCHES on when the room first
+    breaches the band and stays engaged — through both the 5-min
+    `comfort_watchdog` ticks and the 30-min slot applies — until the room
+    is back inside by `comfort.RELEASE_MARGIN_F` AND it has run at least
+    `comfort.MIN_ON_SECONDS`. That deadband + min-on-time is what keeps
+    the compressor from short-cycling now that the check runs every 5 min
+    instead of only at slot boundaries. The single shared latch is why
+    the two cadences never disagree about whether an override is active.
 
     Deliberately narrow:
       * Only fires when the slot EXPLICITLY commands OFF. Temperature-
@@ -517,7 +534,21 @@ def _comfort_band_override(
         slot value — pull the house back into band, then resume the
         plan at the next slot boundary.
     """
+    now = now or dt_util.utcnow()
+    latch_store = _domain_data(hass).setdefault(_COMFORT_LATCH_KEY, {})
+    prev_latch = latch_store.get(entity_id)
+
+    def _persist(new_latch: dict | None) -> None:
+        if new_latch is None:
+            latch_store.pop(entity_id, None)
+        else:
+            latch_store[entity_id] = new_latch
+
+    # Ineligible slots (not OFF, or an active calibration phase) never
+    # override — and clear any latch so a stale override can't leak into
+    # the next OFF window.
     if mode_canonical is None or mode_canonical.strip().lower() != "off":
+        _persist(None)
         return None
 
     cal = schedule.get("calibration")
@@ -528,6 +559,7 @@ def _comfort_band_override(
             and slot < len(phase_at_slot)
             and phase_at_slot[slot] is not None
         ):
+            _persist(None)
             return None
 
     state = hass.states.get(entity_id) if hass.states else None
@@ -535,6 +567,9 @@ def _comfort_band_override(
     try:
         indoor = float(attrs.get("current_temperature"))
     except (TypeError, ValueError):
+        # Can't read the room — release conservatively and let the
+        # scheduled OFF stand rather than command blind.
+        _persist(None)
         return None
 
     sched_mode = str(schedule.get("mode") or "").strip().lower()
@@ -549,34 +584,95 @@ def _comfort_band_override(
             return None
 
     high = _band_edge("high_temps")
-    if (
-        high is not None
-        and sched_mode in ("cool", "auto")
-        and indoor > high + _COMFORT_OVERRIDE_MARGIN_F
-    ):
-        _LOGGER.warning(
-            "Hungry Machines comfort override slot=%d: %s indoor %.1f°F is "
-            "above high band %.1f°F (+%.1f°F margin) while scheduled OFF — "
-            "commanding COOL at %.1f°F",
-            slot, entity_id, indoor, high, _COMFORT_OVERRIDE_MARGIN_F, high,
-        )
-        return ("COOL", high)
-
     low = _band_edge("low_temps")
-    if (
-        low is not None
-        and sched_mode in ("heat", "auto")
-        and indoor < low - _COMFORT_OVERRIDE_MARGIN_F
-    ):
-        _LOGGER.warning(
-            "Hungry Machines comfort override slot=%d: %s indoor %.1f°F is "
-            "below low band %.1f°F (-%.1f°F margin) while scheduled OFF — "
-            "commanding HEAT at %.1f°F",
-            slot, entity_id, indoor, low, _COMFORT_OVERRIDE_MARGIN_F, low,
-        )
-        return ("HEAT", low)
 
-    return None
+    override, new_latch = comfort.decide(
+        indoor=indoor,
+        high=high,
+        low=low,
+        sched_mode=sched_mode,
+        latch=prev_latch,
+        now=now,
+    )
+    _persist(new_latch)
+
+    was_active = bool(prev_latch and prev_latch.get("active"))
+    now_active = bool(new_latch and new_latch.get("active"))
+    if now_active and not was_active:
+        edge = override[1] if override else 0.0
+        _LOGGER.warning(
+            "Hungry Machines comfort override slot=%d: %s indoor %.1f°F "
+            "breached the %s band %.1f°F while scheduled OFF — commanding "
+            "%s at %.1f°F (holds ≥%ds, releases at %.1f°F inside)",
+            slot, entity_id, indoor,
+            "high" if override and override[0] == "COOL" else "low",
+            edge,
+            override[0] if override else "?", edge,
+            comfort.MIN_ON_SECONDS, comfort.RELEASE_MARGIN_F,
+        )
+    elif was_active and not now_active:
+        _LOGGER.info(
+            "Hungry Machines comfort override slot=%d: %s indoor %.1f°F "
+            "back inside band — releasing to the scheduled OFF",
+            slot, entity_id, indoor,
+        )
+
+    return override
+
+
+async def comfort_watchdog(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Fast closed-loop comfort check that runs BETWEEN slot boundaries.
+
+    The 30-min slot apply is too slow a cadence to catch a fast-drifting
+    building: the room can sit out of band for most of a half-hour before
+    the next apply even looks. This runs every 5 minutes, reuses the same
+    latched `_comfort_band_override` decision, and re-drives the unit the
+    instant the room leaves the band (or hands it back to the scheduled
+    OFF once it has recovered). Only OFF slots on mode-optimized HVACs are
+    eligible — everything else is either already conditioning or under the
+    thermostat's own control, so the watchdog no-ops for it.
+    """
+    domain_data = _domain_data(hass)
+    cache = domain_data.get("schedule")
+    if not isinstance(cache, dict):
+        return
+    # Master pause switch — respect it exactly like apply_current_slot.
+    if cache.get("optimization_enabled") is False:
+        return
+
+    slot = _current_slot()
+    # Same dict object _comfort_band_override mutates, so `was_active`
+    # below reflects the pre-decision latch even on the first tick.
+    latch_store = domain_data.setdefault(_COMFORT_LATCH_KEY, {})
+
+    for aid, info in cache.items():
+        if aid in ("fetched_at", "optimization_enabled") or not isinstance(info, dict):
+            continue
+        if info.get("appliance_type") != "hvac":
+            continue
+        if info.get("optimization_enabled") is False:
+            continue
+        entity_id = info.get("entity_id")
+        schedule = info.get("schedule") or {}
+        name = info.get("name")
+        if not isinstance(entity_id, str) or not entity_id or not schedule:
+            continue
+
+        mode_canonical = _resolve_canonical(schedule, "hvac_mode_schedule", slot)
+        was_active = bool(latch_store.get(entity_id, {}).get("active"))
+        override = _comfort_band_override(
+            hass, entity_id, schedule, slot, mode_canonical,
+        )
+        now_active = override is not None
+
+        # Re-drive the unit only on an active override or the tick where
+        # we just released (to command the scheduled OFF back). When
+        # nothing changed and no override is active, leave the unit alone
+        # so the watchdog doesn't re-issue OFF every 5 minutes.
+        if now_active or (was_active and not now_active):
+            await _apply_hvac(
+                hass, entity_id, schedule, slot, appliance_name=name,
+            )
 
 
 async def _apply_hvac(

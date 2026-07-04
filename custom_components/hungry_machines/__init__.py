@@ -10,12 +10,17 @@ v2.0+: drives a closed control loop across every registered appliance.
 * **Schedule apply** (every :00 / :30) — `scheduler.apply_current_slot`
   iterates the cache and calls the right service per appliance type:
   `climate.set_temperature` for HVAC, `switch.turn_on/off` for the rest.
+* **Comfort watchdog** (every 5 min) — `scheduler.comfort_watchdog`
+  closes the loop the open-loop schedule can't: when a scheduled-OFF HVAC
+  has drifted out of its comfort band (thermal model underestimated the
+  heat/cool rate), it commands the unit back on at the band edge, with
+  hysteresis to avoid short-cycling the compressor.
 * **Weather push** (daily at 03:30 UTC + on integration startup) —
   `weather.push_today_forecast` reads the user's HA weather entity and
   POSTs its forecast so the API's nightly optimizer prefers it over
   Open-Meteo. The startup push is fire-and-forget on a small delay so
   it doesn't block `async_setup_entry`; it ensures that an HA restart
-  or HACS reinstall AFTER 03:30 UTC still seeds today's forecast
+  or integration reinstall AFTER 03:30 UTC still seeds today's forecast
   before the next nightly optimization window.
 """
 from __future__ import annotations
@@ -46,7 +51,7 @@ from .const import (
     SCRIPT_FILENAME,
     SCRIPT_URL,
 )
-from .scheduler import apply_current_slot, fetch_today_schedule
+from .scheduler import apply_current_slot, comfort_watchdog, fetch_today_schedule
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -97,7 +102,7 @@ async def _ensure_frontend_registered(hass: HomeAssistant) -> bool:
     if not frontend_file.is_file():
         _LOGGER.error(
             "Hungry Machines frontend bundle missing at %s. "
-            "Reinstall via HACS or download the latest release from "
+            "Download the latest release from "
             "https://github.com/hungrymachines/energy-dashboard/releases.",
             frontend_file,
         )
@@ -176,6 +181,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     )
 
+    # Closed-loop comfort watchdog. The :00/:30 apply above is open-loop
+    # and too slow to catch a building that drifts out of band between
+    # slot boundaries (immature thermal model, hotter-than-forecast day).
+    # This checks the live indoor temperature every 5 min and, for a
+    # scheduled-OFF HVAC that has left its comfort band, commands the unit
+    # back on at the band edge — with hysteresis so it doesn't short-cycle
+    # (see scheduler.comfort_watchdog / comfort.decide). Offset to :45s so
+    # it never races the :00/:30 slot apply or the 5-min readings capture.
+    async def _comfort_watchdog(_now) -> None:
+        await comfort_watchdog(hass, entry)
+
+    unsubs.append(
+        async_track_time_change(
+            hass,
+            _comfort_watchdog,
+            minute=[0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55],
+            second=45,
+        )
+    )
+
     # v2.1+: capture every 5 min into an in-memory buffer; flush to the
     # API once per hour. Same data shape, ~12× fewer API calls.
     async def _capture_readings(_now) -> None:
@@ -213,7 +238,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     )
 
-    # Startup push: if HA was restarted or HACS reinstalled the
+    # Startup push: if HA was restarted or integration reinstalled the
     # integration AFTER 03:30 UTC, the daily timer above won't fire
     # again until tomorrow — meaning the backend has no fresh
     # HA-pushed forecast and falls back to Open-Meteo for tonight's
