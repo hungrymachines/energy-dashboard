@@ -16,6 +16,7 @@ import {
   list as listAppliances,
   remove as appliancesApiRemove,
   getConstraints as getApplianceConstraints,
+  update as updateAppliance,
   type Appliance,
   type ApplianceType,
 } from '../api/appliances.js';
@@ -29,6 +30,7 @@ import * as feedbackApi from '../api/feedback.js';
 import type { FeedbackCategory } from '../api/feedback.js';
 import {
   get as getAppliancePreferences,
+  update as updateAppliancePreferences,
   type AppliancePreferences,
 } from '../api/appliance-preferences.js';
 import { expandHourlyTo48, hasCustomRates, hasHourlyComfortBands } from '../utils/hourly.js';
@@ -514,6 +516,38 @@ export class HungryMachinesPanel extends LitElement {
     }
     .opt-toggle.paused .opt-dot {
       background: #F59E0B;
+    }
+    /* Compact per-device pause toggle in each card header. Smaller
+       sibling of the master .opt-toggle. */
+    .device-opt-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(100, 116, 139, 0.25);
+      background: var(--hm-bg, #F8FAFC);
+      color: var(--hm-text, #0F172A);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .device-opt-toggle:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+    .device-opt-toggle .opt-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #0F766E;
+    }
+    .device-opt-toggle.paused .opt-dot {
+      background: #F59E0B;
+    }
+    .device-opt-toggle.paused {
+      color: var(--hm-muted, #64748B);
     }
     .paused-banner {
       background: rgba(245, 158, 11, 0.12);
@@ -1312,6 +1346,7 @@ export class HungryMachinesPanel extends LitElement {
     _recomputeError: { state: true },
     _chartSize: { state: true },
     _optToggleBusy: { state: true },
+    _deviceOptToggleBusy: { state: true },
     _feedbackCategory: { state: true },
     _feedbackMessage: { state: true },
     _feedbackSubmitting: { state: true },
@@ -1328,6 +1363,9 @@ export class HungryMachinesPanel extends LitElement {
   _rates: RatesResponse | null = null;
   _preferences: Preferences | null = null;
   _optToggleBusy = false;
+  // Per-appliance optimization toggle in-flight guards, keyed by
+  // appliance_id, so one card's toggle spinner doesn't block the others.
+  _deviceOptToggleBusy: Record<string, boolean> = {};
   _editorOpen = false;
   _editorApplianceId = '';
   _editorApplianceType: ApplianceType = 'hvac';
@@ -2451,6 +2489,97 @@ export class HungryMachinesPanel extends LitElement {
     }
   }
 
+  /** Appliance types the user can pause independently — the ones the
+   * apply loop actually controls. Solar (forecast-only) and dehumidifier
+   * (data-collection-only) have nothing to pause. */
+  private _isControllableType(type: ApplianceType): boolean {
+    return (
+      type === 'hvac' ||
+      type === 'ev_charger' ||
+      type === 'home_battery' ||
+      type === 'water_heater'
+    );
+  }
+
+  /** This device's OWN optimization flag (independent of the master
+   * switch). HVAC keeps it on its appliance_preferences row; every other
+   * controllable type keeps it on the appliance row itself. Missing
+   * either place means enabled. */
+  private _deviceOptimizationEnabled(appliance: ApplianceScheduleEntry): boolean {
+    if (appliance.appliance_type === 'hvac') {
+      return this._appliancePrefsById[appliance.appliance_id]?.optimization_enabled !== false;
+    }
+    return this._appliancesById[appliance.appliance_id]?.optimization_enabled !== false;
+  }
+
+  private async _toggleDeviceOptimization(
+    appliance: ApplianceScheduleEntry,
+  ): Promise<void> {
+    const id = appliance.appliance_id;
+    if (this._deviceOptToggleBusy[id]) return;
+    const next = !this._deviceOptimizationEnabled(appliance);
+    this._deviceOptToggleBusy = { ...this._deviceOptToggleBusy, [id]: true };
+    try {
+      if (appliance.appliance_type === 'hvac') {
+        // HVAC pause lives on the per-appliance preferences row — the
+        // same field the constraint editor's "Pause this unit" writes,
+        // so the two stay in sync.
+        const prefs = await updateAppliancePreferences(id, {
+          optimization_enabled: next,
+        });
+        this._appliancePrefsById = { ...this._appliancePrefsById, [id]: prefs };
+        this._persistAppliancePrefs();
+      } else {
+        // Non-HVAC pause lives on the appliance row (migration 038).
+        const updated = await updateAppliance(id, { optimization_enabled: next });
+        this._appliancesById = { ...this._appliancesById, [id]: updated };
+      }
+      // Reflect the new effective state on the chart/badges without a
+      // full reload — the recompute round-trip returns fresh schedules
+      // whose per-appliance optimization_enabled is the ANDed value.
+      void this._recomputeNow();
+    } catch {
+      // PUT failed — leave caches untouched so the toggle snaps back to
+      // the server's actual state on the next render.
+    } finally {
+      const nextBusy = { ...this._deviceOptToggleBusy };
+      delete nextBusy[id];
+      this._deviceOptToggleBusy = nextBusy;
+    }
+  }
+
+  /** Compact per-device optimization toggle rendered in each controllable
+   * card's header. Independent of the master switch; when the master is
+   * paused the card shows this device's own intended state (what it will
+   * do once the master is re-enabled), and the global paused banner
+   * explains that everything is currently held. */
+  private _renderDeviceOptimizationToggle(
+    appliance: ApplianceScheduleEntry,
+  ): TemplateResult {
+    if (!this._isControllableType(appliance.appliance_type)) return html``;
+    // "Not Connected" example cards reuse this renderer with a synthetic
+    // id — there's no real appliance to pause, so no toggle.
+    if (appliance.appliance_id.startsWith('__example_')) return html``;
+    const enabled = this._deviceOptimizationEnabled(appliance);
+    const busy = !!this._deviceOptToggleBusy[appliance.appliance_id];
+    return html`
+      <button
+        class="device-opt-toggle ${enabled ? '' : 'paused'}"
+        type="button"
+        role="switch"
+        aria-checked=${enabled ? 'true' : 'false'}
+        ?disabled=${busy}
+        title=${enabled
+          ? 'Pause optimization for this device'
+          : 'Resume optimization for this device'}
+        @click=${() => this._toggleDeviceOptimization(appliance)}
+      >
+        <span class="opt-dot"></span>
+        ${enabled ? 'On' : 'Paused'}
+      </button>
+    `;
+  }
+
   private _renderCalibrationBanners(): TemplateResult {
     const map = this._calibrationByAppliance ?? {};
     const banners: TemplateResult[] = [];
@@ -2749,6 +2878,7 @@ export class HungryMachinesPanel extends LitElement {
         <div class="card-head">
           <span class="badge" aria-hidden="true">${label}</span>
           <span class="name">${appliance.name}</span>
+          ${this._renderDeviceOptimizationToggle(appliance)}
         </div>
         <div class="entity-binding" ?hidden=${!boundEntityId}>${boundEntityId ?? ''}</div>
         <div class="savings">${savings}</div>

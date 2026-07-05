@@ -16,6 +16,12 @@ export interface Appliance {
   config: Record<string, unknown>;
   is_active: boolean;
   created_at: string;
+  /**
+   * Per-appliance optimization pause (migration 038). Authoritative for
+   * non-HVAC types (EV / battery / water heater); HVAC carries its own
+   * flag on the appliance_preferences row instead. Missing → enabled.
+   */
+  optimization_enabled?: boolean;
 }
 
 export interface CreateApplianceBody {
@@ -27,6 +33,7 @@ export interface CreateApplianceBody {
 export interface UpdateApplianceBody {
   name?: string;
   config?: Record<string, unknown>;
+  optimization_enabled?: boolean;
 }
 
 export interface CreateApplianceResponse {
