@@ -290,7 +290,7 @@ This allows the file to be loaded twice (e.g. once by HA's panel host and once b
 
 ## 7. Schedule Shape — 48 × 30-min Intervals
 
-Every schedule (HVAC, EV, battery, water heater) the API returns is a 48-element array (a 24-hour day at 30-minute resolution). This shape is hardcoded into:
+Every schedule (HVAC, EV, battery, water heater, robot) the API returns is a 48-element array (a 24-hour day at 30-minute resolution). This shape is hardcoded into:
 - `<hm-schedule-chart>` (renders 48 bars).
 - `<hm-constraint-editor>` (round-trips to/from a 24-entry hourly UI via `src/utils/hourly.ts`).
 - The API wrappers, which type the schedule shape per appliance.
@@ -301,6 +301,7 @@ Every schedule (HVAC, EV, battery, water heater) the API returns is a 48-element
 | `ev_charger` | `{ intervals: boolean[48], value_trajectory: number[48], unit: 'percent' }` (0–100) |
 | `home_battery` | `{ intervals: boolean[48], value_trajectory: number[48], unit: 'percent' }` (0–100) |
 | `water_heater` | `{ intervals: boolean[48], temp_trajectory: number[48], unit: 'fahrenheit' }` |
+| `robot` | `{ intervals: boolean[48], value_trajectory: number[48], unit: 'percent', min_value, target_value, deadline_interval }` (0–100; `intervals[i]=true` means "on its dock charging") |
 
 Do not hand-roll new shapes. If a story needs different data, bring the change to the backend repo first; only then mirror it.
 
@@ -420,6 +421,57 @@ Steps 1–4 run in CI; step 5 is the manual smoke test before tagging a release.
 | Change the integration's URL slug or domain | `custom_components/hungry_machines/const.py` + `manifest.json`. **Breaking change** — existing users' config entries will need to be re-added. |
 | Add a config-flow step (e.g. ask the user something) | `config_flow.py`. Add new strings to `strings.json` and `translations/en.json`. |
 | Bump the package version | `package.json` AND `custom_components/hungry_machines/manifest.json` AND the next git tag. Keep all three in sync. |
+| Add a new appliance type | Six layers, TS and Python. See §12.1 below. |
+
+---
+
+### 12.1 Adding an appliance type
+
+Adding a type touches six places. The robot POC (US-ROBOT-020..024) is the
+worked example throughout: `grep -rn "'robot'" src custom_components`.
+
+1. **`src/api/appliances.ts`** — extend the `ApplianceType` union. This is the
+   typecheck tripwire: every `Record<ApplianceType, ...>` map (`TYPE_LABELS` in
+   the panel, for one) fails `npm run check:contract` until it gains the key,
+   and vitest will not catch it because esbuild transpiles without typechecking.
+2. **`src/ui/appliance-form.ts`** — `TYPE_OPTIONS`, `CONTROL_DOMAINS` (which may
+   list more than one HA domain for a single type), `AUX_FIELDS`, and a branch in
+   each of `_defaultValues` / `_validate` / `_buildConfig` / `render`. The config
+   keys must match the backend's per-type pydantic model (`_CONFIG_MODELS` in the
+   API repo's `app/routes/appliances.py`). Mirror the model's required-ness, not
+   its `Field(le=...)` caps — the precedent is to let the server reject
+   out-of-range values.
+3. **`src/ui/constraint-editor.ts`** — branches in `_seedValues` / `_validate` /
+   `_buildPayload` / `render`, plus the title switch. The save path needs no
+   change: `_onSave` already routes every non-HVAC type to `setConstraints()`.
+4. **`src/panel/hungry-machines-panel.ts`** — `TYPE_LABELS`, `ALL_TYPES`,
+   `_exampleScheduleFor`, `_exampleNameFor`, `_isControllableType`, and the
+   matching chart branch in `_renderApplianceCard`. Adding the type to an
+   existing chart branch is all the wiring both the real card and the
+   Not-Connected example card need; the example-card path is already generic
+   over `ApplianceType`.
+5. **`custom_components/hungry_machines/scheduler.py`** — an `_apply_<type>`,
+   its `apply_current_slot` dispatch arm, and an entry in
+   `_publish_schedule_states` so Dev Tools → States shows a value.
+6. **`custom_components/hungry_machines/readings.py`** — add the type to
+   whichever reading-dispatch tuple shares its units. That tuple must match the
+   backend's per-type reading validation, which range-checks percent types 0–100.
+
+Three cross-repo rules the robot POC established:
+
+- **Constraints are an unvalidated JSONB dict server-side.** `POST
+  /appliances/{id}/constraints` takes a bare `dict` and stores it as-is: no
+  pydantic model, no unknown-key rejection. The entire contract is that the keys
+  `_optimize_<type>` reads in the API repo's `app/jobs/nightly.py` are the keys
+  `_buildPayload` submits. A typo'd key fails silently as an optimizer default
+  rather than as a 422, so diff the two by hand when adding or renaming one.
+- **Seed the editor and the example card from the optimizer's own fallbacks.**
+  `_optimize_<type>` has a default for every constraint it reads; `_seedValues`
+  and `_exampleScheduleFor` should use identical numbers, so a first-open editor
+  previews the plan the backend already assumes instead of blank fields.
+- **`/api/v1/schedules` passes non-HVAC schedule blobs through verbatim** — no
+  per-type projection — so any field `_optimize_<type>` persists is readable by
+  the panel chart and by `scheduler.py` with no route work.
 
 ---
 
