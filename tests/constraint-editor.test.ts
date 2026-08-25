@@ -573,6 +573,201 @@ describe('hm-constraint-editor', () => {
     ).toBe(true);
   });
 
+  it('seeds robot defaults matching the backend fallback when currentConstraints is empty', async () => {
+    captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'robot-1',
+      applianceType: 'robot',
+      currentConstraints: {},
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(root.querySelector<HTMLInputElement>('input[name="target_charge_pct"]')!.value).toBe('90');
+    expect(root.querySelector<HTMLInputElement>('input[name="min_charge_pct"]')!.value).toBe('25');
+    expect(root.querySelector<HTMLInputElement>('input[name="current_charge_pct"]')!.value).toBe('50');
+    expect(root.querySelector<HTMLInputElement>('input[name="tasks_window_start"]')!.value).toBe('09:00');
+    expect(root.querySelector<HTMLInputElement>('input[name="tasks_window_end"]')!.value).toBe('17:00');
+  });
+
+  it('seeds robot fields from currentConstraints when present', async () => {
+    captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'robot-1',
+      applianceType: 'robot',
+      currentConstraints: {
+        target_charge_pct: 80,
+        min_charge_pct: 20,
+        current_charge_pct: 65,
+        tasks_window_start: '10:00',
+        tasks_window_end: '16:00',
+      },
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(root.querySelector<HTMLInputElement>('input[name="target_charge_pct"]')!.value).toBe('80');
+    expect(root.querySelector<HTMLInputElement>('input[name="min_charge_pct"]')!.value).toBe('20');
+    expect(root.querySelector<HTMLInputElement>('input[name="current_charge_pct"]')!.value).toBe('65');
+    expect(root.querySelector<HTMLInputElement>('input[name="tasks_window_start"]')!.value).toBe('10:00');
+    expect(root.querySelector<HTMLInputElement>('input[name="tasks_window_end"]')!.value).toBe('16:00');
+  });
+
+  it('submits robot form to POST /api/v1/appliances/<id>/constraints with exactly five keys', async () => {
+    const { calls } = captureFetch(
+      jsonResponse({ status: 'ok', constraints: {} }),
+    );
+
+    const el = mountEditor({
+      applianceId: 'robot-9',
+      applianceType: 'robot',
+      currentConstraints: {},
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    setInputValue(root, 'target_charge_pct', '85');
+    setInputValue(root, 'min_charge_pct', '30');
+    setInputValue(root, 'current_charge_pct', '55');
+    setInputValue(root, 'tasks_window_start', '08:30');
+    setInputValue(root, 'tasks_window_end', '18:00');
+    await flush(el);
+
+    const saved = new Promise<CustomEvent>((resolve) => {
+      el.addEventListener(
+        'constraints-saved',
+        (e) => resolve(e as CustomEvent),
+        { once: true },
+      );
+    });
+
+    clickSave(root);
+    await flush(el);
+    const event = await saved;
+
+    expect(calls.length).toBe(1);
+    const [url, init] = calls[0]!;
+    expect(url).toContain('/api/v1/appliances/robot-9/constraints');
+    expect(init?.method).toBe('POST');
+    const body = JSON.parse(String(init?.body));
+    expect(body).toEqual({
+      target_charge_pct: 85,
+      min_charge_pct: 30,
+      current_charge_pct: 55,
+      tasks_window_start: '08:30',
+      tasks_window_end: '18:00',
+    });
+    expect(Object.keys(body).sort()).toEqual(
+      [
+        'current_charge_pct',
+        'min_charge_pct',
+        'target_charge_pct',
+        'tasks_window_end',
+        'tasks_window_start',
+      ].sort(),
+    );
+    expect(event.detail).toEqual({
+      applianceId: 'robot-9',
+      payload: body,
+    });
+    expect(el.open).toBe(false);
+  });
+
+  it('blocks save when robot min_charge_pct is not less than target_charge_pct', async () => {
+    const { calls } = captureFetch(jsonResponse({ status: 'ok', constraints: {} }));
+
+    const el = mountEditor({
+      applianceId: 'robot-2',
+      applianceType: 'robot',
+      currentConstraints: {},
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    setInputValue(root, 'target_charge_pct', '50');
+    setInputValue(root, 'min_charge_pct', '60'); // invalid: min >= target
+    setInputValue(root, 'current_charge_pct', '30');
+    setInputValue(root, 'tasks_window_start', '09:00');
+    setInputValue(root, 'tasks_window_end', '17:00');
+    await flush(el);
+
+    const save = Array.from(root.querySelectorAll<HTMLButtonElement>('button')).find(
+      (b) => b.classList.contains('save'),
+    )!;
+    expect(save.disabled).toBe(true);
+
+    clickSave(root);
+    await flush(el);
+    expect(calls.length).toBe(0);
+    const fieldErrors = Array.from(root.querySelectorAll('.field-error')).map(
+      (n) => n.textContent,
+    );
+    expect(fieldErrors.some((t) => (t ?? '').includes('less than target'))).toBe(true);
+  });
+
+  it('blocks save when robot tasks_window_start is not HH:MM', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'robot-3',
+      applianceType: 'robot',
+      currentConstraints: {},
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    setInputValue(root, 'tasks_window_start', 'invalid');
+    await flush(el);
+
+    const save = Array.from(root.querySelectorAll<HTMLButtonElement>('button')).find(
+      (b) => b.classList.contains('save'),
+    )!;
+    expect(save.disabled).toBe(true);
+
+    const fieldErrors = Array.from(root.querySelectorAll('.field-error')).map(
+      (n) => n.textContent ?? '',
+    );
+    expect(fieldErrors.some((t) => t.includes('Use HH:MM'))).toBe(true);
+
+    clickSave(root);
+    await flush(el);
+    expect(calls.length).toBe(0);
+  });
+
+  it('blocks save when robot tasks_window_start equals tasks_window_end', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'robot-4',
+      applianceType: 'robot',
+      currentConstraints: {},
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    setInputValue(root, 'tasks_window_start', '09:00');
+    setInputValue(root, 'tasks_window_end', '09:00');
+    await flush(el);
+
+    const save = Array.from(root.querySelectorAll<HTMLButtonElement>('button')).find(
+      (b) => b.classList.contains('save'),
+    )!;
+    expect(save.disabled).toBe(true);
+
+    const fieldErrors = Array.from(root.querySelectorAll('.field-error')).map(
+      (n) => n.textContent ?? '',
+    );
+    expect(fieldErrors.some((t) => t.includes('differ from start'))).toBe(true);
+
+    clickSave(root);
+    await flush(el);
+    expect(calls.length).toBe(0);
+  });
+
   it('blocks save when min_charge_pct is not less than target_charge_pct', async () => {
     const { calls } = captureFetch(
       jsonResponse({ status: 'ok', constraints: {} }),
