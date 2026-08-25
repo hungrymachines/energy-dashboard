@@ -886,6 +886,154 @@ async def test_apply_switch_calls_turn_off_when_interval_false() -> None:
     assert args[1] == "turn_off"
 
 
+# --- _apply_robot (dock-as-charging-proxy) --------------------------------
+
+
+def _robot_state(state: str, battery_level: float | None = None) -> MagicMock:
+    s = MagicMock()
+    s.state = state
+    attrs: dict = {}
+    if battery_level is not None:
+        attrs["battery_level"] = battery_level
+    s.attributes = attrs
+    return s
+
+
+@pytest.mark.asyncio
+async def test_apply_robot_on_slot_undocked_docks() -> None:
+    hass = _hass(_robot_state("cleaning"))
+    schedule = {"intervals": [True] + [False] * 47, "min_value": 25}
+    await scheduler._apply_robot(hass, "vacuum.robot1", schedule, 0)
+
+    hass.services.async_call.assert_awaited_once()
+    args = hass.services.async_call.await_args.args
+    assert args[0] == "vacuum"
+    assert args[1] == "return_to_base"
+    assert args[2] == {"entity_id": "vacuum.robot1"}
+
+
+@pytest.mark.asyncio
+async def test_apply_robot_on_slot_already_docked_no_call() -> None:
+    hass = _hass(_robot_state("docked"))
+    schedule = {"intervals": [True] + [False] * 47, "min_value": 25}
+    await scheduler._apply_robot(hass, "vacuum.robot1", schedule, 0)
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_robot_off_slot_never_undocks() -> None:
+    hass = _hass(_robot_state("cleaning"))
+    schedule = {"intervals": [False] * 48}
+    await scheduler._apply_robot(hass, "vacuum.robot1", schedule, 10)
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_robot_returning_no_call() -> None:
+    hass = _hass(_robot_state("returning"))
+    schedule = {"intervals": [True] + [False] * 47, "min_value": 25}
+    await scheduler._apply_robot(hass, "vacuum.robot1", schedule, 0)
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_robot_low_battery_guard_docks_regardless_of_slot() -> None:
+    """Off-dock robot below min_value gets docked even on an OFF slot —
+    OFF slots never call a service on their own, so this never fights
+    auto-docking, it only ever adds a dock the plan didn't schedule."""
+    hass = _hass(_robot_state("cleaning", battery_level=10))
+    schedule = {"intervals": [False] * 48, "min_value": 25}
+    await scheduler._apply_robot(hass, "vacuum.robot1", schedule, 0)
+
+    hass.services.async_call.assert_awaited_once()
+    args = hass.services.async_call.await_args.args
+    assert args[0] == "vacuum"
+    assert args[1] == "return_to_base"
+
+
+@pytest.mark.asyncio
+async def test_apply_robot_battery_above_floor_no_guard() -> None:
+    hass = _hass(_robot_state("cleaning", battery_level=80))
+    schedule = {"intervals": [False] * 48, "min_value": 25}
+    await scheduler._apply_robot(hass, "vacuum.robot1", schedule, 0)
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_robot_missing_battery_level_skips_guard() -> None:
+    """No battery_level attribute (e.g. many lawn mowers) → guard is
+    skipped entirely rather than guessing; OFF slot stays OFF."""
+    hass = _hass(_robot_state("cleaning"))
+    schedule = {"intervals": [False] * 48, "min_value": 25}
+    await scheduler._apply_robot(hass, "vacuum.robot1", schedule, 0)
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_robot_lawn_mower_gets_dock_service() -> None:
+    hass = _hass(_robot_state("mowing"))
+    schedule = {"intervals": [True] + [False] * 47, "min_value": 25}
+    await scheduler._apply_robot(hass, "lawn_mower.backyard", schedule, 0)
+
+    args = hass.services.async_call.await_args.args
+    assert args[0] == "lawn_mower"
+    assert args[1] == "dock"
+    assert args[2] == {"entity_id": "lawn_mower.backyard"}
+
+
+@pytest.mark.asyncio
+async def test_apply_robot_unknown_domain_assumes_vacuum() -> None:
+    hass = _hass(_robot_state("unknown"))
+    schedule = {"intervals": [True] + [False] * 47, "min_value": 25}
+    await scheduler._apply_robot(hass, "sensor.robot1", schedule, 0)
+
+    args = hass.services.async_call.await_args.args
+    assert args[0] == "vacuum"
+    assert args[1] == "return_to_base"
+
+
+@pytest.mark.asyncio
+async def test_apply_robot_slot_out_of_range_no_call() -> None:
+    hass = _hass(_robot_state("cleaning"))
+    schedule = {"intervals": [True] * 5, "min_value": 25}
+    await scheduler._apply_robot(hass, "vacuum.robot1", schedule, 40)
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_robot_dock_service_exception_logged_not_raised() -> None:
+    hass = _hass(_robot_state("cleaning"))
+    hass.services.async_call = AsyncMock(side_effect=RuntimeError("boom"))
+    schedule = {"intervals": [True] + [False] * 47, "min_value": 25}
+    # Must not raise.
+    await scheduler._apply_robot(hass, "vacuum.robot1", schedule, 0)
+
+
+@pytest.mark.asyncio
+async def test_apply_current_slot_dispatches_robot_via_apply_robot() -> None:
+    """Integration check: the apply_current_slot loop routes atype='robot'
+    through _apply_robot rather than the generic switch path."""
+    hass = _hass(_robot_state("cleaning"))
+    entry = _entry()
+    hass.data[DOMAIN] = {
+        "schedule": {
+            "fetched_at": _fresh_ts(),
+            "robot-1": {
+                "appliance_type": "robot",
+                "entity_id": "vacuum.robot1",
+                "schedule": {"intervals": [True] + [False] * 47, "min_value": 25},
+            },
+        }
+    }
+    with patch.object(scheduler, "_current_slot", return_value=0):
+        await scheduler.apply_current_slot(hass, entry)
+
+    hass.services.async_call.assert_awaited_once()
+    args = hass.services.async_call.await_args.args
+    assert args[0] == "vacuum"
+    assert args[1] == "return_to_base"
+
+
 @pytest.mark.asyncio
 async def test_apply_skipped_when_entity_id_missing() -> None:
     hass = _hass()
