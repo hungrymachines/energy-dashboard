@@ -78,6 +78,22 @@ const WATER_HEATER_SCHEDULE = {
   source: 'optimization',
 };
 
+const ROBOT_SCHEDULE = {
+  appliance_id: 'robot-1',
+  appliance_type: 'robot' as const,
+  name: 'Kitchen Vacuum',
+  schedule: {
+    intervals: Array<boolean>(48).fill(false).map((_, i) => i >= 4 && i < 12),
+    value_trajectory: Array.from({ length: 48 }, (_, i) => (i < 18 ? 25 + i * 3 : 90)),
+    unit: 'percent',
+    min_value: 25,
+    target_value: 90,
+    deadline_interval: 18,
+  },
+  savings_pct: 4.2,
+  source: 'optimization',
+};
+
 const SCHEDULES_RESPONSE = {
   date: '2025-11-18',
   appliances: [HVAC_SCHEDULE, EV_SCHEDULE],
@@ -184,11 +200,12 @@ describe('hungry-machines-panel dashboard (US-FE-07)', () => {
     // example card for every appliance type they haven't registered yet
     // ("Not Connected" placeholders). The fixture registers hvac +
     // ev_charger, so the dashboard adds home_battery + water_heater +
-    // solar examples. Solar uses a chart-less tile, so the optimization
-    // chart count is 2 (real) + 2 (battery, water_heater example) = 4.
+    // solar + robot examples. Solar uses a chart-less tile, so the
+    // optimization chart count is 2 (real) + 3 (battery, water_heater,
+    // robot example) = 5.
     expect(root.querySelectorAll('.cards > .card[data-appliance-type]').length).toBe(2);
-    expect(root.querySelectorAll('.cards > .card-shell.example').length).toBe(3);
-    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(4);
+    expect(root.querySelectorAll('.cards > .card-shell.example').length).toBe(4);
+    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(5);
     expect(root.querySelectorAll('hm-schedule-chart').length).toBe(0);
 
     const content = root.querySelector('section.content')!;
@@ -280,12 +297,12 @@ describe('hungry-machines-panel dashboard (US-FE-07)', () => {
     const root = el.shadowRoot!;
     const content = root.querySelector('section.content')!;
     // v2.5: with zero registered appliances we render the full
-    // 5-type set as example "Not Connected" cards so the user can see
+    // 6-type set as example "Not Connected" cards so the user can see
     // each option. Solar uses a chart-less tile (just text + size),
-    // so optimization charts = 4 (hvac, ev_charger, home_battery,
-    // water_heater).
-    expect(root.querySelectorAll('.cards > .card-shell.example').length).toBe(5);
-    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(4);
+    // so optimization charts = 5 (hvac, ev_charger, home_battery,
+    // water_heater, robot).
+    expect(root.querySelectorAll('.cards > .card-shell.example').length).toBe(6);
+    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(5);
     expect(root.querySelectorAll('hm-schedule-chart').length).toBe(0);
     expect(content.textContent).toContain('Not Connected');
     expect(content.textContent).toContain('Add appliance');
@@ -338,12 +355,12 @@ describe('hungry-machines-panel dashboard (US-FE-07)', () => {
     await flush(el);
 
     expect(root.querySelector('.error')).toBeNull();
-    // After retry: 2 registered (hvac + ev_charger) + 3 example types
-    // (home_battery + water_heater + solar). Solar has no chart, so
-    // total optimization charts = 4.
+    // After retry: 2 registered (hvac + ev_charger) + 4 example types
+    // (home_battery + water_heater + solar + robot). Solar has no chart,
+    // so total optimization charts = 5.
     expect(root.querySelectorAll('.cards > .card[data-appliance-type]').length).toBe(2);
-    expect(root.querySelectorAll('.cards > .card-shell.example').length).toBe(3);
-    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(4);
+    expect(root.querySelectorAll('.cards > .card-shell.example').length).toBe(4);
+    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(5);
     expect(root.querySelectorAll('hm-schedule-chart').length).toBe(0);
   });
 });
@@ -594,10 +611,10 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
 
     const root = el.shadowRoot!;
     expect(root.querySelector('.error')).toBeNull();
-    // 2 real (hvac + ev_charger) + 3 example types (home_battery,
-    // water_heater, solar). Solar has no chart, so total = 4.
+    // 2 real (hvac + ev_charger) + 4 example types (home_battery,
+    // water_heater, solar, robot). Solar has no chart, so total = 5.
     expect(root.querySelectorAll('.cards > .card[data-appliance-type]').length).toBe(2);
-    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(4);
+    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(5);
     expect(root.querySelectorAll('hm-schedule-chart').length).toBe(0);
   });
 
@@ -637,6 +654,47 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
     expect(whChart.highLimits).toEqual(Array<number>(48).fill(140));
     expect(whChart.lowLimits).toEqual(Array<number>(48).fill(110));
     expect(whChart.targetValues!.length).toBe(48);
+  });
+
+  it('renders robot with a percent chart and deadline marker (US-ROBOT-022)', async () => {
+    const SCHED = {
+      date: '2025-11-18',
+      appliances: [HVAC_SCHEDULE, ROBOT_SCHEDULE],
+    };
+    installFetchStub({
+      '/api/v1/schedules': SCHED,
+      '/api/v1/rates': RATES_RESPONSE,
+      '/api/v1/preferences': PREFS_DEFAULT,
+    });
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+
+    const el = mountPanel();
+    el._view = 'dashboard';
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const robotCard = root.querySelector('.card[data-appliance-type="robot"]')!;
+    expect(robotCard).not.toBeNull();
+    expect(robotCard.textContent).toContain('Kitchen Vacuum');
+    const robotChart = robotCard.querySelector<
+      HTMLElement & {
+        unit?: string;
+        lowLimits?: number[];
+        targetValues?: number[];
+        targetMarker?: { interval: number; value: number; label?: string };
+      }
+    >('hm-optimization-chart')!;
+    expect(robotChart).not.toBeNull();
+    expect(robotChart.unit).toBe('percent');
+    // min_value: 25 (constant flat dashed line at 25%)
+    expect(robotChart.lowLimits).toEqual(Array<number>(48).fill(25));
+    // deadline_interval: 18 (09:00), target_value: 90 → marker dot
+    expect(robotChart.targetMarker).toEqual({ interval: 18, value: 90 });
   });
 });
 

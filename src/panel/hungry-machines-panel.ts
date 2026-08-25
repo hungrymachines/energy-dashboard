@@ -55,6 +55,7 @@ const TYPE_LABELS: Record<ApplianceType, string> = {
   water_heater: 'Water',
   solar: 'Solar',
   dehumidifier: 'Dehumidifier',
+  robot: 'Robot',
 };
 
 function asNumberArray(value: unknown): number[] | undefined {
@@ -372,6 +373,25 @@ function _exampleScheduleFor(type: ApplianceType): Record<string, unknown> {
         unit: 'fahrenheit',
       };
     }
+    case 'robot': {
+      // Charges toward target overnight before the Tasks window opens, holds
+      // where it landed while off-dock doing tasks, tops back up once
+      // redocked — the dock-as-charging-proxy pattern (no undock, no task
+      // starts) with a visible mid-day gap.
+      const trajectory = Array.from({ length: 48 }, (_, i) => {
+        if (i < 18) return Math.round((25 + (i / 18) * 65) * 10) / 10; // 25% -> 90% by window start
+        if (i < 34) return 60; // off-dock during the tasks window
+        return Math.round((60 + ((i - 34) / 14) * 30) * 10) / 10; // 60% -> 90% after redocking
+      });
+      return {
+        intervals: Array.from({ length: 48 }, (_, i) => i >= 10 && i < 18),
+        value_trajectory: trajectory,
+        unit: 'percent',
+        min_value: 25,
+        target_value: 90,
+        deadline_interval: 18,
+      };
+    }
     case 'solar':
     default:
       return {};
@@ -397,6 +417,7 @@ function _exampleNameFor(type: ApplianceType): string {
     case 'water_heater': return 'Water heater';
     case 'solar': return 'Solar PV';
     case 'dehumidifier': return 'Dehumidifier';
+    case 'robot': return 'Home robot';
   }
 }
 
@@ -2408,7 +2429,7 @@ export class HungryMachinesPanel extends LitElement {
     // device added, without us hiding the option from them.
     const registeredTypes = new Set(appliances.map((a) => a.appliance_type));
     const ALL_TYPES: ReadonlyArray<ApplianceType> = [
-      'hvac', 'ev_charger', 'home_battery', 'water_heater', 'solar',
+      'hvac', 'ev_charger', 'home_battery', 'water_heater', 'solar', 'robot',
     ];
     const missingTypes = ALL_TYPES.filter((t) => !registeredTypes.has(t));
 
@@ -2497,7 +2518,8 @@ export class HungryMachinesPanel extends LitElement {
       type === 'hvac' ||
       type === 'ev_charger' ||
       type === 'home_battery' ||
-      type === 'water_heater'
+      type === 'water_heater' ||
+      type === 'robot'
     );
   }
 
@@ -2794,7 +2816,7 @@ export class HungryMachinesPanel extends LitElement {
     // across the dashboard regardless of the day's data:
     //   HVAC          → 40–100 °F (covers winter heat to summer cool)
     //   Water heater  → 50–150 °F (covers tap-cold to scald-hot)
-    //   EV / battery  → handled by the chart's `'percent'` mode (0–100)
+    //   EV / battery / robot → handled by the chart's `'percent'` mode (0–100)
     let yMin: number | undefined;
     let yMax: number | undefined;
     let marker:
@@ -2840,7 +2862,7 @@ export class HungryMachinesPanel extends LitElement {
       chartUnit = 'fahrenheit';
       yMin = 50;
       yMax = 150;
-    } else if (type === 'ev_charger' || type === 'home_battery') {
+    } else if (type === 'ev_charger' || type === 'home_battery' || type === 'robot') {
       targetValues = asNumberArray(sched['value_trajectory']);
       chartUnit = 'percent';
       const minValue = asFiniteNumber(sched['min_value']);

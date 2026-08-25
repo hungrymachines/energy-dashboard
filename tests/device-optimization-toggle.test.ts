@@ -151,6 +151,39 @@ describe('per-device optimization toggle', () => {
     expect(after.getAttribute('aria-checked')).toBe('false');
   });
 
+  it('robot card shows an On toggle and PUTs the appliance row on pause (US-ROBOT-022)', async () => {
+    const puts: Array<{ url: string; body: unknown }> = [];
+    installFetch({
+      scheduleEntries: [scheduleEntry({
+        appliance_id: 'robot-1', appliance_type: 'robot', name: 'Vacuum',
+        schedule: { intervals: Array(48).fill(false), value_trajectory: Array(48).fill(60), unit: 'percent' },
+        entities: { entity_id: 'vacuum.living_room' },
+      })],
+      applianceRows: [applianceRow({
+        id: 'robot-1', appliance_type: 'robot', name: 'Vacuum',
+        config: { entity_id: 'vacuum.living_room' },
+      })],
+      puts,
+    });
+
+    const el = mountAuthedPanel();
+    await flush(el);
+    const root = el.shadowRoot!;
+
+    const toggle = root.querySelector('.device-opt-toggle') as HTMLButtonElement;
+    expect(toggle).toBeTruthy();
+    expect(toggle.textContent?.trim()).toBe('On');
+
+    toggle.click();
+    await flush(el);
+
+    // Robot is a controllable type (US-ROBOT-022) — pausing it writes the
+    // appliance row exactly like ev_charger/home_battery/water_heater do.
+    const put = puts.find((p) => /\/api\/v1\/appliances\/robot-1$/.test(p.url));
+    expect(put).toBeTruthy();
+    expect(put!.body).toEqual({ optimization_enabled: false });
+  });
+
   it('HVAC card toggle writes the per-appliance preferences row, not the appliance row', async () => {
     const puts: Array<{ url: string; body: unknown }> = [];
     installFetch({
