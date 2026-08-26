@@ -734,6 +734,58 @@ async def test_capture_ev_appends_to_appliance_bucket() -> None:
 
 
 @pytest.mark.asyncio
+async def test_capture_robot_pushes_battery_reading_0_to_100() -> None:
+    appliance = {
+        "id": "robot-1",
+        "appliance_type": "robot",
+        "config": {
+            "entity_id": "vacuum.robot1",
+            "soc_entity_id": "sensor.robot_battery",
+        },
+    }
+    control = _state("docked", {})
+    soc = _state("42", {})
+    hass = _hass({"vacuum.robot1": control, "sensor.robot_battery": soc})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        n = await readings.capture_readings(hass, entry)
+
+    assert n == 1
+    buf = hass.data[DOMAIN]["readings_buffer"]
+    assert "robot-1" in buf and len(buf["robot-1"]) == 1
+    assert buf["robot-1"][0]["value"] == 42.0
+    assert "home" not in buf or len(buf["home"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_capture_robot_soc_clamped_0_to_100() -> None:
+    appliance = {
+        "id": "robot-1",
+        "appliance_type": "robot",
+        "config": {
+            "entity_id": "vacuum.robot1",
+            "soc_entity_id": "sensor.robot_battery",
+        },
+    }
+    control = _state("cleaning", {})
+    soc = _state("142", {})  # out-of-range sensor glitch
+    hass = _hass({"vacuum.robot1": control, "sensor.robot_battery": soc})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    buf = hass.data[DOMAIN]["readings_buffer"]
+    assert buf["robot-1"][0]["value"] == 100.0
+    assert buf["robot-1"][0]["state"] == "OFF"
+
+
+@pytest.mark.asyncio
 async def test_capture_twelve_times_accumulates_twelve_readings() -> None:
     """Running capture 12× without a flush builds a 12-element batch."""
     appliance = {

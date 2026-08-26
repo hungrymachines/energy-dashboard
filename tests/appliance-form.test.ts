@@ -38,6 +38,9 @@ const TEST_HASS = {
     'sensor.ac_power': { entity_id: 'sensor.ac_power' },
     'humidifier.basement': { entity_id: 'humidifier.basement' },
     'sensor.basement_rh': { entity_id: 'sensor.basement_rh' },
+    'vacuum.living_room': { entity_id: 'vacuum.living_room' },
+    'lawn_mower.backyard': { entity_id: 'lawn_mower.backyard' },
+    'sensor.robot_battery': { entity_id: 'sensor.robot_battery' },
   },
 };
 
@@ -90,20 +93,21 @@ describe('hm-appliance-form', () => {
     clearTokens();
   });
 
-  it('initial render shows step 1 with all six type buttons', async () => {
+  it('initial render shows step 1 with all seven type buttons', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
     const el = mountForm();
     await flush(el);
 
     const root = el.shadowRoot!;
     const typeButtons = root.querySelectorAll<HTMLButtonElement>('button.type-btn');
-    expect(typeButtons.length).toBe(6);
+    expect(typeButtons.length).toBe(7);
     const types = Array.from(typeButtons).map((b) => b.dataset.type);
     expect(types.sort()).toEqual([
       'dehumidifier',
       'ev_charger',
       'home_battery',
       'hvac',
+      'robot',
       'solar',
       'water_heater',
     ]);
@@ -497,7 +501,7 @@ describe('hm-appliance-form', () => {
     el.open = true;
     await flush(el);
     const root = el.shadowRoot!;
-    expect(root.querySelectorAll('button.type-btn').length).toBe(6);
+    expect(root.querySelectorAll('button.type-btn').length).toBe(7);
     expect(root.querySelector('input[name="name"]')).toBeNull();
   });
 
@@ -842,6 +846,180 @@ describe('hm-appliance-form', () => {
 
     const errs = Array.from(root.querySelectorAll('.field-error')).map((e) => e.textContent);
     expect(errs.some((t) => t?.includes('Must be 0-90°'))).toBe(true);
+    expect(buttonByText(root, 'Add')!.disabled).toBe(true);
+  });
+
+  // -----------------------------------------------------------------------
+  // Robot (vacuum / mower) — dock-charging POC, tasks-window-aware
+  // -----------------------------------------------------------------------
+
+  it("clicking 'Home robot' advances to step 2 with battery_capacity_kwh / max_charge_rate_kw defaults", async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'robot')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(inputByName(root, 'battery_capacity_kwh').value).toBe('0.2');
+    expect(inputByName(root, 'max_charge_rate_kw').value).toBe('0.05');
+    expect(root.querySelector('input[name="name"]')).not.toBeNull();
+    // Step 1 type buttons no longer rendered.
+    expect(root.querySelectorAll('button.type-btn').length).toBe(0);
+  });
+
+  it('robot: entity picker lists both vacuum.* and lawn_mower.* entities', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'robot')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const sel = selectByName(root, 'entity_id');
+    const optionValues = Array.from(sel.querySelectorAll('option')).map((o) => o.value);
+    expect(optionValues).toContain('vacuum.living_room');
+    expect(optionValues).toContain('lawn_mower.backyard');
+  });
+
+  it('robot: submit posts battery_capacity_kwh/max_charge_rate_kw as numbers, entity_id, and omits soc_entity_id when blank', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      calls.push({ url, init });
+      return jsonResponse({ appliance_id: 'app-robot-1' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const el = mountForm();
+    await flush(el);
+
+    let createdEvent: CustomEvent | null = null;
+    el.addEventListener('appliance-created', ((e: Event) => {
+      createdEvent = e as CustomEvent;
+    }) as EventListener);
+
+    buttonByDataType(el.shadowRoot!, 'robot')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Kitchen Vacuum';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    // Battery capacity + charge rate left at their defaults (0.2 / 0.05).
+    pickEntity(root, 'vacuum.living_room');
+    await flush(el);
+
+    const submitBtn = buttonByText(root, 'Add');
+    expect(submitBtn!.disabled).toBe(false);
+    submitBtn!.click();
+    await flush(el);
+
+    const postCall = calls.find(
+      (c) => c.url.endsWith('/api/v1/appliances') && c.init?.method === 'POST',
+    );
+    expect(postCall).toBeDefined();
+    const body = JSON.parse(String(postCall!.init!.body));
+    expect(body.appliance_type).toBe('robot');
+    expect(body.name).toBe('Kitchen Vacuum');
+    expect(body.config).toEqual({
+      battery_capacity_kwh: 0.2,
+      max_charge_rate_kw: 0.05,
+      entity_id: 'vacuum.living_room',
+    });
+    expect(body.config.soc_entity_id).toBeUndefined();
+
+    expect(createdEvent).not.toBeNull();
+    expect(el.open).toBe(false);
+  });
+
+  it('robot: soc_entity_id included in config when a battery sensor is set, works with lawn_mower.* too', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      calls.push({ url, init });
+      return jsonResponse({ appliance_id: 'app-robot-2' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'robot')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Backyard Mower';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    pickEntity(root, 'lawn_mower.backyard');
+    // Aux (soc_entity_id) set directly in form state — same pre-existing
+    // nested-conditional aux-render quirk the HVAC power-sensor test
+    // works around (see the comment on that test above).
+    (el as unknown as { _values: Record<string, string> })._values = {
+      ...(el as unknown as { _values: Record<string, string> })._values,
+      soc_entity_id: 'sensor.robot_battery',
+    };
+    await flush(el);
+
+    buttonByText(root, 'Add')!.click();
+    await flush(el);
+
+    const postCall = calls.find(
+      (c) => c.url.endsWith('/api/v1/appliances') && c.init?.method === 'POST',
+    );
+    expect(postCall).toBeDefined();
+    const body = JSON.parse(String(postCall!.init!.body));
+    expect(body.config.entity_id).toBe('lawn_mower.backyard');
+    expect(body.config.soc_entity_id).toBe('sensor.robot_battery');
+  });
+
+  it('robot: battery_capacity_kwh of 0 blocks submit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'robot')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Kitchen Vacuum';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    const cap = inputByName(root, 'battery_capacity_kwh');
+    cap.value = '0';
+    cap.dispatchEvent(new Event('input', { bubbles: true }));
+    pickEntity(root, 'vacuum.living_room');
+    await flush(el);
+
+    const errs = Array.from(root.querySelectorAll('.field-error')).map((e) => e.textContent);
+    expect(errs.some((t) => t?.includes('Must be greater than 0'))).toBe(true);
+    expect(buttonByText(root, 'Add')!.disabled).toBe(true);
+  });
+
+  it('robot: missing entity_id blocks submit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'robot')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Kitchen Vacuum';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    // entity_id left unpicked.
+    await flush(el);
+
     expect(buttonByText(root, 'Add')!.disabled).toBe(true);
   });
 });

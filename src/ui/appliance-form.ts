@@ -18,6 +18,7 @@ const TYPE_OPTIONS: Array<{ type: ApplianceType; label: string; description: str
   { type: 'water_heater', label: 'Water heater', description: 'Electric water heater' },
   { type: 'solar', label: 'Solar PV', description: 'Rooftop solar generation' },
   { type: 'dehumidifier', label: 'Dehumidifier', description: 'Records room temp/humidity (data only)' },
+  { type: 'robot', label: 'Home robot', description: 'Robot vacuum or mower — charges on its dock around your daily tasks window' },
 ];
 
 // Per-type allowed control-entity domains. The integration applies the
@@ -35,6 +36,10 @@ const CONTROL_DOMAINS: Record<ApplianceType, ReadonlyArray<string>> = {
   // dehumidifier). Data-collection only — no schedule is applied, but the
   // entity is still the thing we observe on/off/mode + current_humidity.
   dehumidifier: ['humidifier'],
+  // No robot vacuum/mower exposes charge control through Home Assistant —
+  // docking is the charging proxy. return_to_base (vacuum) / dock
+  // (lawn_mower) are the only commands the integration ever sends.
+  robot: ['vacuum', 'lawn_mower'],
 };
 
 // Optional auxiliary sensor entities — when present, the readings poller
@@ -62,6 +67,12 @@ const AUX_FIELDS: Partial<Record<ApplianceType, { name: string; label: string; h
     name: 'temp_entity_id',
     label: 'Tank temperature sensor (optional)',
     help: 'sensor.* exposing tank temp in °F',
+    domain: 'sensor',
+  },
+  robot: {
+    name: 'soc_entity_id',
+    label: 'Battery sensor (optional)',
+    help: 'sensor.* exposing battery % so the optimizer sees live charge',
     domain: 'sensor',
   },
 };
@@ -441,6 +452,16 @@ export class HmApplianceForm extends LitElement {
           power_sensor_entity_id: '',
           capacity_pints_per_day: '',
         };
+      case 'robot':
+        // Robot batteries are tiny (POC) — defaults reflect a typical
+        // vacuum/mower, not a hint the user must accept.
+        return {
+          name: '',
+          battery_capacity_kwh: '0.2',
+          max_charge_rate_kw: '0.05',
+          entity_id: '',
+          soc_entity_id: '',
+        };
     }
   }
 
@@ -557,6 +578,10 @@ export class HmApplianceForm extends LitElement {
         }
         break;
       }
+      case 'robot':
+        reqPositive('battery_capacity_kwh', 'Must be greater than 0');
+        reqPositive('max_charge_rate_kw', 'Must be greater than 0');
+        break;
     }
 
     // entity_id is required for every type with a non-empty CONTROL_DOMAINS
@@ -647,6 +672,13 @@ export class HmApplianceForm extends LitElement {
           ...(capValue ? { capacity_pints_per_day: Number(capValue) } : {}),
         };
       }
+      case 'robot':
+        return {
+          battery_capacity_kwh: Number(v['battery_capacity_kwh']),
+          max_charge_rate_kw: Number(v['max_charge_rate_kw']),
+          entity_id: entityId,
+          ...(auxValue ? { soc_entity_id: auxValue } : {}),
+        };
       default:
         return {};
     }
@@ -982,6 +1014,41 @@ export class HmApplianceForm extends LitElement {
             : null}
         </label>
       `;
+    } else if (t === 'robot') {
+      typeFields = html`
+        <p class="hint" style="margin:0">
+          Robot batteries are small, so the cash savings here are modest —
+          this sets up the pattern for larger robots down the line.
+        </p>
+        <label>
+          <span class="label-text">Battery capacity (kWh)</span>
+          <input
+            name="battery_capacity_kwh"
+            type="number"
+            min="0.01"
+            step="0.01"
+            .value=${v['battery_capacity_kwh'] ?? '0.2'}
+            @input=${onInput('battery_capacity_kwh')}
+          />
+          ${errs['battery_capacity_kwh']
+            ? html`<div class="field-error">${errs['battery_capacity_kwh']}</div>`
+            : null}
+        </label>
+        <label>
+          <span class="label-text">Dock charge rate (kW)</span>
+          <input
+            name="max_charge_rate_kw"
+            type="number"
+            min="0.01"
+            step="0.01"
+            .value=${v['max_charge_rate_kw'] ?? '0.05'}
+            @input=${onInput('max_charge_rate_kw')}
+          />
+          ${errs['max_charge_rate_kw']
+            ? html`<div class="field-error">${errs['max_charge_rate_kw']}</div>`
+            : null}
+        </label>
+      `;
     } else {
       // solar — forecast-only, system size + orientation only.
       typeFields = html`
@@ -1050,7 +1117,9 @@ export class HmApplianceForm extends LitElement {
           ? 'switch.* (resistive) or climate.* — toggled every 30 min'
           : t === 'dehumidifier'
             ? 'humidifier.* — observed only (Hungry Machines sends no commands)'
-            : 'switch.* — toggled on/off every 30 min';
+            : t === 'robot'
+              ? 'vacuum.* or lawn_mower.* — sent back to its dock when charging is scheduled'
+              : 'switch.* — toggled on/off every 30 min';
     const aux = AUX_FIELDS[t];
     const auxOptions = aux ? this._entityList([aux.domain]) : [];
     const auxName = aux ? aux.name : '';

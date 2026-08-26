@@ -37,6 +37,12 @@ Apply logic per type (called once on each :00 / :30 boundary):
 * `ev_charger` / `home_battery` — read `schedule.intervals[slot]`
   (boolean), call `switch.turn_on` or `switch.turn_off` on the entity.
 * `water_heater` — same boolean → switch service mapping.
+* `robot` — dock-as-charging-proxy: `schedule.intervals[slot] = True`
+  means "should be on its dock". ON commands `vacuum.return_to_base` /
+  `lawn_mower.dock` by entity domain; OFF issues no service call ever
+  (never undock, never fight the robot's own task schedule). A
+  low-battery guard (entity's `battery_level` below `schedule.min_value`)
+  docks regardless of slot. See `_apply_robot`.
 
 A misconfigured / missing entity is logged and skipped, never crashes.
 
@@ -235,7 +241,7 @@ def _publish_schedule_states(hass: HomeAssistant, cache: dict[str, Any]) -> None
                 state_value = sp
                 attributes["unit_of_measurement"] = "°F"
                 attributes["device_class"] = "temperature"
-        elif atype in ("ev_charger", "home_battery", "water_heater"):
+        elif atype in ("ev_charger", "home_battery", "water_heater", "robot"):
             intervals = schedule.get("intervals") or []
             if slot < len(intervals):
                 state_value = "on" if bool(intervals[slot]) else "off"
@@ -1075,6 +1081,103 @@ async def _apply_switch(
         )
 
 
+# Dock service by HA domain. No robot vacuum/mower exposes charge control
+# through Home Assistant, so docking is the only control primitive the
+# integration ever exercises — see SCHEDULE_OPTIMIZATION.md §5.
+_ROBOT_DOCK_SERVICE_BY_DOMAIN = {
+    "vacuum": "return_to_base",
+    "lawn_mower": "dock",
+}
+
+# States that mean "already on the dock (or heading there)" — no command
+# needed, whether we're about to send one or checking the low-battery guard.
+_ROBOT_DOCKED_STATES = ("docked", "returning")
+
+
+async def _apply_robot(
+    hass: HomeAssistant, entity_id: str, schedule: dict, slot: int
+) -> None:
+    """Command a robot vacuum/mower to dock — dock-as-charging-proxy.
+
+    `intervals[slot] = True` means "should be on its dock (charging)".
+    OFF slots issue NO service call, ever: the integration must never
+    undock a robot or fight its own app/schedule, which owns task
+    starts. A low-battery robot caught off-dock is docked regardless of
+    slot, checked BEFORE the slot logic below.
+    """
+    domain, _, _ = entity_id.partition(".")
+    service = _ROBOT_DOCK_SERVICE_BY_DOMAIN.get(domain)
+    if service is None:
+        _LOGGER.warning(
+            "Hungry Machines robot %s: unrecognized domain '%s', assuming vacuum",
+            entity_id,
+            domain or "(none)",
+        )
+        domain, service = "vacuum", "return_to_base"
+
+    state = hass.states.get(entity_id) if hass.states else None
+    raw_state = str(getattr(state, "state", "") or "").strip().lower()
+    docked = raw_state in _ROBOT_DOCKED_STATES
+
+    async def _dock() -> None:
+        try:
+            await hass.services.async_call(
+                domain, service, {"entity_id": entity_id}, blocking=False,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "Hungry Machines robot dock apply failed for %s: %s",
+                entity_id,
+                err,
+            )
+
+    # Low-battery guard: battery % from the control entity's
+    # `battery_level` attribute (skipped when absent — most lawn mowers
+    # and some vacuums don't expose it), threshold is the schedule's
+    # persisted charge floor (`min_value`, i.e. `_optimize_robot`'s
+    # `min_charge_pct`). Below threshold and not already docked/returning
+    # → dock regardless of what the slot says. OFF slots cause no service
+    # call on their own, so this guard is never fighting auto-docking —
+    # it only ever adds a dock command the plan didn't already schedule.
+    attrs = getattr(state, "attributes", None) or {} if state else {}
+    try:
+        battery_pct = float(attrs.get("battery_level"))
+    except (TypeError, ValueError):
+        battery_pct = None
+    min_value = schedule.get("min_value")
+    if (
+        battery_pct is not None
+        and isinstance(min_value, (int, float))
+        and battery_pct < min_value
+        and not docked
+    ):
+        _LOGGER.warning(
+            "Hungry Machines robot low-battery guard: %s at %.0f%% below "
+            "floor %.0f%% — docking regardless of slot",
+            entity_id,
+            battery_pct,
+            min_value,
+        )
+        await _dock()
+        return
+
+    intervals = schedule.get("intervals") or []
+    if slot >= len(intervals):
+        _LOGGER.warning(
+            "Hungry Machines robot slot %s out of range (intervals=%d) for %s",
+            slot,
+            len(intervals),
+            entity_id,
+        )
+        return
+    if not bool(intervals[slot]) or docked:
+        # OFF slot: never undock, never fight auto-docking. ON slot but
+        # already docked/returning: nothing to do.
+        return
+
+    await _dock()
+
+
 # Re-fetch the schedule cache when it gets older than this. Apply runs
 # every 30 min on the :00/:30 boundary, so a 5-min TTL means *every*
 # apply pulls the freshest schedule from the API. That makes
@@ -1226,6 +1329,8 @@ async def apply_current_slot(
             )
         elif atype in ("ev_charger", "home_battery", "water_heater"):
             await _apply_switch(hass, entity_id, schedule, slot)
+        elif atype == "robot":
+            await _apply_robot(hass, entity_id, schedule, slot)
         else:
             _LOGGER.info(
                 "Hungry Machines apply: unknown appliance_type=%s for %s; skipping",

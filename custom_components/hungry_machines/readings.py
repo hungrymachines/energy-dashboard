@@ -683,7 +683,7 @@ async def capture_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
                 continue
             _append(hass, _HOME_BUCKET, reading)
             captured += 1
-        elif atype in ("ev_charger", "home_battery"):
+        elif atype in ("ev_charger", "home_battery", "robot"):
             reading = _build_charge_reading(
                 hass, control_state, config.get("soc_entity_id")
             )

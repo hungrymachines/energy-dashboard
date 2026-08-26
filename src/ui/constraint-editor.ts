@@ -408,6 +408,17 @@ export class HmConstraintEditor extends LitElement {
           max_temp_f: s('max_temp_f'),
           min_temp_f: s('min_temp_f'),
         };
+      case 'robot':
+        // Defaults mirror the backend's own fallbacks (_optimize_robot in
+        // nightly.py) so a first-time editor shows the same plan the
+        // optimizer would already assume, not blank fields.
+        return {
+          target_charge_pct: s('target_charge_pct') || '90',
+          min_charge_pct: s('min_charge_pct') || '25',
+          current_charge_pct: s('current_charge_pct') || '50',
+          tasks_window_start: s('tasks_window_start') || '09:00',
+          tasks_window_end: s('tasks_window_end') || '17:00',
+        };
       case 'hvac':
       default: {
         const base = toNumber((c as Record<string, unknown>)['base_temperature']);
@@ -515,6 +526,28 @@ export class HmConstraintEditor extends LitElement {
         }
         break;
       }
+      case 'robot': {
+        const target = reqPct('target_charge_pct');
+        const min = reqPct('min_charge_pct');
+        reqPct('current_charge_pct');
+        reqTime('tasks_window_start');
+        reqTime('tasks_window_end');
+        if (target !== null && min !== null && min >= target) {
+          errors['min_charge_pct'] = 'Must be less than target';
+        }
+        const start = values['tasks_window_start'] ?? '';
+        const end = values['tasks_window_end'] ?? '';
+        if (
+          start !== '' &&
+          end !== '' &&
+          TIME_PATTERN.test(start) &&
+          TIME_PATTERN.test(end) &&
+          start === end
+        ) {
+          errors['tasks_window_end'] = 'Must differ from start';
+        }
+        break;
+      }
       case 'hvac': {
         const base = Number(values['base_temperature'] ?? '');
         if (!Number.isFinite(base)) errors['base_temperature'] = 'Required';
@@ -575,6 +608,14 @@ export class HmConstraintEditor extends LitElement {
         return {
           max_temp_f: Number(v['max_temp_f']),
           min_temp_f: Number(v['min_temp_f']),
+        };
+      case 'robot':
+        return {
+          target_charge_pct: Number(v['target_charge_pct']),
+          min_charge_pct: Number(v['min_charge_pct']),
+          current_charge_pct: Number(v['current_charge_pct']),
+          tasks_window_start: v['tasks_window_start'] ?? '',
+          tasks_window_end: v['tasks_window_end'] ?? '',
         };
       case 'hvac':
       default: {
@@ -704,7 +745,9 @@ export class HmConstraintEditor extends LitElement {
           ? 'Battery constraints'
           : type === 'water_heater'
             ? 'Water heater constraints'
-            : 'HVAC preferences';
+            : type === 'robot'
+              ? 'Home robot constraints'
+              : 'HVAC preferences';
 
     return html`
       <div class="overlay" role="presentation">
@@ -861,6 +904,89 @@ export class HmConstraintEditor extends LitElement {
                   />
                   ${errs['min_temp_f']
                     ? html`<div class="field-error">${errs['min_temp_f']}</div>`
+                    : null}
+                </label>
+              `
+            : null}
+          ${type === 'robot'
+            ? html`
+                <label>
+                  <span class="label-text">Target charge (%)</span>
+                  <input
+                    name="target_charge_pct"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    .value=${v['target_charge_pct'] ?? ''}
+                    @input=${onNum('target_charge_pct')}
+                  />
+                  ${errs['target_charge_pct']
+                    ? html`<div class="field-error">${errs['target_charge_pct']}</div>`
+                    : null}
+                </label>
+                <label>
+                  <span class="label-text">Minimum charge (%)</span>
+                  <input
+                    name="min_charge_pct"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    .value=${v['min_charge_pct'] ?? ''}
+                    @input=${onNum('min_charge_pct')}
+                  />
+                  ${errs['min_charge_pct']
+                    ? html`<div class="field-error">${errs['min_charge_pct']}</div>`
+                    : null}
+                </label>
+                <label>
+                  <span class="label-text">Current charge (%)</span>
+                  <input
+                    name="current_charge_pct"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    .value=${v['current_charge_pct'] ?? ''}
+                    @input=${onNum('current_charge_pct')}
+                  />
+                  ${errs['current_charge_pct']
+                    ? html`<div class="field-error">${errs['current_charge_pct']}</div>`
+                    : null}
+                </label>
+                <p class="opt-toggles-help">
+                  Your robot runs its own tasks in this window; charging is
+                  scheduled around it.
+                </p>
+                <label>
+                  <span class="label-text">Tasks window start (HH:MM)</span>
+                  <input
+                    name="tasks_window_start"
+                    type="text"
+                    inputmode="numeric"
+                    placeholder="09:00"
+                    pattern="\\d{2}:\\d{2}"
+                    .value=${v['tasks_window_start'] ?? ''}
+                    @input=${onNum('tasks_window_start')}
+                  />
+                  ${errs['tasks_window_start']
+                    ? html`<div class="field-error">${errs['tasks_window_start']}</div>`
+                    : null}
+                </label>
+                <label>
+                  <span class="label-text">Tasks window end (HH:MM)</span>
+                  <input
+                    name="tasks_window_end"
+                    type="text"
+                    inputmode="numeric"
+                    placeholder="17:00"
+                    pattern="\\d{2}:\\d{2}"
+                    .value=${v['tasks_window_end'] ?? ''}
+                    @input=${onNum('tasks_window_end')}
+                  />
+                  ${errs['tasks_window_end']
+                    ? html`<div class="field-error">${errs['tasks_window_end']}</div>`
                     : null}
                 </label>
               `
