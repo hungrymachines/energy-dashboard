@@ -20,9 +20,15 @@ Apply logic per type (called once on each :00 / :30 boundary):
   setpoint the backend's optimizer derived and clamped to the user's
   comfort band), then call `climate.set_temperature` with that value
   regardless of HVAC mode. The physical thermostat applies its own
-  deadband around whatever value we send, so we do NOT wrap the
-  setpoint in another band on this side. The mode only changes the
-  service-call shape, not the value:
+  deadband around whatever value we send. We ALSO re-clamp the
+  setpoint into `[low_temps[slot], high_temps[slot]]` on this side, as
+  defense-in-depth against a backend bug or a band edited locally
+  after the nightly run already computed the value — this should be a
+  no-op in the common case since the backend already clamped it.
+  Skipped entirely when a comfort-band override is active
+  (the override's own edge value IS the commanded truth) or when the
+  band arrays are missing/malformed for the slot. The mode only
+  changes the service-call shape, not the value:
     - `heat_cool` / `auto` + range support → low = high = setpoint
     - `cool` / `heat` → `temperature` = setpoint
     - `heat_cool` / `auto` without range support → `temperature` = setpoint
@@ -439,10 +445,13 @@ def _resolve_setpoint(schedule: dict, slot: int) -> float | None:
     """Pull the slot's commanded setpoint from the schedule.
 
     The backend writes `setpoint_temps[48]` (the optimizer's clamped
-    target). This is the only source of truth — the physical thermostat
-    already applies its own deadband around whatever value we send, so
-    there's no need to invent a fallback or wrap the setpoint in our
-    own band on this side.
+    target) — this is still the primary source of truth, so there's no
+    fallback to invent here. `_apply_hvac` DOES re-clamp this value
+    into the slot's `[low_temps, high_temps]` band before commanding
+    it, as defense-in-depth against a backend bug or a band edited
+    locally after the nightly run — deliberately wrapping the setpoint
+    in a second band on this side, unlike the historical policy this
+    docstring used to describe.
     """
     setpoints = schedule.get("setpoint_temps")
     if not isinstance(setpoints, list) or slot >= len(setpoints):
@@ -538,6 +547,19 @@ def _log_comfort_silence(hass: HomeAssistant, entity_id: str, reason: str | None
         return
     store[entity_id] = reason
     _LOGGER.warning("Hungry Machines comfort guard silent for %s: %s", entity_id, reason)
+
+
+def _band_edge(schedule: dict, key: str, slot: int) -> float | None:
+    """Pull a single slot's value out of a comfort-band array
+    (`high_temps` / `low_temps`), tolerating a missing/malformed array
+    or an out-of-range slot index."""
+    arr = schedule.get(key)
+    if not isinstance(arr, list) or slot >= len(arr):
+        return None
+    try:
+        return float(arr[slot])
+    except (TypeError, ValueError):
+        return None
 
 
 def _aux_indoor_temp_entity_id(hass: HomeAssistant, entity_id: str) -> str | None:
@@ -687,17 +709,8 @@ def _comfort_band_override(
 
     sched_mode = str(schedule.get("mode") or "").strip().lower()
 
-    def _band_edge(key: str) -> float | None:
-        arr = schedule.get(key)
-        if not isinstance(arr, list) or slot >= len(arr):
-            return None
-        try:
-            return float(arr[slot])
-        except (TypeError, ValueError):
-            return None
-
-    high = _band_edge("high_temps")
-    low = _band_edge("low_temps")
+    high = _band_edge(schedule, "high_temps", slot)
+    low = _band_edge(schedule, "low_temps", slot)
 
     override, new_latch = comfort.decide(
         indoor=indoor,
@@ -793,16 +806,8 @@ def _log_pause_silence_if_outside_band(
         _log_comfort_silence(hass, entity_id, None)
         return
 
-    def _band_edge(key: str) -> float | None:
-        arr = schedule.get(key)
-        if not isinstance(arr, list) or slot >= len(arr):
-            return None
-        try:
-            return float(arr[slot])
-        except (TypeError, ValueError):
-            return None
-
-    high, low = _band_edge("high_temps"), _band_edge("low_temps")
+    high = _band_edge(schedule, "high_temps", slot)
+    low = _band_edge(schedule, "low_temps", slot)
     outside = (high is not None and indoor > high) or (low is not None and indoor < low)
     _log_comfort_silence(
         hass, entity_id,
@@ -920,6 +925,30 @@ async def _apply_hvac(
     )
     if override is not None:
         mode_canonical, setpoint = override
+    elif setpoint is not None:
+        # Defense-in-depth band clamp: the backend already clamps
+        # setpoint_temps into [low_temps[slot], high_temps[slot]] at
+        # nightly derivation (nightly.py _derive_setpoints_from_pattern),
+        # so this should never actually change the value — a calibration
+        # blob's COOL/OFF-phase setpoints sit exactly on an edge and pass
+        # through unchanged. A fire here signals a backend bug or a band
+        # that was edited locally after the nightly run already ran, so
+        # we clamp anyway (the clamped value becomes the commanded
+        # truth) and log loudly rather than send the raw value through.
+        high = _band_edge(schedule, "high_temps", slot)
+        low = _band_edge(schedule, "low_temps", slot)
+        if high is not None and low is not None and low <= high:
+            clamped = max(low, min(setpoint, high))
+            if clamped != setpoint:
+                _LOGGER.warning(
+                    "Hungry Machines HVAC slot=%d: %s setpoint %.1f°F is "
+                    "outside the comfort band [%.1f, %.1f]°F — clamping to "
+                    "%.1f°F (should never fire; the backend clamps at "
+                    "nightly derivation, so this signals a backend bug or "
+                    "a band edited after the nightly run)",
+                    slot, entity_id, setpoint, low, high, clamped,
+                )
+                setpoint = clamped
 
     # Record the schedule's intent for this slot BEFORE any service
     # calls so the readings collector has a consistent ground-truth

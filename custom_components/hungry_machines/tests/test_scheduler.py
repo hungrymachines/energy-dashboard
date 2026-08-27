@@ -256,6 +256,10 @@ async def test_apply_hvac_clamps_setpoint_below_entity_min() -> None:
     ))
     entry = _entry()
     hass.data[DOMAIN] = _hvac_cache(setpoint=59.0)  # below AC min
+    # Widen the comfort band so the new US-CBE-013 band clamp doesn't
+    # intercept the value first — this test is specifically about the
+    # hardware-range clamp.
+    hass.data[DOMAIN]["schedule"]["hvac-1"]["schedule"]["low_temps"] = [50.0] * 48
     with patch.object(scheduler, "_current_slot", return_value=28):
         await scheduler.apply_current_slot(hass, entry)
 
@@ -274,6 +278,10 @@ async def test_apply_hvac_clamps_setpoint_above_entity_max() -> None:
     ))
     entry = _entry()
     hass.data[DOMAIN] = _hvac_cache(setpoint=92.0)  # above AC max
+    # Widen the comfort band so the new US-CBE-013 band clamp doesn't
+    # intercept the value first — this test is specifically about the
+    # hardware-range clamp.
+    hass.data[DOMAIN]["schedule"]["hvac-1"]["schedule"]["high_temps"] = [95.0] * 48
     with patch.object(scheduler, "_current_slot", return_value=28):
         await scheduler.apply_current_slot(hass, entry)
 
@@ -294,6 +302,74 @@ async def test_apply_hvac_setpoint_within_range_passes_through() -> None:
         await scheduler.apply_current_slot(hass, entry)
     payload = hass.services.async_call.await_args.args[2]
     assert payload["temperature"] == 72.5
+
+
+# ---------------------------------------------------------------------------
+# Client-side band clamp (US-CBE-013) — defense-in-depth against a backend
+# bug or a comfort band edited locally after the nightly run already
+# computed setpoint_temps. Only applies when no comfort-band override is
+# active; the backend already clamps at nightly derivation so this should
+# be a no-op in the common case.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_apply_hvac_clamps_setpoint_outside_comfort_band(caplog) -> None:
+    """A setpoint above the slot's high_temps edge (stale band, or a
+    backend bug) is clamped into the band before it's commanded, and the
+    clamp fires a WARNING since it should never happen in practice."""
+    import logging
+    caplog.set_level(logging.WARNING, logger="custom_components.hungry_machines.scheduler")
+
+    hass = _hass(_climate_state("cool", supports_range=False))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(setpoint=80.0)  # above the 74°F high band
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    hass.services.async_call.assert_awaited_once()
+    payload = hass.services.async_call.await_args.args[2]
+    assert payload["temperature"] == 74.0, (
+        f"setpoint=80 outside band [70, 74] should clamp to 74, got {payload}"
+    )
+    cached = scheduler.get_last_commanded(hass, "climate.living_room")
+    assert cached["setpoint"] == 74.0, "the clamped value is the commanded truth"
+    assert any(
+        rec.levelno >= logging.WARNING and "outside the comfort band" in rec.message
+        for rec in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_hvac_calibration_blob_passes_through_unclamped() -> None:
+    """A calibration-day blob pins COOL-phase setpoints to the band's LOW
+    edge and OFF-phase setpoints to the HIGH edge — both already sit
+    exactly on an edge, so the new clamp must be a true no-op here."""
+    hass = _hass(_climate_state(
+        "cool", supports_range=False, hvac_modes=["off", "cool"],
+    ))
+    entry = _entry()
+    hass.data[DOMAIN] = _hvac_cache(
+        setpoint=70.0,  # COOL-phase pin: band's LOW edge (high=74, low=70)
+        hvac_mode_schedule=["COOL"] * 48,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    payload = hass.services.async_call.await_args.args[2]
+    assert payload["temperature"] == 70.0
+
+    # Mirror the OFF-phase pin: band's HIGH edge.
+    hass.services.async_call.reset_mock()
+    hass.data[DOMAIN] = _hvac_cache(
+        setpoint=74.0,  # OFF-phase pin: band's HIGH edge
+        hvac_mode_schedule=["OFF"] * 48,
+    )
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+    # OFF mode skips set_temperature entirely; the recorded truth is the
+    # unclamped pin value itself.
+    cached = scheduler.get_last_commanded(hass, "climate.living_room")
+    assert cached["setpoint"] == 74.0
 
 
 @pytest.mark.asyncio
@@ -413,7 +489,7 @@ async def test_apply_hvac_records_commanded_for_off_slot() -> None:
     ))
     entry = _entry()
     hass.data[DOMAIN] = _hvac_cache(
-        setpoint=80.0,
+        setpoint=72.0,
         fan_mode_schedule=["auto"] * 48,
         hvac_mode_schedule=["OFF"] * 48,
     )
@@ -424,7 +500,7 @@ async def test_apply_hvac_records_commanded_for_off_slot() -> None:
     assert cached is not None
     assert cached["hvac_mode"] == "OFF"
     assert cached["fan_mode"] == "auto"
-    assert cached["setpoint"] == 80.0
+    assert cached["setpoint"] == 72.0
 
 
 @pytest.mark.asyncio
@@ -573,7 +649,7 @@ async def test_off_to_cool_transition_sends_setpoint_despite_stale_state() -> No
     ))
     entry = _entry()
     hass.data[DOMAIN] = _hvac_cache(
-        setpoint=68.0,
+        setpoint=71.0,
         fan_mode_schedule=["high"] * 48,
         hvac_mode_schedule=["COOL"] * 48,
     )
@@ -593,7 +669,7 @@ async def test_off_to_cool_transition_sends_setpoint_despite_stale_state() -> No
         "fan command must fire even though the entity still reports 'off'"
     )
     temp_payload = next(p for s, p in calls if s == "set_temperature")
-    assert temp_payload["temperature"] == 68.0
+    assert temp_payload["temperature"] == 71.0
     fan_payload = next(p for s, p in calls if s == "set_fan_mode")
     assert fan_payload["fan_mode"] == "high"
 
@@ -1158,7 +1234,7 @@ async def test_apply_refreshes_when_cache_is_old() -> None:
                     "intervals": list(range(48)),
                     "high_temps": [74.0] * 48,
                     "low_temps": [70.0] * 48,
-                    "setpoint_temps": [69.0] * 48,
+                    "setpoint_temps": [71.0] * 48,
                     "mode": "cool",
                 },
                 "savings_pct": 22.0,
@@ -1175,9 +1251,9 @@ async def test_apply_refreshes_when_cache_is_old() -> None:
         await scheduler.apply_current_slot(hass, entry)
 
     fetch_spy.assert_awaited_once()
-    # Apply uses the refreshed cache's setpoint (69.0), not the stale cache's (71.5).
+    # Apply uses the refreshed cache's setpoint (71.0), not the stale cache's (71.5).
     payload = hass.services.async_call.await_args.args[2]
-    assert payload == {"entity_id": "climate.living_room", "temperature": 69.0}
+    assert payload == {"entity_id": "climate.living_room", "temperature": 71.0}
 
 
 @pytest.mark.asyncio
