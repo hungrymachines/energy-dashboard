@@ -159,6 +159,7 @@ def _hvac_cache(
     include_setpoints: bool = True,
     fan_mode_schedule: list[str] | None = None,
     hvac_mode_schedule: list[str] | None = None,
+    indoor_temp_entity_id: str | None = None,
 ) -> dict:
     """Build a cached schedule for one HVAC appliance.
 
@@ -167,7 +168,8 @@ def _hvac_cache(
     is present so we can verify the fallback path.
     Optional fan_mode_schedule / hvac_mode_schedule simulate the
     Phase C/D opt-in arrays the backend writes when the user enables
-    fan or mode optimization.
+    fan or mode optimization. `indoor_temp_entity_id` simulates the
+    US-CBE-003 aux sensor id, when configured.
     """
     schedule: dict = {
         "high_temps": [74.0] * 48,
@@ -186,6 +188,7 @@ def _hvac_cache(
             "hvac-1": {
                 "appliance_type": "hvac",
                 "entity_id": entity_id,
+                "indoor_temp_entity_id": indoor_temp_entity_id,
                 "schedule": schedule,
             },
         }
@@ -1325,11 +1328,13 @@ def _override_cache(
     sched_mode: str = "cool",
     hvac_mode_schedule: list[str] | None = None,
     calibration: dict | None = None,
+    indoor_temp_entity_id: str | None = None,
 ) -> dict:
     cache = _hvac_cache(
         setpoint=72.0,
         fan_mode_schedule=["auto"] * 48,
         hvac_mode_schedule=hvac_mode_schedule or ["OFF"] * 48,
+        indoor_temp_entity_id=indoor_temp_entity_id,
     )
     schedule = cache["schedule"]["hvac-1"]["schedule"]
     schedule["mode"] = sched_mode
@@ -1788,6 +1793,120 @@ async def test_watchdog_stops_active_cooling_that_overshot_past_low_edge() -> No
     assert not temp_calls
     latch = hass.data[DOMAIN]["comfort_latch"]["climate.living_room"]
     assert latch["active"] is True and latch["direction"] == "off_overcool"
+
+
+# ---------------------------------------------------------------------------
+# Aux indoor-sensor fallback (US-CBE-012) — units that can't self-report
+# current_temperature (Tuya/IR-blaster/Generic Thermostat) get the guard's
+# protection via their configured indoor_temp_entity_id instead of none.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_comfort_override_uses_aux_sensor_when_climate_current_temperature_missing() -> None:
+    """Climate entity reports no current_temperature at all (the common
+    Tuya/IR-blaster shape) but the appliance has a configured aux indoor
+    sensor reading 79.5°F against a 76°F high band — the guard still
+    engages using the aux reading instead of releasing blind."""
+    climate_state = _climate_state("off", supports_range=False,
+                                   hvac_modes=["off", "cool"])
+    aux_state = MagicMock()
+    aux_state.state = "79.5"
+    hass = _multi_hvac_hass({
+        "climate.living_room": climate_state,
+        "sensor.aux_temp": aux_state,
+    })
+    entry = _entry()
+    cache = _override_cache(indoor_temp_entity_id="sensor.aux_temp")
+    cache["schedule"]["hvac-1"]["schedule"]["high_temps"] = [76.0] * 48
+    hass.data[DOMAIN] = cache
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.apply_current_slot(hass, entry)
+
+    calls = hass.services.async_call.await_args_list
+    mode_calls = [c for c in calls if c.args[1] == "set_hvac_mode"]
+    temp_calls = [c for c in calls if c.args[1] == "set_temperature"]
+    assert mode_calls and mode_calls[0].args[2]["hvac_mode"] == "cool"
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 76.0
+    cached = scheduler.get_last_commanded(hass, "climate.living_room")
+    assert cached["hvac_mode"] == "COOL"
+    assert cached["setpoint"] == 76.0
+
+
+@pytest.mark.asyncio
+async def test_comfort_override_releases_when_climate_and_aux_both_unavailable() -> None:
+    """Both the climate entity's current_temperature AND the configured
+    aux sensor fail to produce a usable value — the guard still releases
+    conservatively (no override, no latch) rather than commanding blind."""
+    climate_state = _climate_state("off", supports_range=False,
+                                   hvac_modes=["off", "cool"])
+    aux_state = MagicMock()
+    aux_state.state = "unavailable"
+    hass = _multi_hvac_hass({
+        "climate.living_room": climate_state,
+        "sensor.aux_temp": aux_state,
+    })
+    entry = _entry()
+    hass.data[DOMAIN] = _override_cache(indoor_temp_entity_id="sensor.aux_temp")
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.apply_current_slot(hass, entry)
+
+    assert not [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] in ("set_hvac_mode", "set_temperature")
+    ]
+    assert "climate.living_room" not in hass.data[DOMAIN].get("comfort_latch", {})
+
+
+@pytest.mark.asyncio
+async def test_comfort_override_aux_engage_logs_which_source_drove_it(caplog) -> None:
+    """Field debugging needs to tell which sensor drove an override — a
+    WARNING names the aux entity on the tick the override engages."""
+    import logging
+    caplog.set_level(logging.WARNING, logger="custom_components.hungry_machines.scheduler")
+
+    climate_state = _climate_state("off", supports_range=False,
+                                   hvac_modes=["off", "cool"])
+    aux_state = MagicMock()
+    aux_state.state = "79.5"
+    hass = _multi_hvac_hass({
+        "climate.living_room": climate_state,
+        "sensor.aux_temp": aux_state,
+    })
+    entry = _entry()
+    cache = _override_cache(indoor_temp_entity_id="sensor.aux_temp")
+    cache["schedule"]["hvac-1"]["schedule"]["high_temps"] = [76.0] * 48
+    hass.data[DOMAIN] = cache
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.apply_current_slot(hass, entry)
+
+    assert any(
+        rec.levelno >= logging.WARNING
+        and "aux sensor" in rec.message
+        and "sensor.aux_temp" in rec.message
+        for rec in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_caches_indoor_temp_entity_id_when_configured() -> None:
+    """US-CBE-003 added indoor_temp_entity_id to the /schedules entities
+    projection; the schedule cache must carry it through for the aux
+    fallback, and stay None when the appliance has none configured."""
+    hass = _hass()
+    entry = _entry()
+    body = _schedules_body()
+    body["appliances"][0]["entities"]["indoor_temp_entity_id"] = "sensor.aux_temp"
+    with patch.object(
+        scheduler.api, "get_schedules", AsyncMock(return_value=body)
+    ):
+        cache = await scheduler.fetch_today_schedule(hass, entry)
+
+    assert cache["hvac-1"]["indoor_temp_entity_id"] == "sensor.aux_temp"
+    # The second fixture appliance has no aux sensor configured.
+    assert cache["ev-1"]["indoor_temp_entity_id"] is None
 
 
 # ---------------------------------------------------------------------------

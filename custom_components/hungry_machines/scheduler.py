@@ -7,6 +7,7 @@ Cache shape (`hass.data[DOMAIN]['schedule']`):
         "<appliance_id>": {
             "appliance_type": str,
             "entity_id": str,
+            "indoor_temp_entity_id": str | None,  # aux sensor, if configured
             "schedule": {...},   # the JSONB blob the API returned
         },
         ...,
@@ -176,9 +177,19 @@ async def fetch_today_schedule(
         entity_id = (
             entities.get("entity_id") if isinstance(entities, dict) else None
         )
+        # Aux indoor-sensor id (US-CBE-003 added it to the /schedules
+        # entities projection). Only present when the appliance was
+        # configured with one; tolerate absence -> None so older API
+        # responses and sensor-less HVACs still cache cleanly.
+        indoor_temp_entity_id = (
+            entities.get("indoor_temp_entity_id")
+            if isinstance(entities, dict)
+            else None
+        )
         cache[aid] = {
             "appliance_type": entry_data.get("appliance_type"),
             "entity_id": entity_id,
+            "indoor_temp_entity_id": indoor_temp_entity_id,
             "name": entry_data.get("name"),
             "schedule": entry_data.get("schedule") or {},
             # Per-appliance pause flag (US-MHVAC-010). Missing key on
@@ -529,6 +540,26 @@ def _log_comfort_silence(hass: HomeAssistant, entity_id: str, reason: str | None
     _LOGGER.warning("Hungry Machines comfort guard silent for %s: %s", entity_id, reason)
 
 
+def _aux_indoor_temp_entity_id(hass: HomeAssistant, entity_id: str) -> str | None:
+    """Find the cached `indoor_temp_entity_id` for the appliance whose
+    climate entity is `entity_id`.
+
+    `_comfort_band_override` is keyed by climate entity_id (it has no
+    appliance_id to hand), so this does a linear scan of the small,
+    per-user schedule cache to find the matching appliance entry.
+    """
+    cache = _domain_data(hass).get("schedule")
+    if not isinstance(cache, dict):
+        return None
+    for aid, info in cache.items():
+        if aid in ("fetched_at", "optimization_enabled") or not isinstance(info, dict):
+            continue
+        if info.get("entity_id") == entity_id:
+            aux = info.get("indoor_temp_entity_id")
+            return aux if isinstance(aux, str) and aux else None
+    return None
+
+
 def _comfort_band_override(
     hass: HomeAssistant,
     entity_id: str,
@@ -615,17 +646,43 @@ def _comfort_band_override(
     try:
         indoor = float(attrs.get("current_temperature"))
     except (TypeError, ValueError):
-        # Can't read the room — release conservatively and let the
-        # scheduled slot stand rather than command blind. This is
-        # exactly the office-incident failure mode, so it's no longer
-        # silent.
+        indoor = None
+
+    aux_entity_id: str | None = None
+    aux_source_used = False
+    if indoor is None:
+        # The climate entity can't self-report (Tuya/IR-blaster/Generic
+        # Thermostat wrappers, or a real read failure) — fall back to
+        # the appliance's configured indoor sensor, same coercion
+        # `readings.py` uses for the exact same class of unit.
+        aux_entity_id = _aux_indoor_temp_entity_id(hass, entity_id)
+        if aux_entity_id:
+            aux_state = hass.states.get(aux_entity_id) if hass.states else None
+            raw = getattr(aux_state, "state", None) if aux_state else None
+            # Local import: readings.py imports get_last_commanded from
+            # this module at module load time, so a top-level import
+            # here would be circular.
+            from .readings import _coerce_float
+            indoor = _coerce_float(raw)
+            aux_source_used = indoor is not None
+
+    if indoor is None:
+        # Can't read the room from either source — release conservatively
+        # and let the scheduled slot stand rather than command blind.
+        # This is exactly the office-incident failure mode, so it's no
+        # longer silent.
         _persist(None)
-        _log_comfort_silence(
-            hass, entity_id,
+        reason = (
             f"slot={slot} has no usable indoor temperature (climate "
-            "entity's current_temperature is missing/invalid) — the "
-            "comfort guard cannot evaluate this slot",
+            "entity's current_temperature is missing/invalid, aux sensor "
+            f"{aux_entity_id} is also unavailable/non-numeric)"
+            if aux_entity_id
+            else
+            f"slot={slot} has no usable indoor temperature (climate "
+            "entity's current_temperature is missing/invalid and no aux "
+            "indoor_temp_entity_id is configured for this appliance)"
         )
+        _log_comfort_silence(hass, entity_id, f"{reason} — the comfort guard cannot evaluate this slot")
         return None
 
     sched_mode = str(schedule.get("mode") or "").strip().lower()
@@ -670,6 +727,13 @@ def _comfort_band_override(
             override[0] if override else "?", edge,
             comfort.MIN_ON_SECONDS, comfort.RELEASE_MARGIN_F,
         )
+        if aux_source_used:
+            _LOGGER.warning(
+                "Hungry Machines comfort override slot=%d: %s indoor "
+                "reading came from the aux sensor %s — the climate "
+                "entity's current_temperature was unavailable",
+                slot, entity_id, aux_entity_id,
+            )
         _log_comfort_silence(hass, entity_id, None)
     elif was_active and not now_active:
         _LOGGER.info(
