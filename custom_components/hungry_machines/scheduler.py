@@ -7,6 +7,7 @@ Cache shape (`hass.data[DOMAIN]['schedule']`):
         "<appliance_id>": {
             "appliance_type": str,
             "entity_id": str,
+            "indoor_temp_entity_id": str | None,  # aux sensor, if configured
             "schedule": {...},   # the JSONB blob the API returned
         },
         ...,
@@ -19,9 +20,15 @@ Apply logic per type (called once on each :00 / :30 boundary):
   setpoint the backend's optimizer derived and clamped to the user's
   comfort band), then call `climate.set_temperature` with that value
   regardless of HVAC mode. The physical thermostat applies its own
-  deadband around whatever value we send, so we do NOT wrap the
-  setpoint in another band on this side. The mode only changes the
-  service-call shape, not the value:
+  deadband around whatever value we send. We ALSO re-clamp the
+  setpoint into `[low_temps[slot], high_temps[slot]]` on this side, as
+  defense-in-depth against a backend bug or a band edited locally
+  after the nightly run already computed the value — this should be a
+  no-op in the common case since the backend already clamped it.
+  Skipped entirely when a comfort-band override is active
+  (the override's own edge value IS the commanded truth) or when the
+  band arrays are missing/malformed for the slot. The mode only
+  changes the service-call shape, not the value:
     - `heat_cool` / `auto` + range support → low = high = setpoint
     - `cool` / `heat` → `temperature` = setpoint
     - `heat_cool` / `auto` without range support → `temperature` = setpoint
@@ -48,8 +55,9 @@ A misconfigured / missing entity is logged and skipped, never crashes.
 
 Closed-loop comfort failsafe: the per-slot apply is open-loop (it trusts
 the optimizer's overnight trajectory). `comfort_watchdog` runs every 5 min
-and, for a scheduled-OFF HVAC that has actually drifted out of band,
-commands it back on at the band edge with hysteresis — see
+and, for any HVAC that has actually drifted out of its comfort band —
+including one that is already actively COOLing or HEATing and overshot
+the far edge — commands it back at the band edge with hysteresis — see
 `_comfort_band_override` and the pure state machine in `comfort.py`.
 """
 from __future__ import annotations
@@ -76,6 +84,18 @@ _SLOTS_PER_DAY = 48
 # apply/watchdog calls so the hysteresis min-on-time and release deadband
 # survive between the 5-min watchdog ticks and the 30-min slot applies.
 _COMFORT_LATCH_KEY = "comfort_latch"
+
+# Widens the comfort guard's trigger thresholds during an active
+# calibration phase — mirrors the backend's own retrospective comfort
+# cap (`COMFORT_OVERSHOOT_F` in services/calibration.py). A calibration
+# day gets a bigger allowance for the excursion the measurement itself
+# requires, not zero local protection.
+CALIBRATION_OVERSHOOT_F = 2.0
+
+# Per-entity memory of the last "why didn't the guard act" reason logged,
+# so a stuck condition (e.g. a permanently unreadable sensor) logs once
+# instead of every 5-minute tick. See `_log_comfort_silence`.
+_SILENT_SKIP_KEY = "comfort_silent_skip_reason"
 
 
 def _domain_data(hass: HomeAssistant) -> dict[str, Any]:
@@ -163,9 +183,19 @@ async def fetch_today_schedule(
         entity_id = (
             entities.get("entity_id") if isinstance(entities, dict) else None
         )
+        # Aux indoor-sensor id (added it to the /schedules
+        # entities projection). Only present when the appliance was
+        # configured with one; tolerate absence -> None so older API
+        # responses and sensor-less HVACs still cache cleanly.
+        indoor_temp_entity_id = (
+            entities.get("indoor_temp_entity_id")
+            if isinstance(entities, dict)
+            else None
+        )
         cache[aid] = {
             "appliance_type": entry_data.get("appliance_type"),
             "entity_id": entity_id,
+            "indoor_temp_entity_id": indoor_temp_entity_id,
             "name": entry_data.get("name"),
             "schedule": entry_data.get("schedule") or {},
             # Per-appliance pause flag. Missing key on
@@ -415,10 +445,13 @@ def _resolve_setpoint(schedule: dict, slot: int) -> float | None:
     """Pull the slot's commanded setpoint from the schedule.
 
     The backend writes `setpoint_temps[48]` (the optimizer's clamped
-    target). This is the only source of truth — the physical thermostat
-    already applies its own deadband around whatever value we send, so
-    there's no need to invent a fallback or wrap the setpoint in our
-    own band on this side.
+    target) — this is still the primary source of truth, so there's no
+    fallback to invent here. `_apply_hvac` DOES re-clamp this value
+    into the slot's `[low_temps, high_temps]` band before commanding
+    it, as defense-in-depth against a backend bug or a band edited
+    locally after the nightly run — deliberately wrapping the setpoint
+    in a second band on this side, unlike the historical policy this
+    docstring used to describe.
     """
     setpoints = schedule.get("setpoint_temps")
     if not isinstance(setpoints, list) or slot >= len(setpoints):
@@ -490,6 +523,65 @@ def _match_entity_option(
     return None
 
 
+def _log_comfort_silence(hass: HomeAssistant, entity_id: str, reason: str | None) -> None:
+    """Rate-limited WARNING for a tick where the comfort guard did NOT
+    act on `entity_id`, even though it might plausibly need to.
+
+    The office incident (2026-08-27) sat out of band for hours with zero
+    log evidence of why the guard stayed quiet. Every early-return in
+    `_comfort_band_override` / `comfort_watchdog` that could explain a
+    stuck out-of-band unit calls this with a human-readable `reason`.
+
+    Logs once when `reason` first appears or changes; a repeat of the
+    exact same reason on the next tick is suppressed so a persistently
+    stuck condition doesn't spam the log every 5 minutes. Pass
+    `reason=None` to clear the memory (the guard acted, or the room is
+    back in band) — the NEXT occurrence, even of the same wording, logs
+    again.
+    """
+    store = _domain_data(hass).setdefault(_SILENT_SKIP_KEY, {})
+    if reason is None:
+        store.pop(entity_id, None)
+        return
+    if store.get(entity_id) == reason:
+        return
+    store[entity_id] = reason
+    _LOGGER.warning("Hungry Machines comfort guard silent for %s: %s", entity_id, reason)
+
+
+def _band_edge(schedule: dict, key: str, slot: int) -> float | None:
+    """Pull a single slot's value out of a comfort-band array
+    (`high_temps` / `low_temps`), tolerating a missing/malformed array
+    or an out-of-range slot index."""
+    arr = schedule.get(key)
+    if not isinstance(arr, list) or slot >= len(arr):
+        return None
+    try:
+        return float(arr[slot])
+    except (TypeError, ValueError):
+        return None
+
+
+def _aux_indoor_temp_entity_id(hass: HomeAssistant, entity_id: str) -> str | None:
+    """Find the cached `indoor_temp_entity_id` for the appliance whose
+    climate entity is `entity_id`.
+
+    `_comfort_band_override` is keyed by climate entity_id (it has no
+    appliance_id to hand), so this does a linear scan of the small,
+    per-user schedule cache to find the matching appliance entry.
+    """
+    cache = _domain_data(hass).get("schedule")
+    if not isinstance(cache, dict):
+        return None
+    for aid, info in cache.items():
+        if aid in ("fetched_at", "optimization_enabled") or not isinstance(info, dict):
+            continue
+        if info.get("entity_id") == entity_id:
+            aux = info.get("indoor_temp_entity_id")
+            return aux if isinstance(aux, str) and aux else None
+    return None
+
+
 def _comfort_band_override(
     hass: HomeAssistant,
     entity_id: str,
@@ -498,22 +590,26 @@ def _comfort_band_override(
     mode_canonical: str | None,
     now: datetime | None = None,
 ) -> tuple[str, float] | None:
-    """Decide whether a scheduled-OFF slot must be overridden because
-    the house has drifted outside the comfort band.
+    """Decide whether this slot must be overridden because the house has
+    drifted outside the comfort band.
 
     Returns `(override_mode, override_setpoint)` — e.g. `("COOL", 75.0)`
-    — or None when the schedule should apply as-is. The pure hysteresis
-    logic lives in `comfort.decide`; this wrapper supplies the entity
-    read, the persisted latch, and the transition logging.
+    or `("OFF", 70.0)` — or None when the schedule should apply as-is.
+    The pure hysteresis logic lives in `comfort.decide`; this wrapper
+    supplies the entity read, the persisted latch, the calibration
+    allowance, and the transition/silence logging.
 
     The backend schedule is OPEN-LOOP: computed during the night from a
     predicted temperature trajectory. When reality diverges from the
     prediction (immature model, passive calibration evening, hotter
-    weather than forecast), the integration is the only component that
-    sees the live indoor temperature, so the failsafe lives here. The
-    June 11 incident is the motivating case: the house was 80°F at 8am
-    while the schedule — whose trajectory predicted in-band — kept
-    commanding OFF.
+    weather than forecast, or a unit that simply ignores a commanded
+    slot), the integration is the only component that sees the live
+    indoor temperature, so the failsafe lives here. The June 11 incident
+    is the original motivating case (house at 80°F while a scheduled-OFF
+    slot's trajectory predicted in-band); the August 27 office incident —
+    a COOL slot the unit silently ignored, with the watchdog ineligible
+    because it only ever looked at OFF slots — is why every slot is
+    eligible now, not just OFF ones.
 
     Stateful across calls: the override LATCHES on when the room first
     breaches the band and stays engaged — through both the 5-min
@@ -524,21 +620,27 @@ def _comfort_band_override(
     instead of only at slot boundaries. The single shared latch is why
     the two cadences never disagree about whether an override is active.
 
-    Deliberately narrow:
-      * Only fires when the slot EXPLICITLY commands OFF. Temperature-
-        only users (no `hvac_mode_schedule`) keep their thermostat's
-        own closed-loop behavior — nothing to fail safe over.
-      * Never fires inside an active calibration phase — the OFF phases
-        there ARE the measurement; the backend aborts the run via its
-        own comfort cap (+2°F) when drift goes too far. Pre/post-window
-        slots on a calibration day have `phase_at_slot=None` and DO get
-        the failsafe, which fixes the passive-evening overheat.
+    Every slot is a candidate — including one that's already actively
+    COOLing or HEATing, since the unit itself can overshoot past the FAR
+    band edge (a Tuya remote that doesn't honor its own setpoint
+    precisely, or a schedule mode that only ever commands one direction).
+    `mode_canonical` is accepted for logging/context only; it no longer
+    gates eligibility:
+      * During an active calibration phase, the trigger thresholds widen
+        by `CALIBRATION_OVERSHOOT_F` (mirrors the backend's own
+        retrospective comfort cap) instead of standing down entirely —
+        a calibration day gets a bigger allowance, not zero protection.
       * Direction is gated by the schedule's mode: `cool` → COOL on a
-        high-band breach, `heat` → HEAT on a low-band breach, `auto`
-        → either. No mode → no override.
+        high-band breach, OFF on a low-band breach (active cooling ran
+        past the low edge); `heat` → HEAT on a low-band breach, OFF on a
+        high-band breach; `auto` → COOL/HEAT either direction. A schedule
+        mode outside {cool, heat, auto} breaches with no override — see
+        `_log_comfort_silence`, the class of failure that would have
+        caught the office incident.
       * The override setpoint is the BAND EDGE, not the optimizer's
-        slot value — pull the house back into band, then resume the
-        plan at the next slot boundary.
+        slot value — pull the house back into band (or stop actively
+        conditioning past it), then resume the plan at the next slot
+        boundary.
     """
     now = now or dt_util.utcnow()
     latch_store = _domain_data(hass).setdefault(_COMFORT_LATCH_KEY, {})
@@ -550,14 +652,8 @@ def _comfort_band_override(
         else:
             latch_store[entity_id] = new_latch
 
-    # Ineligible slots (not OFF, or an active calibration phase) never
-    # override — and clear any latch so a stale override can't leak into
-    # the next OFF window.
-    if mode_canonical is None or mode_canonical.strip().lower() != "off":
-        _persist(None)
-        return None
-
     cal = schedule.get("calibration")
+    overshoot_f = 0.0
     if isinstance(cal, dict):
         phase_at_slot = cal.get("phase_at_slot")
         if (
@@ -565,32 +661,56 @@ def _comfort_band_override(
             and slot < len(phase_at_slot)
             and phase_at_slot[slot] is not None
         ):
-            _persist(None)
-            return None
+            overshoot_f = CALIBRATION_OVERSHOOT_F
 
     state = hass.states.get(entity_id) if hass.states else None
     attrs = getattr(state, "attributes", None) or {} if state else {}
     try:
         indoor = float(attrs.get("current_temperature"))
     except (TypeError, ValueError):
-        # Can't read the room — release conservatively and let the
-        # scheduled OFF stand rather than command blind.
+        indoor = None
+
+    aux_entity_id: str | None = None
+    aux_source_used = False
+    if indoor is None:
+        # The climate entity can't self-report (Tuya/IR-blaster/Generic
+        # Thermostat wrappers, or a real read failure) — fall back to
+        # the appliance's configured indoor sensor, same coercion
+        # `readings.py` uses for the exact same class of unit.
+        aux_entity_id = _aux_indoor_temp_entity_id(hass, entity_id)
+        if aux_entity_id:
+            aux_state = hass.states.get(aux_entity_id) if hass.states else None
+            raw = getattr(aux_state, "state", None) if aux_state else None
+            # Local import: readings.py imports get_last_commanded from
+            # this module at module load time, so a top-level import
+            # here would be circular.
+            from .readings import _coerce_float
+            indoor = _coerce_float(raw)
+            aux_source_used = indoor is not None
+
+    if indoor is None:
+        # Can't read the room from either source — release conservatively
+        # and let the scheduled slot stand rather than command blind.
+        # This is exactly the office-incident failure mode, so it's no
+        # longer silent.
         _persist(None)
+        reason = (
+            f"slot={slot} has no usable indoor temperature (climate "
+            "entity's current_temperature is missing/invalid, aux sensor "
+            f"{aux_entity_id} is also unavailable/non-numeric)"
+            if aux_entity_id
+            else
+            f"slot={slot} has no usable indoor temperature (climate "
+            "entity's current_temperature is missing/invalid and no aux "
+            "indoor_temp_entity_id is configured for this appliance)"
+        )
+        _log_comfort_silence(hass, entity_id, f"{reason} — the comfort guard cannot evaluate this slot")
         return None
 
     sched_mode = str(schedule.get("mode") or "").strip().lower()
 
-    def _band_edge(key: str) -> float | None:
-        arr = schedule.get(key)
-        if not isinstance(arr, list) or slot >= len(arr):
-            return None
-        try:
-            return float(arr[slot])
-        except (TypeError, ValueError):
-            return None
-
-    high = _band_edge("high_temps")
-    low = _band_edge("low_temps")
+    high = _band_edge(schedule, "high_temps", slot)
+    low = _band_edge(schedule, "low_temps", slot)
 
     override, new_latch = comfort.decide(
         indoor=indoor,
@@ -599,6 +719,7 @@ def _comfort_band_override(
         sched_mode=sched_mode,
         latch=prev_latch,
         now=now,
+        overshoot_f=overshoot_f,
     )
     _persist(new_latch)
 
@@ -606,24 +727,95 @@ def _comfort_band_override(
     now_active = bool(new_latch and new_latch.get("active"))
     if now_active and not was_active:
         edge = override[1] if override else 0.0
+        direction = new_latch.get("direction") if new_latch else None
+        edge_label = "high" if direction in ("cool", "off_overheat") else "low"
         _LOGGER.warning(
             "Hungry Machines comfort override slot=%d: %s indoor %.1f°F "
-            "breached the %s band %.1f°F while scheduled OFF — commanding "
-            "%s at %.1f°F (holds ≥%ds, releases at %.1f°F inside)",
+            "breached the %s band %.1f°F (schedule commanded %s) — "
+            "commanding %s at %.1f°F (holds ≥%ds, releases at %.1f°F "
+            "inside)",
             slot, entity_id, indoor,
-            "high" if override and override[0] == "COOL" else "low",
-            edge,
+            edge_label, edge,
+            mode_canonical or "no explicit mode",
             override[0] if override else "?", edge,
             comfort.MIN_ON_SECONDS, comfort.RELEASE_MARGIN_F,
         )
+        if aux_source_used:
+            _LOGGER.warning(
+                "Hungry Machines comfort override slot=%d: %s indoor "
+                "reading came from the aux sensor %s — the climate "
+                "entity's current_temperature was unavailable",
+                slot, entity_id, aux_entity_id,
+            )
+        _log_comfort_silence(hass, entity_id, None)
     elif was_active and not now_active:
         _LOGGER.info(
             "Hungry Machines comfort override slot=%d: %s indoor %.1f°F "
-            "back inside band — releasing to the scheduled OFF",
+            "back inside band — releasing to the schedule",
             slot, entity_id, indoor,
         )
+        _log_comfort_silence(hass, entity_id, None)
+    elif override is not None:
+        # Still latched from a prior tick — the guard IS acting, so
+        # there's nothing silent to explain.
+        _log_comfort_silence(hass, entity_id, None)
+    else:
+        # No override, and never was one this tick. Attribute it when
+        # that's plausibly suspicious so a stuck condition shows up in
+        # the log instead of just... nothing.
+        if high is None and low is None:
+            reason = (
+                f"slot={slot} has no comfort-band arrays (high_temps/"
+                f"low_temps both missing) — indoor {indoor:.1f}°F cannot "
+                "be checked"
+            )
+        else:
+            high_breach = (
+                high is not None
+                and indoor > high + comfort.TRIGGER_MARGIN_F + overshoot_f
+            )
+            low_breach = (
+                low is not None
+                and indoor < low - comfort.TRIGGER_MARGIN_F - overshoot_f
+            )
+            if high_breach or low_breach:
+                reason = (
+                    f"slot={slot} indoor {indoor:.1f}°F is outside band "
+                    f"[{low}, {high}]°F but sched_mode={sched_mode!r} does "
+                    "not permit an override in this direction"
+                )
+            else:
+                reason = None
+        _log_comfort_silence(hass, entity_id, reason)
 
     return override
+
+
+def _log_pause_silence_if_outside_band(
+    hass: HomeAssistant, entity_id: str, schedule: dict, slot: int,
+) -> None:
+    """Optimization being paused is a deliberate user choice, not a bug —
+    the watchdog correctly does nothing. But if the room is outside the
+    comfort band anyway, a "why isn't Hungry Machines doing anything"
+    report deserves an attributable log line instead of silence."""
+    state = hass.states.get(entity_id) if hass.states else None
+    attrs = getattr(state, "attributes", None) or {} if state else {}
+    try:
+        indoor = float(attrs.get("current_temperature"))
+    except (TypeError, ValueError):
+        _log_comfort_silence(hass, entity_id, None)
+        return
+
+    high = _band_edge(schedule, "high_temps", slot)
+    low = _band_edge(schedule, "low_temps", slot)
+    outside = (high is not None and indoor > high) or (low is not None and indoor < low)
+    _log_comfort_silence(
+        hass, entity_id,
+        (
+            f"optimization is paused while indoor {indoor:.1f}°F is "
+            f"outside the comfort band [{low}, {high}]°F"
+        ) if outside else None,
+    )
 
 
 async def comfort_watchdog(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -633,20 +825,22 @@ async def comfort_watchdog(hass: HomeAssistant, entry: ConfigEntry) -> None:
     building: the room can sit out of band for most of a half-hour before
     the next apply even looks. This runs every 5 minutes, reuses the same
     latched `_comfort_band_override` decision, and re-drives the unit the
-    instant the room leaves the band (or hands it back to the scheduled
-    OFF once it has recovered). Only OFF slots on mode-optimized HVACs are
-    eligible — everything else is either already conditioning or under the
-    thermostat's own control, so the watchdog no-ops for it.
+    instant the room leaves the band (or hands it back to the schedule
+    once it has recovered). Every cached HVAC with a schedule and
+    comfort-band arrays is eligible each tick — including one already
+    actively COOLing or HEATing, since the unit can itself overshoot past
+    the far edge. Master and per-appliance pause flags are still
+    respected (optimization off is a deliberate user choice); a paused
+    unit sitting out of band still gets one attributable log line instead
+    of silence.
     """
     domain_data = _domain_data(hass)
     cache = domain_data.get("schedule")
     if not isinstance(cache, dict):
         return
-    # Master pause switch — respect it exactly like apply_current_slot.
-    if cache.get("optimization_enabled") is False:
-        return
 
     slot = _current_slot()
+    master_paused = cache.get("optimization_enabled") is False
     # Same dict object _comfort_band_override mutates, so `was_active`
     # below reflects the pre-decision latch even on the first tick.
     latch_store = domain_data.setdefault(_COMFORT_LATCH_KEY, {})
@@ -656,12 +850,14 @@ async def comfort_watchdog(hass: HomeAssistant, entry: ConfigEntry) -> None:
             continue
         if info.get("appliance_type") != "hvac":
             continue
-        if info.get("optimization_enabled") is False:
-            continue
         entity_id = info.get("entity_id")
         schedule = info.get("schedule") or {}
         name = info.get("name")
         if not isinstance(entity_id, str) or not entity_id or not schedule:
+            continue
+
+        if master_paused or info.get("optimization_enabled") is False:
+            _log_pause_silence_if_outside_band(hass, entity_id, schedule, slot)
             continue
 
         mode_canonical = _resolve_canonical(schedule, "hvac_mode_schedule", slot)
@@ -672,9 +868,9 @@ async def comfort_watchdog(hass: HomeAssistant, entry: ConfigEntry) -> None:
         now_active = override is not None
 
         # Re-drive the unit only on an active override or the tick where
-        # we just released (to command the scheduled OFF back). When
-        # nothing changed and no override is active, leave the unit alone
-        # so the watchdog doesn't re-issue OFF every 5 minutes.
+        # we just released (to command the schedule back). When nothing
+        # changed and no override is active, leave the unit alone so the
+        # watchdog doesn't re-issue commands every 5 minutes.
         if now_active or (was_active and not now_active):
             await _apply_hvac(
                 hass, entity_id, schedule, slot, appliance_name=name,
@@ -717,16 +913,42 @@ async def _apply_hvac(
                 slot, entity_id, mode_canonical,
             )
 
-    # Closed-loop comfort failsafe: replace a scheduled OFF with an
-    # active mode + band-edge setpoint when the live indoor temperature
-    # has drifted out of band. Runs BEFORE _record_last_commanded so
-    # the readings collector and the set-then-verify pass both treat
-    # the override as the commanded truth for this slot.
+    # Closed-loop comfort failsafe: replace the scheduled mode/setpoint
+    # with a band-edge correction — COOL/HEAT when out of band, or OFF
+    # when active conditioning overshot the far edge — whenever the live
+    # indoor temperature has drifted out of band. Runs BEFORE
+    # _record_last_commanded so the readings collector and the
+    # set-then-verify pass both treat the override as the commanded
+    # truth for this slot.
     override = _comfort_band_override(
         hass, entity_id, schedule, slot, mode_canonical,
     )
     if override is not None:
         mode_canonical, setpoint = override
+    elif setpoint is not None:
+        # Defense-in-depth band clamp: the backend already clamps
+        # setpoint_temps into [low_temps[slot], high_temps[slot]] at
+        # nightly derivation (nightly.py _derive_setpoints_from_pattern),
+        # so this should never actually change the value — a calibration
+        # blob's COOL/OFF-phase setpoints sit exactly on an edge and pass
+        # through unchanged. A fire here signals a backend bug or a band
+        # that was edited locally after the nightly run already ran, so
+        # we clamp anyway (the clamped value becomes the commanded
+        # truth) and log loudly rather than send the raw value through.
+        high = _band_edge(schedule, "high_temps", slot)
+        low = _band_edge(schedule, "low_temps", slot)
+        if high is not None and low is not None and low <= high:
+            clamped = max(low, min(setpoint, high))
+            if clamped != setpoint:
+                _LOGGER.warning(
+                    "Hungry Machines HVAC slot=%d: %s setpoint %.1f°F is "
+                    "outside the comfort band [%.1f, %.1f]°F — clamping to "
+                    "%.1f°F (should never fire; the backend clamps at "
+                    "nightly derivation, so this signals a backend bug or "
+                    "a band edited after the nightly run)",
+                    slot, entity_id, setpoint, low, high, clamped,
+                )
+                setpoint = clamped
 
     # Record the schedule's intent for this slot BEFORE any service
     # calls so the readings collector has a consistent ground-truth
@@ -777,6 +999,23 @@ async def _apply_hvac(
         entity_id, state, setpoint, assumed_mode=mode_canonical,
     )
     if payload is None:
+        # No setpoint payload — the unit should be OFF (a scheduled OFF
+        # slot, or an `off_overcool` / `off_overheat` comfort override),
+        # or it's in a mode we don't drive. A MODE command still went out
+        # above, and a cloud-bridged unit drops that as readily as a
+        # setpoint, so arm a mode-only verification instead of returning
+        # fire-and-forget. Without this, an OFF override — the one the
+        # guard issues to stop a unit that already overshot — was the
+        # only command in the system nothing ever checked.
+        if mode_canonical is not None and state is not None:
+            _schedule_apply_verification(
+                hass,
+                entity_id=entity_id,
+                expected_mode=mode_canonical,
+                expected_setpoint=None,
+                expected_fan=None,
+                slot=slot,
+            )
         return
 
     raw_state = getattr(state, "state", None) or "unknown" if state else "missing"
