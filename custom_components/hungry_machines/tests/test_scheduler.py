@@ -1636,6 +1636,44 @@ async def test_comfort_override_stops_active_heating_that_overshot_high_edge() -
 
 
 @pytest.mark.asyncio
+async def test_off_override_arms_a_mode_only_verification() -> None:
+    """An OFF override must be verified like any other command.
+
+    `_build_hvac_payload` returns None for an off unit, and the apply
+    used to return right there — so the two OFF override kinds
+    (`off_overcool` / `off_overheat`) were fire-and-forget against
+    exactly the cloud-bridged units that drop commands. The verifier is
+    now armed with the OVERRIDE's mode and no setpoint/fan (re-sending
+    those would turn the unit back on)."""
+    state = _climate_state("heat", supports_range=False,
+                           hvac_modes=["off", "heat"])
+    state.attributes["current_temperature"] = 80.0  # above the 74°F high band
+    hass = _hass(state)
+    entry = _entry()
+    hass.data[DOMAIN] = _override_cache(
+        sched_mode="heat", hvac_mode_schedule=["HEAT"] * 48,
+    )
+
+    with patch.object(scheduler, "_current_slot", return_value=16), \
+         patch.object(scheduler, "async_call_later") as mock_later:
+        await scheduler.apply_current_slot(hass, entry)
+
+    mock_later.assert_called_once()
+    assert mock_later.call_args.args[1] == scheduler._VERIFY_DELAY_SECONDS
+
+    # Drive the armed callback and confirm it verifies the OVERRIDE
+    # (OFF), not the schedule's HEAT — the unit is still reporting heat.
+    hass.services.async_call.reset_mock()
+    await mock_later.call_args.args[2](None)
+    calls = [
+        (c.args[1], c.args[2])
+        for c in hass.services.async_call.await_args_list
+    ]
+    assert [s for s, _ in calls] == ["set_hvac_mode"]
+    assert calls[0][1]["hvac_mode"] == "off"
+
+
+@pytest.mark.asyncio
 async def test_comfort_override_engages_on_temperature_only_schedule() -> None:
     """Eligibility is universal now — a schedule with NO hvac_mode_schedule
     at all (temperature-only opt-in) still gets the failsafe; it isn't

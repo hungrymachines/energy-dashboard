@@ -999,6 +999,23 @@ async def _apply_hvac(
         entity_id, state, setpoint, assumed_mode=mode_canonical,
     )
     if payload is None:
+        # No setpoint payload — the unit should be OFF (a scheduled OFF
+        # slot, or an `off_overcool` / `off_overheat` comfort override),
+        # or it's in a mode we don't drive. A MODE command still went out
+        # above, and a cloud-bridged unit drops that as readily as a
+        # setpoint, so arm a mode-only verification instead of returning
+        # fire-and-forget. Without this, an OFF override — the one the
+        # guard issues to stop a unit that already overshot — was the
+        # only command in the system nothing ever checked.
+        if mode_canonical is not None and state is not None:
+            _schedule_apply_verification(
+                hass,
+                entity_id=entity_id,
+                expected_mode=mode_canonical,
+                expected_setpoint=None,
+                expected_fan=None,
+                slot=slot,
+            )
         return
 
     raw_state = getattr(state, "state", None) or "unknown" if state else "missing"
