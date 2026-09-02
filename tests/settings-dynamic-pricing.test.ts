@@ -39,6 +39,23 @@ const SCHEDULES_EMPTY = {
   appliances: [],
 };
 
+const DELIVERY_TARIFFS = [
+  {
+    id: 101,
+    external_id: 'comed-dtod-sf',
+    plan_name: 'Delivery Time-of-Day — Single-Family',
+    utility: 'ComEd',
+    region: 'Northern Illinois',
+  },
+  {
+    id: 102,
+    external_id: 'comed-dtod-mf',
+    plan_name: 'Delivery Time-of-Day — Multi-Family',
+    utility: 'ComEd',
+    region: 'Northern Illinois',
+  },
+];
+
 function ratesResponse(overrides: Record<string, unknown> = {}): unknown {
   return {
     pricing_location: 3,
@@ -50,10 +67,12 @@ function ratesResponse(overrides: Record<string, unknown> = {}): unknown {
     pricing_source: 'zone',
     dynamic_zone: null,
     pricing_adder_cents_per_kwh: null,
+    adder_grid_ruleset_id: null,
     available_dynamic_zones: [
       { slug: 'comed', iso: 'PJM', label: 'ComEd (Northern Illinois)' },
       { slug: 'ameren', iso: 'MISO', label: 'Ameren Illinois (Power Smart Pricing)' },
     ],
+    available_delivery_tariffs: [],
     ...overrides,
   };
 }
@@ -453,5 +472,225 @@ describe('settings dynamic pricing (US-DYNPRICE-009)', () => {
 
     const customRates = customRatesSection(el.shadowRoot!);
     expect(customRates.hasAttribute('hidden')).toBe(true);
+  });
+
+  it('delivery plan select is absent when available_delivery_tariffs is empty', async () => {
+    installFetchStub((url) => {
+      if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
+      if (url.includes('/api/v1/appliances')) return [];
+      if (url.includes('/api/v1/rates')) return ratesResponse();
+      return null;
+    });
+
+    const el = mountPanel();
+    await flush(el);
+    clickSettings(el.shadowRoot!);
+    await flush(el);
+
+    const section = pricingSection(el.shadowRoot!);
+    const sourceSelect = section.querySelector<HTMLSelectElement>('select[name="pricing_source"]')!;
+    sourceSelect.value = 'dynamic';
+    sourceSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+
+    expect(section.querySelector('select[name="adder_grid_ruleset_id"]')).toBeNull();
+  });
+
+  it('delivery plan select renders Flat estimate + one option per available_delivery_tariffs entry', async () => {
+    installFetchStub((url) => {
+      if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
+      if (url.includes('/api/v1/appliances')) return [];
+      if (url.includes('/api/v1/rates')) {
+        return ratesResponse({ available_delivery_tariffs: DELIVERY_TARIFFS });
+      }
+      return null;
+    });
+
+    const el = mountPanel();
+    await flush(el);
+    clickSettings(el.shadowRoot!);
+    await flush(el);
+
+    const section = pricingSection(el.shadowRoot!);
+    const sourceSelect = section.querySelector<HTMLSelectElement>('select[name="pricing_source"]')!;
+    sourceSelect.value = 'dynamic';
+    sourceSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+
+    const deliverySelect = section.querySelector<HTMLSelectElement>(
+      'select[name="adder_grid_ruleset_id"]',
+    );
+    expect(deliverySelect).not.toBeNull();
+    const labels = Array.from(deliverySelect!.options).map((o) => o.textContent?.trim());
+    expect(labels).toEqual([
+      'Flat estimate',
+      'ComEd Delivery Time-of-Day — Single-Family',
+      'ComEd Delivery Time-of-Day — Multi-Family',
+    ]);
+    expect(deliverySelect!.value).toBe('');
+  });
+
+  it('choosing a delivery plan prefills the adder 8 -> 2, and the saved PUT carries adder_grid_ruleset_id', async () => {
+    const { calls } = installFetchStub((url, init) => {
+      if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
+      if (url.includes('/api/v1/appliances')) return [];
+      if (url.includes('/api/v1/rates')) {
+        if (init?.method === 'PUT') {
+          const body = JSON.parse(String(init.body)) as {
+            pricing_source: string;
+            dynamic_zone?: string | null;
+            pricing_adder_cents_per_kwh?: number | null;
+            adder_grid_ruleset_id?: number | null;
+          };
+          return ratesResponse({
+            source: 'dynamic',
+            pricing_source: body.pricing_source,
+            dynamic_zone: body.dynamic_zone ?? null,
+            pricing_adder_cents_per_kwh: body.pricing_adder_cents_per_kwh ?? null,
+            adder_grid_ruleset_id: body.adder_grid_ruleset_id ?? null,
+            available_delivery_tariffs: DELIVERY_TARIFFS,
+          });
+        }
+        return ratesResponse({ available_delivery_tariffs: DELIVERY_TARIFFS });
+      }
+      return null;
+    });
+
+    const el = mountPanel();
+    await flush(el);
+    clickSettings(el.shadowRoot!);
+    await flush(el);
+
+    const section = pricingSection(el.shadowRoot!);
+    const sourceSelect = section.querySelector<HTMLSelectElement>('select[name="pricing_source"]')!;
+    sourceSelect.value = 'dynamic';
+    sourceSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+
+    const adder = section.querySelector<HTMLInputElement>(
+      'input[name="pricing_adder_cents_per_kwh"]',
+    )!;
+    expect(adder.value).toBe('8');
+
+    const deliverySelect = section.querySelector<HTMLSelectElement>(
+      'select[name="adder_grid_ruleset_id"]',
+    )!;
+    deliverySelect.value = '101';
+    deliverySelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+
+    // Adder draft was the flat default ('8') so choosing a delivery plan
+    // drops it to the non-delivery residual ('2').
+    expect(adder.value).toBe('2');
+
+    const save = section.querySelector<HTMLButtonElement>('button[name="save_pricing_source"]')!;
+    save.click();
+    await flush(el);
+
+    const put = calls.find((c) => c.url.includes('/api/v1/rates') && c.method === 'PUT');
+    expect(put).toBeDefined();
+    const body = JSON.parse(put!.body!) as { adder_grid_ruleset_id: number | null };
+    expect(body.adder_grid_ruleset_id).toBe(101);
+  });
+
+  it('returning to Flat estimate restores the adder 2 -> 8, and null is sent for adder_grid_ruleset_id', async () => {
+    const { calls } = installFetchStub((url, init) => {
+      if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
+      if (url.includes('/api/v1/appliances')) return [];
+      if (url.includes('/api/v1/rates')) {
+        if (init?.method === 'PUT') {
+          const body = JSON.parse(String(init.body)) as {
+            adder_grid_ruleset_id?: number | null;
+          };
+          return ratesResponse({
+            source: 'dynamic',
+            pricing_source: 'dynamic',
+            dynamic_zone: 'comed',
+            pricing_adder_cents_per_kwh: 2,
+            adder_grid_ruleset_id: body.adder_grid_ruleset_id ?? null,
+            available_delivery_tariffs: DELIVERY_TARIFFS,
+          });
+        }
+        return ratesResponse({
+          source: 'dynamic',
+          pricing_source: 'dynamic',
+          dynamic_zone: 'comed',
+          pricing_adder_cents_per_kwh: 2,
+          adder_grid_ruleset_id: 101,
+          available_delivery_tariffs: DELIVERY_TARIFFS,
+        });
+      }
+      return null;
+    });
+
+    const el = mountPanel();
+    await flush(el);
+    clickSettings(el.shadowRoot!);
+    await flush(el);
+
+    const section = pricingSection(el.shadowRoot!);
+    const deliverySelect = section.querySelector<HTMLSelectElement>(
+      'select[name="adder_grid_ruleset_id"]',
+    )!;
+    expect(deliverySelect.value).toBe('101');
+    const adder = section.querySelector<HTMLInputElement>(
+      'input[name="pricing_adder_cents_per_kwh"]',
+    )!;
+    expect(adder.value).toBe('2');
+
+    deliverySelect.value = '';
+    deliverySelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+
+    // Adder draft was the non-delivery residual ('2') so returning to
+    // Flat estimate restores the flat default ('8').
+    expect(adder.value).toBe('8');
+
+    const save = section.querySelector<HTMLButtonElement>('button[name="save_pricing_source"]')!;
+    save.click();
+    await flush(el);
+
+    const put = calls.find((c) => c.url.includes('/api/v1/rates') && c.method === 'PUT');
+    expect(put).toBeDefined();
+    const body = JSON.parse(put!.body!) as { adder_grid_ruleset_id: number | null };
+    expect(body.adder_grid_ruleset_id).toBeNull();
+  });
+
+  it('a manually-entered adder value is never clobbered by the delivery-plan prefill rule', async () => {
+    installFetchStub((url) => {
+      if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
+      if (url.includes('/api/v1/appliances')) return [];
+      if (url.includes('/api/v1/rates')) {
+        return ratesResponse({ available_delivery_tariffs: DELIVERY_TARIFFS });
+      }
+      return null;
+    });
+
+    const el = mountPanel();
+    await flush(el);
+    clickSettings(el.shadowRoot!);
+    await flush(el);
+
+    const section = pricingSection(el.shadowRoot!);
+    const sourceSelect = section.querySelector<HTMLSelectElement>('select[name="pricing_source"]')!;
+    sourceSelect.value = 'dynamic';
+    sourceSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+
+    const adder = section.querySelector<HTMLInputElement>(
+      'input[name="pricing_adder_cents_per_kwh"]',
+    )!;
+    adder.value = '5.5';
+    adder.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush(el);
+
+    const deliverySelect = section.querySelector<HTMLSelectElement>(
+      'select[name="adder_grid_ruleset_id"]',
+    )!;
+    deliverySelect.value = '101';
+    deliverySelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+
+    expect(adder.value).toBe('5.5');
   });
 });

@@ -1360,6 +1360,7 @@ export class HungryMachinesPanel extends LitElement {
     _pricingSourceDraft: { state: true },
     _dynamicZoneDraft: { state: true },
     _pricingAdderDraft: { state: true },
+    _deliveryTariffDraft: { state: true },
     _pricingSaving: { state: true },
     _pricingError: { state: true },
     _pricingSavedFlash: { state: true },
@@ -1426,6 +1427,9 @@ export class HungryMachinesPanel extends LitElement {
   _pricingSourceDraft: 'zone' | 'custom' | 'dynamic' = 'zone';
   _dynamicZoneDraft = '';
   _pricingAdderDraft = '';
+  // Selected delivery-tariff ruleset id, as a string for the <select>
+  // binding; '' means "Flat estimate" (adder_grid_ruleset_id: null).
+  _deliveryTariffDraft = '';
   _pricingSaving = false;
   _pricingError: string | null = null;
   _pricingSavedFlash = false;
@@ -1889,6 +1893,9 @@ export class HungryMachinesPanel extends LitElement {
     // so the field is never blank — they can change it only if they wish.
     this._pricingAdderDraft =
       typeof adder === 'number' && Number.isFinite(adder) ? String(adder) : '8';
+    const deliveryId = rates.adder_grid_ruleset_id;
+    this._deliveryTariffDraft =
+      typeof deliveryId === 'number' && Number.isFinite(deliveryId) ? String(deliveryId) : '';
     // Zone draft tracks the catalog id; keep it in sync with the loaded
     // rates so Reset returns to the stored zone.
     if (typeof rates.pricing_location === 'number') {
@@ -1919,6 +1926,24 @@ export class HungryMachinesPanel extends LitElement {
     this._pricingError = null;
   }
 
+  private _onDeliveryTariffChange(value: string): void {
+    this._deliveryTariffDraft = value;
+    // Prefill the flat-adder estimate to reflect what it now covers, but
+    // never clobber a value the user has deliberately typed. Choosing a
+    // delivery plan when the adder is blank or the flat default ('8')
+    // drops it to the non-delivery residual ('2'); returning to Flat
+    // estimate when the adder is blank or that residual restores '8'.
+    const draftTrim = this._pricingAdderDraft.trim();
+    if (value !== '') {
+      if (draftTrim === '' || draftTrim === '8') {
+        this._pricingAdderDraft = '2';
+      }
+    } else if (draftTrim === '' || draftTrim === '2') {
+      this._pricingAdderDraft = '8';
+    }
+    this._pricingError = null;
+  }
+
   private _isPricingDirty(): boolean {
     const rates = this._rates;
     if (!rates) return false;
@@ -1939,6 +1964,10 @@ export class HungryMachinesPanel extends LitElement {
       const n = Number(draftTrim);
       if (!Number.isFinite(n) || n !== storedAdder) return true;
     }
+    const storedDelivery = rates.adder_grid_ruleset_id;
+    const storedDeliveryStr =
+      typeof storedDelivery === 'number' ? String(storedDelivery) : '';
+    if (this._deliveryTariffDraft !== storedDeliveryStr) return true;
     return false;
   }
 
@@ -1951,6 +1980,7 @@ export class HungryMachinesPanel extends LitElement {
       pricing_location?: number;
       dynamic_zone?: string | null;
       pricing_adder_cents_per_kwh?: number | null;
+      adder_grid_ruleset_id?: number | null;
     } = { pricing_source: draft };
     if (draft === 'zone') {
       body.pricing_location = this._zoneDraft;
@@ -1971,6 +2001,13 @@ export class HungryMachinesPanel extends LitElement {
           return;
         }
         body.pricing_adder_cents_per_kwh = n;
+      }
+      const deliveryTrim = this._deliveryTariffDraft.trim();
+      if (deliveryTrim === '') {
+        body.adder_grid_ruleset_id = null;
+      } else {
+        const id = Number(deliveryTrim);
+        body.adder_grid_ruleset_id = Number.isFinite(id) ? id : null;
       }
     }
     this._pricingSaving = true;
@@ -3115,6 +3152,7 @@ export class HungryMachinesPanel extends LitElement {
     const pricingSourceDraft = this._pricingSourceDraft;
     const availableDynamicZones = rates?.available_dynamic_zones ?? [];
     const availableZones = rates?.available_pricing_zones ?? [];
+    const availableDeliveryTariffs = rates?.available_delivery_tariffs ?? [];
     // Fallback: if rates haven't loaded yet, render just the current
     // selection so the dropdown isn't empty.
     const zoneOptionIds: number[] = availableZones.length > 0
@@ -3278,6 +3316,39 @@ export class HungryMachinesPanel extends LitElement {
                 )}
               </select>
             </label>
+            ${availableDeliveryTariffs.length > 0
+              ? html`
+                  <label>
+                    <span class="label-text">Delivery plan</span>
+                    <select
+                      name="adder_grid_ruleset_id"
+                      ?disabled=${pricingSaving}
+                      .value=${this._deliveryTariffDraft}
+                      @change=${(e: Event) =>
+                        this._onDeliveryTariffChange(
+                          (e.target as HTMLSelectElement).value,
+                        )}
+                    >
+                      <option value="" ?selected=${this._deliveryTariffDraft === ''}>
+                        Flat estimate
+                      </option>
+                      ${availableDeliveryTariffs.map(
+                        (t) => html`<option
+                          value=${String(t.id)}
+                          ?selected=${String(t.id) === this._deliveryTariffDraft}
+                        >
+                          ${t.utility} ${t.plan_name}
+                        </option>`,
+                      )}
+                    </select>
+                  </label>
+                  <p class="hint">
+                    With a delivery plan chosen, the estimate below covers
+                    only non-delivery extras — taxes and supply riders.
+                    About 2¢/kWh is typical.
+                  </p>
+                `
+              : null}
             <label>
               <span class="label-text">Delivery charge estimate (cents/kWh)</span>
               <input
