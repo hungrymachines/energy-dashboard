@@ -808,6 +808,133 @@ async def test_capture_twelve_times_accumulates_twelve_readings() -> None:
     assert readings.buffered_count(hass) == 12
 
 
+# --- solar production readings (US-SOL-020) -------------------------------
+
+
+@pytest.mark.asyncio
+async def test_capture_solar_watts_sensor_appends_to_appliance_bucket() -> None:
+    appliance = {
+        "id": "solar-1",
+        "appliance_type": "solar",
+        "config": {
+            "system_size_kw": 6.0,
+            "production_sensor_entity_id": "sensor.inverter_power",
+        },
+    }
+    sensor = _state("3250", {"unit_of_measurement": "W"})
+    hass = _hass({"sensor.inverter_power": sensor})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        n = await readings.capture_readings(hass, entry)
+
+    assert n == 1
+    buf = hass.data[DOMAIN]["readings_buffer"]
+    assert "solar-1" in buf and len(buf["solar-1"]) == 1
+    reading = buf["solar-1"][0]
+    assert reading["value"] == 3250.0
+    assert reading["power_watts"] == 3250.0
+    assert reading["state"] == "PRODUCING"
+    # No control entity → nothing posted to the home bucket.
+    assert "home" not in buf or len(buf["home"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_capture_solar_kw_sensor_converted_to_watts() -> None:
+    appliance = {
+        "id": "solar-1",
+        "appliance_type": "solar",
+        "config": {
+            "system_size_kw": 6.0,
+            "production_sensor_entity_id": "sensor.inverter_power",
+        },
+    }
+    sensor = _state("3.25", {"unit_of_measurement": "kW"})
+    hass = _hass({"sensor.inverter_power": sensor})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    reading = hass.data[DOMAIN]["readings_buffer"]["solar-1"][0]
+    assert reading["value"] == 3250.0
+    assert reading["power_watts"] == 3250.0
+
+
+@pytest.mark.asyncio
+async def test_capture_solar_zero_watts_is_idle() -> None:
+    appliance = {
+        "id": "solar-1",
+        "appliance_type": "solar",
+        "config": {
+            "system_size_kw": 6.0,
+            "production_sensor_entity_id": "sensor.inverter_power",
+        },
+    }
+    sensor = _state("0", {"unit_of_measurement": "W"})
+    hass = _hass({"sensor.inverter_power": sensor})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    reading = hass.data[DOMAIN]["readings_buffer"]["solar-1"][0]
+    assert reading["value"] == 0.0
+    assert reading["power_watts"] == 0.0
+    assert reading["state"] == "IDLE"
+
+
+@pytest.mark.asyncio
+async def test_capture_solar_without_production_sensor_captures_nothing() -> None:
+    """Optional sensor left unset (US-SOL-003) → skipped silently, no log
+    spam, and no per-appliance bucket created."""
+    appliance = {
+        "id": "solar-1",
+        "appliance_type": "solar",
+        "config": {"system_size_kw": 6.0},
+    }
+    hass = _hass({})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        n = await readings.capture_readings(hass, entry)
+
+    assert n == 0
+    assert readings.buffered_count(hass) == 0
+
+
+@pytest.mark.asyncio
+async def test_capture_solar_invalid_sensor_state_captures_nothing() -> None:
+    """A configured but non-numeric/unavailable sensor is handled by
+    `_read_power_watts`'s aux-health path (None) — no reading is appended."""
+    appliance = {
+        "id": "solar-1",
+        "appliance_type": "solar",
+        "config": {
+            "system_size_kw": 6.0,
+            "production_sensor_entity_id": "sensor.missing",
+        },
+    }
+    hass = _hass({})  # sensor.missing not registered
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        n = await readings.capture_readings(hass, entry)
+
+    assert n == 0
+    assert readings.buffered_count(hass) == 0
+
+
 # --- flush_readings -------------------------------------------------------
 
 

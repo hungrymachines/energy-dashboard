@@ -1133,6 +1133,31 @@ async def test_apply_skipped_when_entity_id_missing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_skipped_for_solar_with_production_sensor() -> None:
+    """Solar has no control entity (SolarConfig defines no entity_id — see
+    the backend's appliances.py), so `fetch_today_schedule` never populates
+    `entity_id` for a solar cache entry even when a `production_sensor_entity_id`
+    is configured (US-SOL-020) — the apply loop must skip it like any other
+    appliance with no entity_id, never mistaking the sensor for a control
+    entity."""
+    hass = _hass()
+    entry = _entry()
+    hass.data[DOMAIN] = {
+        "schedule": {
+            "fetched_at": _fresh_ts(),
+            "solar-1": {
+                "appliance_type": "solar",
+                "entity_id": None,
+                "schedule": {"generation_kw_48": [0.0] * 48},
+            },
+        }
+    }
+    with patch.object(scheduler, "_current_slot", return_value=0):
+        await scheduler.apply_current_slot(hass, entry)
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_apply_skipped_when_schedule_empty() -> None:
     """source=defaults entries have schedule={} — must be skipped, not crash."""
     hass = _hass()
