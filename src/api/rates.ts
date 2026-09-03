@@ -43,6 +43,7 @@ export interface RatesResponse {
   available_dynamic_zones: DynamicZoneOption[];
   available_pricing_zones: PricingZoneOption[];
   available_delivery_tariffs: DeliveryTariffOption[];
+  export_rates_cents_per_kwh: number[] | null;
 }
 
 export interface UpdateRatesBody {
@@ -53,6 +54,7 @@ export interface UpdateRatesBody {
   pricing_adder_cents_per_kwh?: number | null;
   adder_grid_ruleset_id?: number | null;
   delivery_tod_cents?: DeliveryTodCents | null;
+  export_rates_cents_per_kwh?: number[] | null;
 }
 
 export function get(): Promise<RatesResponse> {

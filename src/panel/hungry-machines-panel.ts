@@ -1297,6 +1297,19 @@ export class HungryMachinesPanel extends LitElement {
     .dynamic-fields[hidden] {
       display: none;
     }
+    .export-fields {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid rgba(100, 116, 139, 0.18);
+    }
+    .export-fields h4 {
+      margin: 0;
+      font-size: 14px;
+      color: var(--hm-text, #0F172A);
+    }
     .delivery-tod-fields {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -1401,6 +1414,10 @@ export class HungryMachinesPanel extends LitElement {
     _customRatesInputs: { state: true },
     _customRatesSaving: { state: true },
     _customRatesSaveError: { state: true },
+    _exportRatesEditorOpen: { state: true },
+    _exportRatesInputs: { state: true },
+    _exportRatesSaving: { state: true },
+    _exportRatesSaveError: { state: true },
     _pricingSourceDraft: { state: true },
     _dynamicZoneDraft: { state: true },
     _pricingAdderDraft: { state: true },
@@ -1469,6 +1486,10 @@ export class HungryMachinesPanel extends LitElement {
   _customRatesInputs: string[] = Array.from({ length: 24 }, () => '');
   _customRatesSaving = false;
   _customRatesSaveError: string | null = null;
+  _exportRatesEditorOpen = false;
+  _exportRatesInputs: string[] = Array.from({ length: 48 }, () => '');
+  _exportRatesSaving = false;
+  _exportRatesSaveError: string | null = null;
   _pricingSourceDraft: 'zone' | 'custom' | 'dynamic' = 'zone';
   _dynamicZoneDraft = '';
   _pricingAdderDraft = '';
@@ -1918,6 +1939,80 @@ export class HungryMachinesPanel extends LitElement {
         err instanceof Error && err.message ? err.message : 'Could not clear override';
     } finally {
       this._customRatesSaving = false;
+    }
+  }
+
+  // Export rates (US-SOL-022): what the utility pays for exported solar,
+  // a 48-slot half-hour curve. Visible under every pricing source — the
+  // export credit is independent of how the user prices their imports.
+  private _openExportRatesEditor(): void {
+    const rates = this._rates;
+    const inputs: string[] = Array.from({ length: 48 }, () => '');
+    if (rates && Array.isArray(rates.export_rates_cents_per_kwh)) {
+      for (let i = 0; i < 48; i++) {
+        const cents = rates.export_rates_cents_per_kwh[i];
+        if (typeof cents === 'number' && Number.isFinite(cents)) {
+          inputs[i] = (cents / 100).toFixed(3);
+        }
+      }
+    }
+    this._exportRatesInputs = inputs;
+    this._exportRatesEditorOpen = true;
+    this._exportRatesSaveError = null;
+  }
+
+  private _closeExportRatesEditor(): void {
+    this._exportRatesEditorOpen = false;
+    this._exportRatesSaveError = null;
+  }
+
+  private _onExportRateInput(i: number, val: string): void {
+    const next = this._exportRatesInputs.slice();
+    next[i] = val;
+    this._exportRatesInputs = next;
+  }
+
+  private _validateExportRateInputs(inputs: string[]): (string | null)[] {
+    return inputs.map((s) => {
+      const trimmed = s.trim();
+      if (trimmed === '') return 'Enter a value';
+      const n = Number(trimmed);
+      if (!Number.isFinite(n)) return 'Not a number';
+      if (n < 0 || n > 2) return 'Must be between 0 and 2';
+      return null;
+    });
+  }
+
+  private async _saveExportRates(): Promise<void> {
+    const errors = this._validateExportRateInputs(this._exportRatesInputs);
+    if (errors.some((e) => e !== null)) return;
+    const cents = this._exportRatesInputs.map(
+      (s) => Math.round(Number(s.trim()) * 100 * 10000) / 10000,
+    );
+    this._exportRatesSaving = true;
+    this._exportRatesSaveError = null;
+    try {
+      this._rates = await updateRates({ export_rates_cents_per_kwh: cents });
+      this._exportRatesEditorOpen = false;
+    } catch (err) {
+      this._exportRatesSaveError =
+        err instanceof Error && err.message ? err.message : 'Could not save export rates';
+    } finally {
+      this._exportRatesSaving = false;
+    }
+  }
+
+  private async _clearExportRates(): Promise<void> {
+    this._exportRatesSaving = true;
+    this._exportRatesSaveError = null;
+    try {
+      this._rates = await updateRates({ export_rates_cents_per_kwh: null });
+      this._exportRatesEditorOpen = false;
+    } catch (err) {
+      this._exportRatesSaveError =
+        err instanceof Error && err.message ? err.message : 'Could not clear export rates';
+    } finally {
+      this._exportRatesSaving = false;
     }
   }
 
@@ -3272,6 +3367,14 @@ export class HungryMachinesPanel extends LitElement {
           : `Currently using: Zone ${zoneForImport} rates`;
     const toggleLabel =
       ratesSource === 'custom' ? 'Edit / Clear override' : 'Edit custom rates';
+    const exportEditorOpen = this._exportRatesEditorOpen;
+    const exportInputs = this._exportRatesInputs;
+    const exportRowErrors = this._validateExportRateInputs(exportInputs);
+    const exportHasRowError = exportRowErrors.some((e) => e !== null);
+    const exportSaving = this._exportRatesSaving;
+    const exportSaveError = this._exportRatesSaveError;
+    const exportHasStored = Array.isArray(rates?.export_rates_cents_per_kwh);
+    const exportToggleLabel = exportHasStored ? 'Edit / Clear export rates' : 'Edit export rates';
 
     return html`
       <h2>Settings</h2>
@@ -3602,6 +3705,105 @@ export class HungryMachinesPanel extends LitElement {
                                 void this._clearCustomRatesOverride()}
                             >
                               Clear override
+                            </button>
+                          `
+                        : ''}
+                    </div>
+                  </div>
+                `
+              : null}
+          </div>
+          <div class="export-fields">
+            <h4>Export rate (optional)</h4>
+            <p class="hint">
+              What your utility pays for power you send back. Leave empty if
+              you are not paid for exports.
+            </p>
+            ${rates
+              ? html`
+                  <div class="rates-actions">
+                    <button
+                      type="button"
+                      name="toggle_export_rates"
+                      @click=${() =>
+                        exportEditorOpen
+                          ? this._closeExportRatesEditor()
+                          : this._openExportRatesEditor()}
+                    >
+                      ${exportEditorOpen ? 'Close' : exportToggleLabel}
+                    </button>
+                  </div>
+                `
+              : null}
+            ${exportEditorOpen
+              ? html`
+                  <div class="rates-editor">
+                    <p class="rates-helper">
+                      Rates in dollars per kWh (e.g. 0.368 = 36.8 cents/kWh).
+                    </p>
+                    <table class="rates-table">
+                      <thead>
+                        <tr>
+                          <th>Time</th>
+                          <th>$/kWh</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${exportInputs.map((val, i) => {
+                          const err = exportRowErrors[i];
+                          const hourLabel = `${String(Math.floor(i / 2)).padStart(2, '0')}:${i % 2 ? '30' : '00'}`;
+                          return html`
+                            <tr data-row=${i}>
+                              <td>${hourLabel}</td>
+                              <td>
+                                <input
+                                  type="number"
+                                  step="0.001"
+                                  min="0"
+                                  max="2"
+                                  name=${`export_rate_${i}`}
+                                  data-slot=${i}
+                                  .value=${val}
+                                  class=${err ? 'invalid' : ''}
+                                  @input=${(e: Event) =>
+                                    this._onExportRateInput(
+                                      i,
+                                      (e.target as HTMLInputElement).value,
+                                    )}
+                                />
+                                ${err
+                                  ? html`<div class="row-error">${err}</div>`
+                                  : ''}
+                              </td>
+                            </tr>
+                          `;
+                        })}
+                      </tbody>
+                    </table>
+                    ${exportSaveError
+                      ? html`<p class="rates-api-error" role="alert">
+                          ${exportSaveError}
+                        </p>`
+                      : ''}
+                    <div class="rates-actions">
+                      <button
+                        type="button"
+                        name="save_export_rates"
+                        class="primary"
+                        ?disabled=${exportHasRowError || exportSaving}
+                        @click=${() => void this._saveExportRates()}
+                      >
+                        Save
+                      </button>
+                      ${exportHasStored
+                        ? html`
+                            <button
+                              type="button"
+                              name="clear_export_rates"
+                              ?disabled=${exportSaving}
+                              @click=${() => void this._clearExportRates()}
+                            >
+                              Clear
                             </button>
                           `
                         : ''}
