@@ -11,6 +11,7 @@ import {
   get as getRates,
   update as updateRates,
   type RatesResponse,
+  type DeliveryTodCents,
 } from '../api/rates.js';
 import {
   list as listAppliances,
@@ -61,6 +62,41 @@ const TYPE_LABELS: Record<ApplianceType, string> = {
 function asNumberArray(value: unknown): number[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.every((v) => typeof v === 'number') ? (value as number[]) : undefined;
+}
+
+const DELIVERY_TOD_PERIODS = ['morning', 'midday_peak', 'evening', 'overnight'] as const;
+type DeliveryTodPeriod = (typeof DELIVERY_TOD_PERIODS)[number];
+type DeliveryTodDraft = Record<DeliveryTodPeriod, string>;
+
+const DELIVERY_TOD_LABELS: Record<DeliveryTodPeriod, string> = {
+  morning: 'Morning 6 a.m.-1 p.m.',
+  midday_peak: 'Mid-Day Peak 1-7 p.m.',
+  evening: 'Evening 7-9 p.m.',
+  overnight: 'Overnight 9 p.m.-6 a.m.',
+};
+
+const EMPTY_DELIVERY_TOD_DRAFT: DeliveryTodDraft = {
+  morning: '',
+  midday_peak: '',
+  evening: '',
+  overnight: '',
+};
+
+function isValidDeliveryTodCents(value: unknown): value is DeliveryTodCents {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return DELIVERY_TOD_PERIODS.every(
+    (p) => typeof record[p] === 'number' && Number.isFinite(record[p] as number),
+  );
+}
+
+function deliveryTodCentsToDraft(map: DeliveryTodCents): DeliveryTodDraft {
+  return {
+    morning: String(map.morning),
+    midday_peak: String(map.midday_peak),
+    evening: String(map.evening),
+    overnight: String(map.overnight),
+  };
 }
 
 /**
@@ -1261,6 +1297,14 @@ export class HungryMachinesPanel extends LitElement {
     .dynamic-fields[hidden] {
       display: none;
     }
+    .delivery-tod-fields {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 12px;
+    }
+    .delivery-tod-fields .hint {
+      grid-column: 1 / -1;
+    }
     .pricing-adder-input {
       width: 100%;
       padding: 8px 10px;
@@ -1361,6 +1405,7 @@ export class HungryMachinesPanel extends LitElement {
     _dynamicZoneDraft: { state: true },
     _pricingAdderDraft: { state: true },
     _deliveryTariffDraft: { state: true },
+    _deliveryTodDraft: { state: true },
     _pricingSaving: { state: true },
     _pricingError: { state: true },
     _pricingSavedFlash: { state: true },
@@ -1430,6 +1475,10 @@ export class HungryMachinesPanel extends LitElement {
   // Selected delivery-tariff ruleset id, as a string for the <select>
   // binding; '' means "Flat estimate" (adder_grid_ruleset_id: null).
   _deliveryTariffDraft = '';
+  // The four editable DTOD period prices (string inputs), shown only when
+  // _deliveryTariffDraft is a class. Prefilled from the selected class's
+  // period_rates or the stored delivery_tod_cents; edited freely after.
+  _deliveryTodDraft: DeliveryTodDraft = { ...EMPTY_DELIVERY_TOD_DRAFT };
   _pricingSaving = false;
   _pricingError: string | null = null;
   _pricingSavedFlash = false;
@@ -1896,6 +1945,19 @@ export class HungryMachinesPanel extends LitElement {
     const deliveryId = rates.adder_grid_ruleset_id;
     this._deliveryTariffDraft =
       typeof deliveryId === 'number' && Number.isFinite(deliveryId) ? String(deliveryId) : '';
+    // The four period-price inputs init from the stored per-user map when
+    // present, else the selected class's published defaults.
+    if (isValidDeliveryTodCents(rates.delivery_tod_cents)) {
+      this._deliveryTodDraft = deliveryTodCentsToDraft(rates.delivery_tod_cents);
+    } else {
+      const tariffs = Array.isArray(rates.available_delivery_tariffs)
+        ? rates.available_delivery_tariffs
+        : [];
+      const selected = tariffs.find((t) => String(t.id) === this._deliveryTariffDraft);
+      this._deliveryTodDraft = selected?.period_rates
+        ? deliveryTodCentsToDraft(selected.period_rates)
+        : { ...EMPTY_DELIVERY_TOD_DRAFT };
+    }
     // Zone draft tracks the catalog id; keep it in sync with the loaded
     // rates so Reset returns to the stored zone.
     if (typeof rates.pricing_location === 'number') {
@@ -1941,6 +2003,22 @@ export class HungryMachinesPanel extends LitElement {
     } else if (draftTrim === '' || draftTrim === '2') {
       this._pricingAdderDraft = '8';
     }
+    // Changing the class is a prefill action: it overwrites all four
+    // period-price inputs with that class's published defaults. The user
+    // edits freely afterward — this never runs again until the select
+    // changes again.
+    if (value !== '') {
+      const tariffs = this._rates?.available_delivery_tariffs ?? [];
+      const selected = tariffs.find((t) => String(t.id) === value);
+      this._deliveryTodDraft = selected?.period_rates
+        ? deliveryTodCentsToDraft(selected.period_rates)
+        : { ...EMPTY_DELIVERY_TOD_DRAFT };
+    }
+    this._pricingError = null;
+  }
+
+  private _onDeliveryTodInput(period: DeliveryTodPeriod, value: string): void {
+    this._deliveryTodDraft = { ...this._deliveryTodDraft, [period]: value };
     this._pricingError = null;
   }
 
@@ -1968,6 +2046,14 @@ export class HungryMachinesPanel extends LitElement {
     const storedDeliveryStr =
       typeof storedDelivery === 'number' ? String(storedDelivery) : '';
     if (this._deliveryTariffDraft !== storedDeliveryStr) return true;
+    if (this._deliveryTariffDraft.trim() !== '') {
+      const storedTod = rates.delivery_tod_cents;
+      for (const p of DELIVERY_TOD_PERIODS) {
+        const n = Number(this._deliveryTodDraft[p].trim());
+        const storedVal = storedTod ? storedTod[p] : undefined;
+        if (!Number.isFinite(n) || n !== storedVal) return true;
+      }
+    }
     return false;
   }
 
@@ -1981,6 +2067,7 @@ export class HungryMachinesPanel extends LitElement {
       dynamic_zone?: string | null;
       pricing_adder_cents_per_kwh?: number | null;
       adder_grid_ruleset_id?: number | null;
+      delivery_tod_cents?: DeliveryTodCents | null;
     } = { pricing_source: draft };
     if (draft === 'zone') {
       body.pricing_location = this._zoneDraft;
@@ -2005,9 +2092,20 @@ export class HungryMachinesPanel extends LitElement {
       const deliveryTrim = this._deliveryTariffDraft.trim();
       if (deliveryTrim === '') {
         body.adder_grid_ruleset_id = null;
+        body.delivery_tod_cents = null;
       } else {
         const id = Number(deliveryTrim);
         body.adder_grid_ruleset_id = Number.isFinite(id) ? id : null;
+        const map = {} as DeliveryTodCents;
+        for (const p of DELIVERY_TOD_PERIODS) {
+          const n = Number(this._deliveryTodDraft[p].trim());
+          if (!Number.isFinite(n) || n < 0 || n > 50) {
+            this._pricingError = `${DELIVERY_TOD_LABELS[p]} price must be between 0 and 50 cents/kWh.`;
+            return;
+          }
+          map[p] = n;
+        }
+        body.delivery_tod_cents = map;
       }
     }
     this._pricingSaving = true;
@@ -3347,6 +3445,39 @@ export class HungryMachinesPanel extends LitElement {
                     only non-delivery extras — taxes and supply riders.
                     About 2¢/kWh is typical.
                   </p>
+                `
+              : null}
+            ${this._deliveryTariffDraft !== ''
+              ? html`
+                  <div class="delivery-tod-fields">
+                    <p class="hint">
+                      Prefilled from your class's published rate. Check
+                      these against the Distribution Facility Charge lines
+                      on your own bill and edit any that differ.
+                    </p>
+                    ${DELIVERY_TOD_PERIODS.map(
+                      (p) => html`
+                        <label>
+                          <span class="label-text">${DELIVERY_TOD_LABELS[p]}</span>
+                          <input
+                            type="number"
+                            step="0.001"
+                            min="0"
+                            max="50"
+                            name=${`delivery_tod_${p}`}
+                            class="pricing-adder-input"
+                            ?disabled=${pricingSaving}
+                            .value=${this._deliveryTodDraft[p]}
+                            @input=${(e: Event) =>
+                              this._onDeliveryTodInput(
+                                p,
+                                (e.target as HTMLInputElement).value,
+                              )}
+                          />
+                        </label>
+                      `,
+                    )}
+                  </div>
                 `
               : null}
             <label>

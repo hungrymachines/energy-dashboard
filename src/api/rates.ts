@@ -12,12 +12,20 @@ export type PricingZoneOption = {
   notes: string;
 };
 
+export type DeliveryTodCents = {
+  morning: number;
+  midday_peak: number;
+  evening: number;
+  overnight: number;
+};
+
 export type DeliveryTariffOption = {
   id: number;
   external_id: string;
   plan_name: string;
   utility: string;
   region: string;
+  period_rates?: DeliveryTodCents;
 };
 
 export interface RatesResponse {
@@ -31,6 +39,7 @@ export interface RatesResponse {
   dynamic_zone: string | null;
   pricing_adder_cents_per_kwh: number | null;
   adder_grid_ruleset_id: number | null;
+  delivery_tod_cents: DeliveryTodCents | null;
   available_dynamic_zones: DynamicZoneOption[];
   available_pricing_zones: PricingZoneOption[];
   available_delivery_tariffs: DeliveryTariffOption[];
@@ -43,6 +52,7 @@ export interface UpdateRatesBody {
   dynamic_zone?: string | null;
   pricing_adder_cents_per_kwh?: number | null;
   adder_grid_ruleset_id?: number | null;
+  delivery_tod_cents?: DeliveryTodCents | null;
 }
 
 export function get(): Promise<RatesResponse> {

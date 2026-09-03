@@ -224,6 +224,8 @@ HA constructs the element and assigns `hass`, `narrow`, `route`, `panel` propert
 - Constraints: per-appliance editor via `<hm-constraint-editor>`, PUT-back to `/api/v1/appliances/{id}/constraints`.
 - Settings: HA entity mapping (which `sensor.*` feed indoor/outdoor temp + power), pricing zone (1–8), account actions (sign out, contact `info@hungrymachines.io` to delete).
 
+**Rendering gotcha — don't nest a `cond ? html\`...\` : null` directly inside the`html\`\`` result of ANOTHER such ternary.** Confirmed with a minimal isolated Lit component (not file-specific): a child expression that returns `null | TemplateResult`, placed inside a template that is ITSELF the truthy branch of an outer `cond ? html\`...\` : null`, silently never commits to the DOM — not even on first paint, and with no console error. The exact same pattern works fine as a **sibling** top-level expression at the same template depth (the existing `rates ? html\`...\` : null` / `editorOpen ? html\`...\` : null` pair in the pricing-source settings section is the working precedent). Fix: flatten — hoist the inner conditional out to be a sibling `${...}` in the parent template instead of nesting it inside the outer conditional's own `html\`\`` block, even if that means repeating (or `&&`-combining) the outer guard condition. Hit in US-CRP-033 wiring the four DTOD period-price inputs inside the already-conditional "Delivery plan" block.
+
 ### `<hm-thermostat-card>` — Lovelace card
 
 ```yaml
