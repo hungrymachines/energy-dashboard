@@ -830,6 +830,11 @@ export class HungryMachinesPanel extends LitElement {
     .card .entity-binding[hidden] {
       display: none;
     }
+    .card .solar-fact {
+      margin: 4px 0 0;
+      color: var(--hm-muted, #64748B);
+      font-size: 14px;
+    }
     .card .edit-btn {
       align-self: flex-start;
       background: transparent;
@@ -3175,14 +3180,17 @@ export class HungryMachinesPanel extends LitElement {
   }
 
   /**
-   * Compact informational tile for a solar appliance.
+   * Tile for a solar appliance.
    *
-   * Solar is forecast-only — there's no schedule to render and no
-   * constraints to edit. The tile shows the registered system size and
-   * a short note explaining how it influences the other appliances'
-   * schedules. Keeping it on the dashboard (rather than hiding it)
-   * gives the user a confirmation that solar is registered and feeding
-   * the optimizer.
+   * Solar has no control entity and no constraints to edit, but since
+   * US-SOL-012 the nightly job writes a real schedule row for it (this
+   * array's generation curve, whole-home surplus, and — with an export
+   * rate curve set — the expected export revenue). When that row is
+   * present the tile renders the generation chart and the source/
+   * surplus facts; otherwise it falls back to the pre-US-SOL-023
+   * informational note (e.g. a freshly registered array before the
+   * first nightly run, or the `_renderExampleApplianceCard` placeholder,
+   * whose seeded entry carries an empty `schedule`).
    */
   private _renderSolarCard(
     appliance: ApplianceScheduleEntry,
@@ -3193,6 +3201,40 @@ export class HungryMachinesPanel extends LitElement {
     const sizeRaw = config['system_size_kw'];
     const sizeKw = typeof sizeRaw === 'number' && Number.isFinite(sizeRaw) ? sizeRaw : null;
     const sizeText = sizeKw !== null ? `${sizeKw.toFixed(1)} kW system` : 'Solar PV';
+
+    const sched = appliance.schedule ?? {};
+    const generationKw48 = asNumberArray(sched['generation_kw_48']);
+    const hasCurve = Array.isArray(generationKw48) && generationKw48.length === 48;
+
+    let sourceLine = '';
+    let generationLine = '';
+    let exportLine: string | null = null;
+    if (hasCurve) {
+      const source = sched['source'];
+      // GROUND TRUTH (US-SOL-023): the schedule entry `/api/v1/schedules`
+      // returns has no `constraints_used` block (that only lives on the
+      // raw `appliance_schedules` row `/schedules/history` exposes) — so
+      // there's no `model_fit.n_days` to cite here. The learned line
+      // names the mechanism, not a day count.
+      sourceLine =
+        source === 'learned'
+          ? 'Learned from your production sensor'
+          : source === 'irradiance'
+            ? 'Forecast for your tilt and azimuth'
+            : 'Nameplate estimate - connect a production sensor to learn your real output';
+      const generationKwh = asFiniteNumber(sched['generation_kwh']);
+      if (generationKwh !== undefined) {
+        generationLine = `Expected generation ${generationKwh.toFixed(1)} kWh`;
+      }
+      const exportValueCents = asFiniteNumber(sched['export_value_cents']);
+      const surplusKwh = asFiniteNumber(sched['surplus_kwh']);
+      if (exportValueCents !== undefined && surplusKwh !== undefined) {
+        exportLine =
+          `${surplusKwh.toFixed(1)} kWh surplus - $${(exportValueCents / 100).toFixed(2)} ` +
+          'export (before household base load)';
+      }
+    }
+
     return html`
       <div class="card" data-appliance-type="solar">
         <div class="card-head">
@@ -3200,10 +3242,33 @@ export class HungryMachinesPanel extends LitElement {
           <span class="name">${appliance.name}</span>
         </div>
         <div class="savings">${sizeText}</div>
-        <p style="margin: 8px 0 0; color: var(--hm-muted, #64748B); font-size: 14px;">
-          Generation forecast is folded into pricing for HVAC, EV, battery, and water-heater
-          schedules so they prefer daylight hours when possible.
-        </p>
+        ${hasCurve
+          ? html`
+              <hm-optimization-chart
+                .targetValues=${generationKw48}
+                .rates=${this._rates?.rates_cents_per_kwh ?? []}
+                .unit=${'kw'}
+                .yMin=${0}
+                .yMax=${sizeKw ?? undefined}
+                .size=${this._chartSize}
+              ></hm-optimization-chart>
+            `
+          : null}
+        ${hasCurve ? html`<p class="solar-fact">${sourceLine}</p>` : null}
+        ${hasCurve && generationLine
+          ? html`<p class="solar-fact">${generationLine}</p>`
+          : null}
+        ${hasCurve && exportLine
+          ? html`<p class="solar-fact">${exportLine}</p>`
+          : null}
+        ${!hasCurve
+          ? html`
+              <p style="margin: 8px 0 0; color: var(--hm-muted, #64748B); font-size: 14px;">
+                Generation forecast is folded into pricing for HVAC, EV, battery, and water-heater
+                schedules so they prefer daylight hours when possible.
+              </p>
+            `
+          : null}
         <div class="card-actions">
           <button
             class="edit-btn secondary"

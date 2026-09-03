@@ -94,6 +94,29 @@ const ROBOT_SCHEDULE = {
   source: 'optimization',
 };
 
+// US-SOL-023: a solar schedule row carries no control-entity intervals —
+// just this array's generation curve plus whole-home surplus/export facts.
+const SOLAR_SCHEDULE = {
+  appliance_id: 'solar-1',
+  appliance_type: 'solar' as const,
+  name: 'Roof PV',
+  schedule: {
+    generation_kw_48: Array.from({ length: 48 }, (_, i) => (i >= 12 && i < 36 ? (i - 12) * 0.3 : 0)),
+    unit: 'kw',
+    source: 'learned',
+    self_consumed_kw_48: Array<number>(48).fill(0),
+    surplus_kw_48: Array<number>(48).fill(0),
+    generation_kwh: 42.5,
+    self_consumed_kwh: 30.2,
+    surplus_kwh: 12.3,
+    export_value_cents: 246,
+    surplus_basis: 'before_household_base_load',
+    allocation_order: ['ev_charger', 'home_battery', 'hvac', 'water_heater', 'robot'],
+  },
+  savings_pct: 0,
+  source: 'optimization',
+};
+
 const SCHEDULES_RESPONSE = {
   date: '2025-11-18',
   appliances: [HVAC_SCHEDULE, EV_SCHEDULE],
@@ -900,5 +923,114 @@ describe('hungry-machines-panel chart-size toggle (v2.5)', () => {
       root.querySelectorAll<HTMLButtonElement>('.size-btn'),
     ).find((b) => b.classList.contains('active'));
     expect(active?.textContent?.trim()).toBe('Medium');
+  });
+});
+
+describe('solar card (US-SOL-023)', () => {
+  beforeEach(() => {
+    setApiBase('https://api.example.test');
+    localStorage.clear();
+    clearTokens();
+    setAuthState({});
+    vi.spyOn(authStore, 'hydrate').mockImplementation(async () => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    document.body.innerHTML = '';
+    localStorage.clear();
+    clearTokens();
+    setAuthState({});
+  });
+
+  function solarAppliances(overrides: Record<string, unknown> = {}) {
+    return [
+      {
+        id: 'solar-1',
+        user_id: 'user-123',
+        appliance_type: 'solar',
+        name: 'Roof PV',
+        config: { system_size_kw: 8.5, azimuth_degrees: 180, tilt_degrees: 20, ...overrides },
+        is_active: true,
+        created_at: '2026-01-01T00:00:00Z',
+      },
+    ];
+  }
+
+  async function mountWithSolar(schedule: unknown): Promise<PanelEl> {
+    installFetchStub({
+      '/api/v1/schedules': { date: '2025-11-18', appliances: [schedule] },
+      '/api/v1/rates': RATES_RESPONSE,
+      '/api/v1/appliances': solarAppliances(),
+    });
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+    const el = mountPanel();
+    el._view = 'dashboard';
+    await flush(el);
+    return el;
+  }
+
+  it('learned source renders the chart and "Learned from your production sensor"', async () => {
+    const el = await mountWithSolar(SOLAR_SCHEDULE);
+    const root = el.shadowRoot!;
+    const card = root.querySelector('.card[data-appliance-type="solar"]')!;
+    const chart = card.querySelector('hm-optimization-chart') as HTMLElement & { unit?: string };
+    expect(chart).not.toBeNull();
+    expect(chart.unit).toBe('kw');
+    expect(card.textContent).toContain('Learned from your production sensor');
+    expect(card.textContent).toContain('Expected generation 42.5 kWh');
+  });
+
+  it('irradiance source renders "Forecast for your tilt and azimuth"', async () => {
+    const el = await mountWithSolar({
+      ...SOLAR_SCHEDULE,
+      schedule: { ...SOLAR_SCHEDULE.schedule, source: 'irradiance' },
+    });
+    const root = el.shadowRoot!;
+    const card = root.querySelector('.card[data-appliance-type="solar"]')!;
+    expect(card.textContent).toContain('Forecast for your tilt and azimuth');
+  });
+
+  it('nameplate source renders the connect-a-sensor nudge', async () => {
+    const el = await mountWithSolar({
+      ...SOLAR_SCHEDULE,
+      schedule: { ...SOLAR_SCHEDULE.schedule, source: 'nameplate' },
+    });
+    const root = el.shadowRoot!;
+    const card = root.querySelector('.card[data-appliance-type="solar"]')!;
+    expect(card.textContent).toContain(
+      'Nameplate estimate - connect a production sensor to learn your real output',
+    );
+  });
+
+  it('export_value_cents present renders the surplus/export line', async () => {
+    const el = await mountWithSolar(SOLAR_SCHEDULE);
+    const root = el.shadowRoot!;
+    const card = root.querySelector('.card[data-appliance-type="solar"]')!;
+    expect(card.textContent).toContain('12.3 kWh surplus - $2.46 export (before household base load)');
+  });
+
+  it('export_value_cents null omits the export line', async () => {
+    const el = await mountWithSolar({
+      ...SOLAR_SCHEDULE,
+      schedule: { ...SOLAR_SCHEDULE.schedule, export_value_cents: null },
+    });
+    const root = el.shadowRoot!;
+    const card = root.querySelector('.card[data-appliance-type="solar"]')!;
+    expect(card.textContent).not.toContain('export (before household base load)');
+  });
+
+  it('no generation_kw_48 falls back to the pre-existing informational tile', async () => {
+    const el = await mountWithSolar({ ...SOLAR_SCHEDULE, schedule: {} });
+    const root = el.shadowRoot!;
+    const card = root.querySelector('.card[data-appliance-type="solar"]')!;
+    expect(card.querySelector('hm-optimization-chart')).toBeNull();
+    expect(card.textContent).toContain('Generation forecast is folded into pricing');
   });
 });
