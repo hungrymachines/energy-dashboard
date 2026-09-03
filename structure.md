@@ -184,7 +184,7 @@ One file per endpoint group in `src/api/`:
 - `appliances.ts` — list/create/update appliances; push readings; push constraints; fetch a single appliance schedule.
 - `preferences.ts` — GET/PUT `/api/v1/preferences` (base temp, savings level, hourly highs/lows).
 - `schedules.ts` — GET `/api/v1/schedules` (today's optimized schedules for every appliance).
-- `rates.ts` — hourly TOU rate overrides.
+- `rates.ts` — GET/PUT `/api/v1/rates`. Carries two independent rate curves of **different lengths**: `rates_cents_per_kwh` is the 24-entry hourly override for what the user *buys*, and `export_rates_cents_per_kwh` (US-SOL-022) is a 48-entry half-hourly curve for what the utility *pays* on exported power. Both are `number[] | null`; PUTting `null` clears one without touching the other. Don't assume "a rate curve" means 24 here.
 
 **Mirror discipline:** the API contract is owned by the backend repo (`hungry-machines-api/API_CONTRACT.md`). These wrappers are the local mirror — when the contract changes, the diff lands server-side first and this repo follows. Do not invent new endpoint shapes here.
 
@@ -225,6 +225,10 @@ HA constructs the element and assigns `hass`, `narrow`, `route`, `panel` propert
 - Settings: HA entity mapping (which `sensor.*` feed indoor/outdoor temp + power), pricing zone (1–8), account actions (sign out, contact `info@hungrymachines.io` to delete).
 
 **Rendering gotcha — don't nest a `cond ? html\`...\` : null` directly inside the`html\`\`` result of ANOTHER such ternary.** Confirmed with a minimal isolated Lit component (not file-specific): a child expression that returns `null | TemplateResult`, placed inside a template that is ITSELF the truthy branch of an outer `cond ? html\`...\` : null`, silently never commits to the DOM — not even on first paint, and with no console error. The exact same pattern works fine as a **sibling** top-level expression at the same template depth (the existing `rates ? html\`...\` : null` / `editorOpen ? html\`...\` : null` pair in the pricing-source settings section is the working precedent). Fix: flatten — hoist the inner conditional out to be a sibling `${...}` in the parent template instead of nesting it inside the outer conditional's own `html\`\`` block, even if that means repeating (or `&&`-combining) the outer guard condition. Hit in US-CRP-033 wiring the four DTOD period-price inputs inside the already-conditional "Delivery plan" block.
+
+Reproduced a second time in US-SOL-023 (`_renderSolarCard`), in a different file and a different feature: the generation and export fact lines, nested inside the `hasCurve ? html\`...\` : html\`...\`` branch, rendered blank with no error. The documented fix worked unchanged — every conditional in that card is now a sibling `${...}` repeating the `hasCurve` guard. **Two lessons the second occurrence added:** this is the default trap, not a one-off, so write the sibling form first rather than flattening after a failure; and a test that asserts only "the chart element is present" will not catch it — assert the exact rendered text of each conditional line, which is what caught it here on the first run.
+
+**Panel copy can only cite what `/api/v1/schedules` actually returns.** `_format_appliance_schedule` (backend `app/routes/schedules.py`) emits `appliance_id`, `appliance_type`, `name`, `schedule`, `savings_pct`, `source`, `entities`, `optimization_enabled`, and optionally `stale` / `integration_health` — and nothing else. In particular there is **no `constraints_used`**: that block is written to the `appliance_schedules` row and read back only by `/api/v1/schedules/history`. A spec asking the panel to show something out of `constraints_used` (US-SOL-023 wanted a fitted-day count from `model_fit.n_days`) is describing data this endpoint does not carry. Write against `schedule.*` and `source`, or bring the field into `_format_appliance_schedule` in the backend repo first.
 
 ### `<hm-thermostat-card>` — Lovelace card
 
@@ -304,6 +308,9 @@ Every schedule (HVAC, EV, battery, water heater, robot) the API returns is a 48-
 | `home_battery` | `{ intervals: boolean[48], value_trajectory: number[48], unit: 'percent' }` (0–100) |
 | `water_heater` | `{ intervals: boolean[48], temp_trajectory: number[48], unit: 'fahrenheit' }` |
 | `robot` | `{ intervals: boolean[48], value_trajectory: number[48], unit: 'percent', min_value, target_value, deadline_interval }` (0–100; `intervals[i]=true` means "on its dock charging") |
+| `solar` | `{ generation_kw_48: number[48], unit: 'kw', source: 'nameplate' \| 'irradiance' \| 'learned', self_consumed_kw_48, surplus_kw_48, generation_kwh, self_consumed_kwh, surplus_kwh, export_value_cents: number \| null, surplus_basis, allocation_order }` — **no `intervals`**: solar is a forecast, not a plan, so there is nothing to switch |
+
+Solar is the one type whose row carries no `intervals` array. It still uses the 48-slot grid (`generation_kw_48` is kW per half-hour for that array; `self_consumed_kw_48` / `surplus_kw_48` are whole-home), and `<hm-optimization-chart>` plots it with `unit: 'kw'`, but `scheduler.py` never reads it — the row exists so the panel can show the forecast and so the backend can discount the pricing curve the other appliances optimize against. `source` is the three-tier vocabulary the backend ships (`nameplate` → `irradiance` → `learned`) and the panel maps each tier to its own sentence, so treat the whole tuple as the contract rather than collapsing it to "learned or not". `export_value_cents` is `null` when the user has entered no export-rate curve; the panel drops the export line entirely rather than rendering `$0.00`. Authoritative shape: `hungry-machines-api/API_CONTRACT.md`, "Schedule shapes by appliance type".
 
 Do not hand-roll new shapes. If a story needs different data, bring the change to the backend repo first; only then mirror it.
 
@@ -326,9 +333,14 @@ tests/
 ├── constraint-editor.test.ts        # constraint round-trip
 ├── constraint-editor-hourly.test.ts # 24h ↔ 48-slot conversion in the editor
 ├── settings.test.ts                 # entity mapping + pricing zone
-├── settings-rates.test.ts           # hourly rates editor
+├── settings-rates.test.ts           # hourly (24-slot) buy-rate editor
+├── settings-export-rates.test.ts    # half-hourly (48-slot) export-rate editor
 └── hourly.test.ts                   # src/utils/hourly.ts unit tests
 ```
+
+That listing is the shape of the suite, not its full census — `tests/` carries 28 files / 257 cases as of v3.5.0, including per-feature files (`appliance-form`, `panel-schedules`, `diagnostics-panel`, `calibration-banner`, `settings-dynamic-pricing`, …) added since. `ls tests/` is the source of truth.
+
+A second editor of a different length can reuse an existing one's mechanics wholesale. `settings-export-rates.test.ts` copies `settings-rates.test.ts`'s `installFetchStub` / `mountPanel` scaffolding almost verbatim, changing only the section helper it queries; the editor itself reuses the validation range, the error strings, and the dollars↔cents rounding unchanged, and only the array length (24 → 48), the row label formula, and the field/button names differ. Copy the neighbouring editor and its test file rather than designing a second one.
 
 Patterns:
 - **Stub `globalThis.fetch`** with `vi.fn(...)` per test; assert URL + method + headers + body.
@@ -458,6 +470,12 @@ worked example throughout: `grep -rn "'robot'" src custom_components`.
 6. **`custom_components/hungry_machines/readings.py`** — add the type to
    whichever reading-dispatch tuple shares its units. That tuple must match the
    backend's per-type reading validation, which range-checks percent types 0–100.
+
+**A type with no control entity takes a different route through steps 2 and 6.** Solar is the worked example (US-SOL-020..023). `CONTROL_DOMAINS.solar` is `[]`, and `showEntitySection` in `appliance-form.ts` is `controlDomains.length > 0`, so the entire entity-section `<div>` — where every other type's `AUX_FIELDS` / `HVAC_POWER_FIELD` / `DEHU_*` picker lives — never renders for such a type. An optional-sensor picker declared the generic way would be dead code that no test would flag. Put it inside the type's own `typeFields` block instead (`SOLAR_PRODUCTION_FIELD`, `_powerSensorOptionsFirst`), keeping one conditional per field.
+
+The mirror-image trap sits in `readings.py`: `capture_readings` gates on `entity_id` *before* the per-type dispatch chain, so an entity-less type must be handled **above** that gate or it is skipped forever as "no entity_id in config" — even with its own sensor fully configured. Two things come free once the branch is in the right place: `_read_power_watts` already sniffs `unit_of_measurement` for W vs kW and already records aux-sensor health through `_record_aux_status`, and `flush_readings` already posts any per-appliance bucket to `POST /api/v1/appliances/{id}/readings`. Log nothing when the *optional* sensor is simply unset — that is the expected state for most users, and the neighbouring INFO log exists because a missing *required* `entity_id` is a misconfiguration.
+
+Adding a field to `_defaultValues` also buys edit-mode seeding for free: `_seedFromEditing` iterates `Object.keys(_defaultValues(type))` and copies any non-empty stored config value. Only fields deliberately kept out of `_defaultValues` (HVAC's power/humidity extras) need hand-written seeding — check which case you are in before writing code that already exists generically.
 
 Three cross-repo rules the robot POC established:
 
