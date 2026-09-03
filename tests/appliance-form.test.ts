@@ -36,6 +36,10 @@ const TEST_HASS = {
     'sensor.tank_temp': { entity_id: 'sensor.tank_temp' },
     'sensor.indoor_temp': { entity_id: 'sensor.indoor_temp' },
     'sensor.ac_power': { entity_id: 'sensor.ac_power' },
+    'sensor.solar_production': {
+      entity_id: 'sensor.solar_production',
+      attributes: { device_class: 'power' },
+    },
     'humidifier.basement': { entity_id: 'humidifier.basement' },
     'sensor.basement_rh': { entity_id: 'sensor.basement_rh' },
     'vacuum.living_room': { entity_id: 'vacuum.living_room' },
@@ -583,6 +587,93 @@ describe('hm-appliance-form', () => {
 
     expect(createdEvent).not.toBeNull();
     expect(el.open).toBe(false);
+  });
+
+  it('solar: production-sensor picker renders inside typeFields, entity_id picker stays absent', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'solar')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const picker = selectByName(root, 'production_sensor_entity_id');
+    const options = Array.from(picker.options).map((o) => o.value);
+    expect(options[0]).toBe('');
+    expect(options).toContain('sensor.solar_production');
+    // Solar still has no Home Assistant control surface.
+    expect(root.querySelector('select[name="entity_id"]')).toBeNull();
+  });
+
+  it('solar: choosing the production sensor puts it on the POST config', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      calls.push({ url, init });
+      return jsonResponse({ appliance_id: 'app-solar-2' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'solar')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Roof PV';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    inputByName(root, 'system_size_kw').value = '8.5';
+    inputByName(root, 'system_size_kw').dispatchEvent(new Event('input', { bubbles: true }));
+    const picker = selectByName(root, 'production_sensor_entity_id');
+    picker.value = 'sensor.solar_production';
+    picker.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+
+    buttonByText(root, 'Add')!.click();
+    await flush(el);
+
+    const postCall = calls.find(
+      (c) => c.url.endsWith('/api/v1/appliances') && c.init?.method === 'POST',
+    );
+    const body = JSON.parse(String(postCall!.init!.body));
+    expect(body.config).toEqual({
+      system_size_kw: 8.5,
+      azimuth_degrees: 180,
+      tilt_degrees: 20,
+      production_sensor_entity_id: 'sensor.solar_production',
+    });
+  });
+
+  it('solar edit-mode pre-selects the stored production sensor', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ id: 'app-solar-1' })));
+    const el = mountForm();
+    const existing = {
+      id: 'app-solar-1',
+      user_id: 'user-1',
+      appliance_type: 'solar' as const,
+      name: 'Roof PV',
+      config: {
+        system_size_kw: 8.5,
+        azimuth_degrees: 180,
+        tilt_degrees: 20,
+        production_sensor_entity_id: 'sensor.solar_production',
+      },
+      is_active: true,
+      created_at: new Date().toISOString(),
+    };
+    el.existingAppliances = [existing];
+    el.editing = existing;
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(selectByName(root, 'production_sensor_entity_id').value).toBe('sensor.solar_production');
   });
 
   it('solar: empty system_size_kw blocks submit', async () => {
