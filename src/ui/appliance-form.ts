@@ -123,6 +123,17 @@ const DEHU_POWER_FIELD = {
   domain: 'sensor',
 } as const;
 
+// Solar has no control entity (CONTROL_DOMAINS.solar is empty, so
+// `showEntitySection` is false for it — see the render() branch below),
+// so this optional sensor is rendered inside solar's own `typeFields`
+// block instead of the generic entity-section aux-field slot the other
+// types share.
+const SOLAR_PRODUCTION_FIELD = {
+  name: 'production_sensor_entity_id',
+  label: 'Production sensor (optional)',
+  domain: 'sensor',
+} as const;
+
 export class HmApplianceForm extends LitElement {
   static override styles = css`
     :host {
@@ -440,6 +451,7 @@ export class HmApplianceForm extends LitElement {
           system_size_kw: '',
           azimuth_degrees: '180',
           tilt_degrees: '20',
+          production_sensor_entity_id: '',
         };
       case 'dehumidifier':
         // Data-collection only. Control entity + required room-temp sensor
@@ -475,6 +487,18 @@ export class HmApplianceForm extends LitElement {
       if (domains.includes(id.slice(0, dot))) out.push(id);
     }
     return out.sort();
+  }
+
+  // Same domain filter as `_entityList`, but with `device_class: power`
+  // entries surfaced first — a solar array's production sensor is almost
+  // always one of those, and the panel's other sensor pickers don't (yet)
+  // need this kind of prioritization.
+  private _powerSensorOptionsFirst(): string[] {
+    const options = this._entityList([SOLAR_PRODUCTION_FIELD.domain]);
+    const states = this.hass?.states;
+    if (!states) return options;
+    const isPower = (id: string) => states[id]?.attributes?.['device_class'] === 'power';
+    return [...options].sort((a, b) => Number(!isPower(a)) - Number(!isPower(b)));
   }
 
   private _back(): void {
@@ -654,12 +678,15 @@ export class HmApplianceForm extends LitElement {
           entity_id: entityId,
           ...(auxValue ? { temp_entity_id: auxValue } : {}),
         };
-      case 'solar':
+      case 'solar': {
+        const productionValue = (v[SOLAR_PRODUCTION_FIELD.name] ?? '').trim();
         return {
           system_size_kw: Number(v['system_size_kw']),
           azimuth_degrees: Number(v['azimuth_degrees']),
           tilt_degrees: Number(v['tilt_degrees']),
+          ...(productionValue ? { production_sensor_entity_id: productionValue } : {}),
         };
+      }
       case 'dehumidifier': {
         const humidityValue = (v['indoor_humidity_entity_id'] ?? '').trim();
         const powerValue = (v['power_sensor_entity_id'] ?? '').trim();
@@ -1099,6 +1126,20 @@ export class HmApplianceForm extends LitElement {
           ${errs['tilt_degrees']
             ? html`<div class="field-error">${errs['tilt_degrees']}</div>`
             : null}
+        </label>
+        <label>
+          <span class="label-text">${SOLAR_PRODUCTION_FIELD.label}</span>
+          <select
+            name=${SOLAR_PRODUCTION_FIELD.name}
+            .value=${v[SOLAR_PRODUCTION_FIELD.name] ?? ''}
+            @change=${onSelect(SOLAR_PRODUCTION_FIELD.name)}
+          >
+            <option value="" ?selected=${(v[SOLAR_PRODUCTION_FIELD.name] ?? '') === ''}>— none —</option>
+            ${this._powerSensorOptionsFirst().map(
+              (id) => html`<option value=${id} ?selected=${id === v[SOLAR_PRODUCTION_FIELD.name]}>${id}</option>`,
+            )}
+          </select>
+          <small class="label-text">A power sensor for your inverter or plug, in W or kW - not an energy (kWh) sensor. Optional: with it, Hungry Machines learns your array's real output and shading.</small>
         </label>
       `;
     }

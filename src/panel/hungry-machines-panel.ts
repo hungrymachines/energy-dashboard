@@ -11,6 +11,7 @@ import {
   get as getRates,
   update as updateRates,
   type RatesResponse,
+  type DeliveryTodCents,
 } from '../api/rates.js';
 import {
   list as listAppliances,
@@ -61,6 +62,41 @@ const TYPE_LABELS: Record<ApplianceType, string> = {
 function asNumberArray(value: unknown): number[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.every((v) => typeof v === 'number') ? (value as number[]) : undefined;
+}
+
+const DELIVERY_TOD_PERIODS = ['morning', 'midday_peak', 'evening', 'overnight'] as const;
+type DeliveryTodPeriod = (typeof DELIVERY_TOD_PERIODS)[number];
+type DeliveryTodDraft = Record<DeliveryTodPeriod, string>;
+
+const DELIVERY_TOD_LABELS: Record<DeliveryTodPeriod, string> = {
+  morning: 'Morning 6 a.m.-1 p.m.',
+  midday_peak: 'Mid-Day Peak 1-7 p.m.',
+  evening: 'Evening 7-9 p.m.',
+  overnight: 'Overnight 9 p.m.-6 a.m.',
+};
+
+const EMPTY_DELIVERY_TOD_DRAFT: DeliveryTodDraft = {
+  morning: '',
+  midday_peak: '',
+  evening: '',
+  overnight: '',
+};
+
+function isValidDeliveryTodCents(value: unknown): value is DeliveryTodCents {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return DELIVERY_TOD_PERIODS.every(
+    (p) => typeof record[p] === 'number' && Number.isFinite(record[p] as number),
+  );
+}
+
+function deliveryTodCentsToDraft(map: DeliveryTodCents): DeliveryTodDraft {
+  return {
+    morning: String(map.morning),
+    midday_peak: String(map.midday_peak),
+    evening: String(map.evening),
+    overnight: String(map.overnight),
+  };
 }
 
 /**
@@ -794,6 +830,11 @@ export class HungryMachinesPanel extends LitElement {
     .card .entity-binding[hidden] {
       display: none;
     }
+    .card .solar-fact {
+      margin: 4px 0 0;
+      color: var(--hm-muted, #64748B);
+      font-size: 14px;
+    }
     .card .edit-btn {
       align-self: flex-start;
       background: transparent;
@@ -1261,6 +1302,27 @@ export class HungryMachinesPanel extends LitElement {
     .dynamic-fields[hidden] {
       display: none;
     }
+    .export-fields {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid rgba(100, 116, 139, 0.18);
+    }
+    .export-fields h4 {
+      margin: 0;
+      font-size: 14px;
+      color: var(--hm-text, #0F172A);
+    }
+    .delivery-tod-fields {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 12px;
+    }
+    .delivery-tod-fields .hint {
+      grid-column: 1 / -1;
+    }
     .pricing-adder-input {
       width: 100%;
       padding: 8px 10px;
@@ -1357,9 +1419,15 @@ export class HungryMachinesPanel extends LitElement {
     _customRatesInputs: { state: true },
     _customRatesSaving: { state: true },
     _customRatesSaveError: { state: true },
+    _exportRatesEditorOpen: { state: true },
+    _exportRatesInputs: { state: true },
+    _exportRatesSaving: { state: true },
+    _exportRatesSaveError: { state: true },
     _pricingSourceDraft: { state: true },
     _dynamicZoneDraft: { state: true },
     _pricingAdderDraft: { state: true },
+    _deliveryTariffDraft: { state: true },
+    _deliveryTodDraft: { state: true },
     _pricingSaving: { state: true },
     _pricingError: { state: true },
     _pricingSavedFlash: { state: true },
@@ -1423,9 +1491,20 @@ export class HungryMachinesPanel extends LitElement {
   _customRatesInputs: string[] = Array.from({ length: 24 }, () => '');
   _customRatesSaving = false;
   _customRatesSaveError: string | null = null;
+  _exportRatesEditorOpen = false;
+  _exportRatesInputs: string[] = Array.from({ length: 48 }, () => '');
+  _exportRatesSaving = false;
+  _exportRatesSaveError: string | null = null;
   _pricingSourceDraft: 'zone' | 'custom' | 'dynamic' = 'zone';
   _dynamicZoneDraft = '';
   _pricingAdderDraft = '';
+  // Selected delivery-tariff ruleset id, as a string for the <select>
+  // binding; '' means "Flat estimate" (adder_grid_ruleset_id: null).
+  _deliveryTariffDraft = '';
+  // The four editable DTOD period prices (string inputs), shown only when
+  // _deliveryTariffDraft is a class. Prefilled from the selected class's
+  // period_rates or the stored delivery_tod_cents; edited freely after.
+  _deliveryTodDraft: DeliveryTodDraft = { ...EMPTY_DELIVERY_TOD_DRAFT };
   _pricingSaving = false;
   _pricingError: string | null = null;
   _pricingSavedFlash = false;
@@ -1868,6 +1947,80 @@ export class HungryMachinesPanel extends LitElement {
     }
   }
 
+  // Export rates: what the utility pays for exported solar,
+  // a 48-slot half-hour curve. Visible under every pricing source — the
+  // export credit is independent of how the user prices their imports.
+  private _openExportRatesEditor(): void {
+    const rates = this._rates;
+    const inputs: string[] = Array.from({ length: 48 }, () => '');
+    if (rates && Array.isArray(rates.export_rates_cents_per_kwh)) {
+      for (let i = 0; i < 48; i++) {
+        const cents = rates.export_rates_cents_per_kwh[i];
+        if (typeof cents === 'number' && Number.isFinite(cents)) {
+          inputs[i] = (cents / 100).toFixed(3);
+        }
+      }
+    }
+    this._exportRatesInputs = inputs;
+    this._exportRatesEditorOpen = true;
+    this._exportRatesSaveError = null;
+  }
+
+  private _closeExportRatesEditor(): void {
+    this._exportRatesEditorOpen = false;
+    this._exportRatesSaveError = null;
+  }
+
+  private _onExportRateInput(i: number, val: string): void {
+    const next = this._exportRatesInputs.slice();
+    next[i] = val;
+    this._exportRatesInputs = next;
+  }
+
+  private _validateExportRateInputs(inputs: string[]): (string | null)[] {
+    return inputs.map((s) => {
+      const trimmed = s.trim();
+      if (trimmed === '') return 'Enter a value';
+      const n = Number(trimmed);
+      if (!Number.isFinite(n)) return 'Not a number';
+      if (n < 0 || n > 2) return 'Must be between 0 and 2';
+      return null;
+    });
+  }
+
+  private async _saveExportRates(): Promise<void> {
+    const errors = this._validateExportRateInputs(this._exportRatesInputs);
+    if (errors.some((e) => e !== null)) return;
+    const cents = this._exportRatesInputs.map(
+      (s) => Math.round(Number(s.trim()) * 100 * 10000) / 10000,
+    );
+    this._exportRatesSaving = true;
+    this._exportRatesSaveError = null;
+    try {
+      this._rates = await updateRates({ export_rates_cents_per_kwh: cents });
+      this._exportRatesEditorOpen = false;
+    } catch (err) {
+      this._exportRatesSaveError =
+        err instanceof Error && err.message ? err.message : 'Could not save export rates';
+    } finally {
+      this._exportRatesSaving = false;
+    }
+  }
+
+  private async _clearExportRates(): Promise<void> {
+    this._exportRatesSaving = true;
+    this._exportRatesSaveError = null;
+    try {
+      this._rates = await updateRates({ export_rates_cents_per_kwh: null });
+      this._exportRatesEditorOpen = false;
+    } catch (err) {
+      this._exportRatesSaveError =
+        err instanceof Error && err.message ? err.message : 'Could not clear export rates';
+    } finally {
+      this._exportRatesSaving = false;
+    }
+  }
+
   private _initPricingDraftsFromRates(rates: RatesResponse): void {
     const source = rates.pricing_source ?? 'zone';
     this._pricingSourceDraft = source === 'dynamic' || source === 'custom' ? source : 'zone';
@@ -1889,6 +2042,22 @@ export class HungryMachinesPanel extends LitElement {
     // so the field is never blank — they can change it only if they wish.
     this._pricingAdderDraft =
       typeof adder === 'number' && Number.isFinite(adder) ? String(adder) : '8';
+    const deliveryId = rates.adder_grid_ruleset_id;
+    this._deliveryTariffDraft =
+      typeof deliveryId === 'number' && Number.isFinite(deliveryId) ? String(deliveryId) : '';
+    // The four period-price inputs init from the stored per-user map when
+    // present, else the selected class's published defaults.
+    if (isValidDeliveryTodCents(rates.delivery_tod_cents)) {
+      this._deliveryTodDraft = deliveryTodCentsToDraft(rates.delivery_tod_cents);
+    } else {
+      const tariffs = Array.isArray(rates.available_delivery_tariffs)
+        ? rates.available_delivery_tariffs
+        : [];
+      const selected = tariffs.find((t) => String(t.id) === this._deliveryTariffDraft);
+      this._deliveryTodDraft = selected?.period_rates
+        ? deliveryTodCentsToDraft(selected.period_rates)
+        : { ...EMPTY_DELIVERY_TOD_DRAFT };
+    }
     // Zone draft tracks the catalog id; keep it in sync with the loaded
     // rates so Reset returns to the stored zone.
     if (typeof rates.pricing_location === 'number') {
@@ -1919,6 +2088,40 @@ export class HungryMachinesPanel extends LitElement {
     this._pricingError = null;
   }
 
+  private _onDeliveryTariffChange(value: string): void {
+    this._deliveryTariffDraft = value;
+    // Prefill the flat-adder estimate to reflect what it now covers, but
+    // never clobber a value the user has deliberately typed. Choosing a
+    // delivery plan when the adder is blank or the flat default ('8')
+    // drops it to the non-delivery residual ('2'); returning to Flat
+    // estimate when the adder is blank or that residual restores '8'.
+    const draftTrim = this._pricingAdderDraft.trim();
+    if (value !== '') {
+      if (draftTrim === '' || draftTrim === '8') {
+        this._pricingAdderDraft = '2';
+      }
+    } else if (draftTrim === '' || draftTrim === '2') {
+      this._pricingAdderDraft = '8';
+    }
+    // Changing the class is a prefill action: it overwrites all four
+    // period-price inputs with that class's published defaults. The user
+    // edits freely afterward — this never runs again until the select
+    // changes again.
+    if (value !== '') {
+      const tariffs = this._rates?.available_delivery_tariffs ?? [];
+      const selected = tariffs.find((t) => String(t.id) === value);
+      this._deliveryTodDraft = selected?.period_rates
+        ? deliveryTodCentsToDraft(selected.period_rates)
+        : { ...EMPTY_DELIVERY_TOD_DRAFT };
+    }
+    this._pricingError = null;
+  }
+
+  private _onDeliveryTodInput(period: DeliveryTodPeriod, value: string): void {
+    this._deliveryTodDraft = { ...this._deliveryTodDraft, [period]: value };
+    this._pricingError = null;
+  }
+
   private _isPricingDirty(): boolean {
     const rates = this._rates;
     if (!rates) return false;
@@ -1939,6 +2142,18 @@ export class HungryMachinesPanel extends LitElement {
       const n = Number(draftTrim);
       if (!Number.isFinite(n) || n !== storedAdder) return true;
     }
+    const storedDelivery = rates.adder_grid_ruleset_id;
+    const storedDeliveryStr =
+      typeof storedDelivery === 'number' ? String(storedDelivery) : '';
+    if (this._deliveryTariffDraft !== storedDeliveryStr) return true;
+    if (this._deliveryTariffDraft.trim() !== '') {
+      const storedTod = rates.delivery_tod_cents;
+      for (const p of DELIVERY_TOD_PERIODS) {
+        const n = Number(this._deliveryTodDraft[p].trim());
+        const storedVal = storedTod ? storedTod[p] : undefined;
+        if (!Number.isFinite(n) || n !== storedVal) return true;
+      }
+    }
     return false;
   }
 
@@ -1951,6 +2166,8 @@ export class HungryMachinesPanel extends LitElement {
       pricing_location?: number;
       dynamic_zone?: string | null;
       pricing_adder_cents_per_kwh?: number | null;
+      adder_grid_ruleset_id?: number | null;
+      delivery_tod_cents?: DeliveryTodCents | null;
     } = { pricing_source: draft };
     if (draft === 'zone') {
       body.pricing_location = this._zoneDraft;
@@ -1971,6 +2188,24 @@ export class HungryMachinesPanel extends LitElement {
           return;
         }
         body.pricing_adder_cents_per_kwh = n;
+      }
+      const deliveryTrim = this._deliveryTariffDraft.trim();
+      if (deliveryTrim === '') {
+        body.adder_grid_ruleset_id = null;
+        body.delivery_tod_cents = null;
+      } else {
+        const id = Number(deliveryTrim);
+        body.adder_grid_ruleset_id = Number.isFinite(id) ? id : null;
+        const map = {} as DeliveryTodCents;
+        for (const p of DELIVERY_TOD_PERIODS) {
+          const n = Number(this._deliveryTodDraft[p].trim());
+          if (!Number.isFinite(n) || n < 0 || n > 50) {
+            this._pricingError = `${DELIVERY_TOD_LABELS[p]} price must be between 0 and 50 cents/kWh.`;
+            return;
+          }
+          map[p] = n;
+        }
+        body.delivery_tod_cents = map;
       }
     }
     this._pricingSaving = true;
@@ -2945,14 +3180,17 @@ export class HungryMachinesPanel extends LitElement {
   }
 
   /**
-   * Compact informational tile for a solar appliance.
+   * Tile for a solar appliance.
    *
-   * Solar is forecast-only — there's no schedule to render and no
-   * constraints to edit. The tile shows the registered system size and
-   * a short note explaining how it influences the other appliances'
-   * schedules. Keeping it on the dashboard (rather than hiding it)
-   * gives the user a confirmation that solar is registered and feeding
-   * the optimizer.
+   * Solar has no control entity and no constraints to edit, but since
+   * an earlier change the nightly job writes a real schedule row for it (this
+   * array's generation curve, whole-home surplus, and — with an export
+   * rate curve set — the expected export revenue). When that row is
+   * present the tile renders the generation chart and the source/
+   * surplus facts; otherwise it falls back to the pre-an earlier change
+   * informational note (e.g. a freshly registered array before the
+   * first nightly run, or the `_renderExampleApplianceCard` placeholder,
+   * whose seeded entry carries an empty `schedule`).
    */
   private _renderSolarCard(
     appliance: ApplianceScheduleEntry,
@@ -2963,6 +3201,40 @@ export class HungryMachinesPanel extends LitElement {
     const sizeRaw = config['system_size_kw'];
     const sizeKw = typeof sizeRaw === 'number' && Number.isFinite(sizeRaw) ? sizeRaw : null;
     const sizeText = sizeKw !== null ? `${sizeKw.toFixed(1)} kW system` : 'Solar PV';
+
+    const sched = appliance.schedule ?? {};
+    const generationKw48 = asNumberArray(sched['generation_kw_48']);
+    const hasCurve = Array.isArray(generationKw48) && generationKw48.length === 48;
+
+    let sourceLine = '';
+    let generationLine = '';
+    let exportLine: string | null = null;
+    if (hasCurve) {
+      const source = sched['source'];
+      // GROUND TRUTH: the schedule entry `/api/v1/schedules`
+      // returns has no `constraints_used` block (that only lives on the
+      // raw `appliance_schedules` row `/schedules/history` exposes) — so
+      // there's no `model_fit.n_days` to cite here. The learned line
+      // names the mechanism, not a day count.
+      sourceLine =
+        source === 'learned'
+          ? 'Learned from your production sensor'
+          : source === 'irradiance'
+            ? 'Forecast for your tilt and azimuth'
+            : 'Nameplate estimate - connect a production sensor to learn your real output';
+      const generationKwh = asFiniteNumber(sched['generation_kwh']);
+      if (generationKwh !== undefined) {
+        generationLine = `Expected generation ${generationKwh.toFixed(1)} kWh`;
+      }
+      const exportValueCents = asFiniteNumber(sched['export_value_cents']);
+      const surplusKwh = asFiniteNumber(sched['surplus_kwh']);
+      if (exportValueCents !== undefined && surplusKwh !== undefined) {
+        exportLine =
+          `${surplusKwh.toFixed(1)} kWh surplus - $${(exportValueCents / 100).toFixed(2)} ` +
+          'export (before household base load)';
+      }
+    }
+
     return html`
       <div class="card" data-appliance-type="solar">
         <div class="card-head">
@@ -2970,10 +3242,33 @@ export class HungryMachinesPanel extends LitElement {
           <span class="name">${appliance.name}</span>
         </div>
         <div class="savings">${sizeText}</div>
-        <p style="margin: 8px 0 0; color: var(--hm-muted, #64748B); font-size: 14px;">
-          Generation forecast is folded into pricing for HVAC, EV, battery, and water-heater
-          schedules so they prefer daylight hours when possible.
-        </p>
+        ${hasCurve
+          ? html`
+              <hm-optimization-chart
+                .targetValues=${generationKw48}
+                .rates=${this._rates?.rates_cents_per_kwh ?? []}
+                .unit=${'kw'}
+                .yMin=${0}
+                .yMax=${sizeKw ?? undefined}
+                .size=${this._chartSize}
+              ></hm-optimization-chart>
+            `
+          : null}
+        ${hasCurve ? html`<p class="solar-fact">${sourceLine}</p>` : null}
+        ${hasCurve && generationLine
+          ? html`<p class="solar-fact">${generationLine}</p>`
+          : null}
+        ${hasCurve && exportLine
+          ? html`<p class="solar-fact">${exportLine}</p>`
+          : null}
+        ${!hasCurve
+          ? html`
+              <p style="margin: 8px 0 0; color: var(--hm-muted, #64748B); font-size: 14px;">
+                Generation forecast is folded into pricing for HVAC, EV, battery, and water-heater
+                schedules so they prefer daylight hours when possible.
+              </p>
+            `
+          : null}
         <div class="card-actions">
           <button
             class="edit-btn secondary"
@@ -3115,6 +3410,7 @@ export class HungryMachinesPanel extends LitElement {
     const pricingSourceDraft = this._pricingSourceDraft;
     const availableDynamicZones = rates?.available_dynamic_zones ?? [];
     const availableZones = rates?.available_pricing_zones ?? [];
+    const availableDeliveryTariffs = rates?.available_delivery_tariffs ?? [];
     // Fallback: if rates haven't loaded yet, render just the current
     // selection so the dropdown isn't empty.
     const zoneOptionIds: number[] = availableZones.length > 0
@@ -3136,6 +3432,14 @@ export class HungryMachinesPanel extends LitElement {
           : `Currently using: Zone ${zoneForImport} rates`;
     const toggleLabel =
       ratesSource === 'custom' ? 'Edit / Clear override' : 'Edit custom rates';
+    const exportEditorOpen = this._exportRatesEditorOpen;
+    const exportInputs = this._exportRatesInputs;
+    const exportRowErrors = this._validateExportRateInputs(exportInputs);
+    const exportHasRowError = exportRowErrors.some((e) => e !== null);
+    const exportSaving = this._exportRatesSaving;
+    const exportSaveError = this._exportRatesSaveError;
+    const exportHasStored = Array.isArray(rates?.export_rates_cents_per_kwh);
+    const exportToggleLabel = exportHasStored ? 'Edit / Clear export rates' : 'Edit export rates';
 
     return html`
       <h2>Settings</h2>
@@ -3278,6 +3582,72 @@ export class HungryMachinesPanel extends LitElement {
                 )}
               </select>
             </label>
+            ${availableDeliveryTariffs.length > 0
+              ? html`
+                  <label>
+                    <span class="label-text">Delivery plan</span>
+                    <select
+                      name="adder_grid_ruleset_id"
+                      ?disabled=${pricingSaving}
+                      .value=${this._deliveryTariffDraft}
+                      @change=${(e: Event) =>
+                        this._onDeliveryTariffChange(
+                          (e.target as HTMLSelectElement).value,
+                        )}
+                    >
+                      <option value="" ?selected=${this._deliveryTariffDraft === ''}>
+                        Flat estimate
+                      </option>
+                      ${availableDeliveryTariffs.map(
+                        (t) => html`<option
+                          value=${String(t.id)}
+                          ?selected=${String(t.id) === this._deliveryTariffDraft}
+                        >
+                          ${t.utility} ${t.plan_name}
+                        </option>`,
+                      )}
+                    </select>
+                  </label>
+                  <p class="hint">
+                    With a delivery plan chosen, the estimate below covers
+                    only non-delivery extras — taxes and supply riders.
+                    About 2¢/kWh is typical.
+                  </p>
+                `
+              : null}
+            ${this._deliveryTariffDraft !== ''
+              ? html`
+                  <div class="delivery-tod-fields">
+                    <p class="hint">
+                      Prefilled from your class's published rate. Check
+                      these against the Distribution Facility Charge lines
+                      on your own bill and edit any that differ.
+                    </p>
+                    ${DELIVERY_TOD_PERIODS.map(
+                      (p) => html`
+                        <label>
+                          <span class="label-text">${DELIVERY_TOD_LABELS[p]}</span>
+                          <input
+                            type="number"
+                            step="0.001"
+                            min="0"
+                            max="50"
+                            name=${`delivery_tod_${p}`}
+                            class="pricing-adder-input"
+                            ?disabled=${pricingSaving}
+                            .value=${this._deliveryTodDraft[p]}
+                            @input=${(e: Event) =>
+                              this._onDeliveryTodInput(
+                                p,
+                                (e.target as HTMLInputElement).value,
+                              )}
+                          />
+                        </label>
+                      `,
+                    )}
+                  </div>
+                `
+              : null}
             <label>
               <span class="label-text">Delivery charge estimate (cents/kWh)</span>
               <input
@@ -3400,6 +3770,105 @@ export class HungryMachinesPanel extends LitElement {
                                 void this._clearCustomRatesOverride()}
                             >
                               Clear override
+                            </button>
+                          `
+                        : ''}
+                    </div>
+                  </div>
+                `
+              : null}
+          </div>
+          <div class="export-fields">
+            <h4>Export rate (optional)</h4>
+            <p class="hint">
+              What your utility pays for power you send back. Leave empty if
+              you are not paid for exports.
+            </p>
+            ${rates
+              ? html`
+                  <div class="rates-actions">
+                    <button
+                      type="button"
+                      name="toggle_export_rates"
+                      @click=${() =>
+                        exportEditorOpen
+                          ? this._closeExportRatesEditor()
+                          : this._openExportRatesEditor()}
+                    >
+                      ${exportEditorOpen ? 'Close' : exportToggleLabel}
+                    </button>
+                  </div>
+                `
+              : null}
+            ${exportEditorOpen
+              ? html`
+                  <div class="rates-editor">
+                    <p class="rates-helper">
+                      Rates in dollars per kWh (e.g. 0.368 = 36.8 cents/kWh).
+                    </p>
+                    <table class="rates-table">
+                      <thead>
+                        <tr>
+                          <th>Time</th>
+                          <th>$/kWh</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${exportInputs.map((val, i) => {
+                          const err = exportRowErrors[i];
+                          const hourLabel = `${String(Math.floor(i / 2)).padStart(2, '0')}:${i % 2 ? '30' : '00'}`;
+                          return html`
+                            <tr data-row=${i}>
+                              <td>${hourLabel}</td>
+                              <td>
+                                <input
+                                  type="number"
+                                  step="0.001"
+                                  min="0"
+                                  max="2"
+                                  name=${`export_rate_${i}`}
+                                  data-slot=${i}
+                                  .value=${val}
+                                  class=${err ? 'invalid' : ''}
+                                  @input=${(e: Event) =>
+                                    this._onExportRateInput(
+                                      i,
+                                      (e.target as HTMLInputElement).value,
+                                    )}
+                                />
+                                ${err
+                                  ? html`<div class="row-error">${err}</div>`
+                                  : ''}
+                              </td>
+                            </tr>
+                          `;
+                        })}
+                      </tbody>
+                    </table>
+                    ${exportSaveError
+                      ? html`<p class="rates-api-error" role="alert">
+                          ${exportSaveError}
+                        </p>`
+                      : ''}
+                    <div class="rates-actions">
+                      <button
+                        type="button"
+                        name="save_export_rates"
+                        class="primary"
+                        ?disabled=${exportHasRowError || exportSaving}
+                        @click=${() => void this._saveExportRates()}
+                      >
+                        Save
+                      </button>
+                      ${exportHasStored
+                        ? html`
+                            <button
+                              type="button"
+                              name="clear_export_rates"
+                              ?disabled=${exportSaving}
+                              @click=${() => void this._clearExportRates()}
+                            >
+                              Clear
                             </button>
                           `
                         : ''}

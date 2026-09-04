@@ -647,6 +647,36 @@ async def capture_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
         atype = appliance.get("appliance_type")
         aid = appliance.get("id")
         config = appliance.get("config") or {}
+
+        if atype == "solar":
+            # Solar has no control entity (SolarConfig defines no
+            # entity_id — see appliances.py), so it must be handled here,
+            # ABOVE the entity_id gate below, or it would always be
+            # skipped as "no entity_id in config".
+            production_sensor_entity_id = (
+                config.get("production_sensor_entity_id")
+                if isinstance(config, dict) else None
+            )
+            if (
+                not isinstance(production_sensor_entity_id, str)
+                or not production_sensor_entity_id
+            ):
+                continue
+            watts = _read_power_watts(hass, production_sensor_entity_id)
+            if watts is None:
+                continue
+            watts = max(0.0, watts)
+            reading = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "state": "PRODUCING" if watts > 0 else "IDLE",
+                "value": watts,
+                "power_watts": watts,
+            }
+            if isinstance(aid, str):
+                _append(hass, aid, reading)
+                captured += 1
+            continue
+
         entity_id = config.get("entity_id") if isinstance(config, dict) else None
         if not isinstance(entity_id, str) or not entity_id:
             _LOGGER.info(

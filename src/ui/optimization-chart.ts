@@ -19,6 +19,8 @@ import { LitElement, html, css, type PropertyValues } from 'lit';
  * `unit` controls y-axis formatting and legend wording:
  *   • `'fahrenheit'` (default) — °F axis, "Optimized Temperature" wording
  *   • `'percent'`    — 0-100 % axis, "Optimized Charge" wording
+ *   • `'kw'`         — kW axis, "Solar Generation" wording (caller supplies
+ *                      `yMin`/`yMax`; there's no derived-range fallback)
  *
  * Inputs are 48-element half-hourly arrays (matching the API schedule shape).
  * The rate bars are decimated to 24 hourly bars for visual clarity. Built
@@ -29,7 +31,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const HALF_HOUR_SLOTS = 48;
 const HOURLY_BARS = 24;
 
-export type OptimizationChartUnit = 'fahrenheit' | 'percent';
+export type OptimizationChartUnit = 'fahrenheit' | 'percent' | 'kw';
 
 export interface OptimizationChartMarker {
   /** 0-47 half-hour slot of the deadline (e.g. 16 = 08:00). */
@@ -277,7 +279,12 @@ export class HmOptimizationChart extends LitElement {
 
   override render() {
     const isPercent = this.unit === 'percent';
-    const targetLabel = isPercent ? 'Optimized Charge' : 'Optimized Temperature';
+    const isKw = this.unit === 'kw';
+    const targetLabel = isPercent
+      ? 'Optimized Charge'
+      : isKw
+        ? 'Solar Generation'
+        : 'Optimized Temperature';
     const highShown = this._isFiniteArray(this.highLimits);
     const lowShown = this._isFiniteArray(this.lowLimits);
     const highLabel = isPercent ? 'Maximum' : 'High Limit';
@@ -338,7 +345,9 @@ export class HmOptimizationChart extends LitElement {
       msg.textContent =
         this.unit === 'percent'
           ? 'No charge plan available yet — try again after the next nightly run.'
-          : 'No temperature plan available yet — try again after the next nightly run.';
+          : this.unit === 'kw'
+            ? 'No generation forecast available yet — try again after the next nightly run.'
+            : 'No temperature plan available yet — try again after the next nightly run.';
       container.appendChild(msg);
       return;
     }
@@ -360,7 +369,9 @@ export class HmOptimizationChart extends LitElement {
       'aria-label',
       this.unit === 'percent'
         ? 'Optimized charge schedule'
-        : 'Optimized temperature schedule',
+        : this.unit === 'kw'
+          ? 'Solar generation schedule'
+          : 'Optimized temperature schedule',
     );
     svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
     svg.setAttribute('xmlns', SVG_NS);
@@ -563,7 +574,8 @@ export class HmOptimizationChart extends LitElement {
     yTitle.setAttribute('x', String(padLeft - 24));
     yTitle.setAttribute('y', String(titleY));
     yTitle.setAttribute('text-anchor', 'start');
-    yTitle.textContent = this.unit === 'percent' ? '%' : '°F';
+    yTitle.textContent =
+      this.unit === 'percent' ? '%' : this.unit === 'kw' ? 'kW' : '°F';
     svg.appendChild(yTitle);
 
     const priceTitle = document.createElementNS(SVG_NS, 'text');
