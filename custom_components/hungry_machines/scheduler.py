@@ -102,6 +102,13 @@ def _domain_data(hass: HomeAssistant) -> dict[str, Any]:
     return hass.data.setdefault(DOMAIN, {})
 
 
+# Baseline for `check_schedule_freshness` (US-RTG-027): the server-side
+# `updated_at` stamp as of the last time `fetch_today_schedule` actually
+# pulled a schedule. Sibling to `_LAST_COMMANDED_KEY` below — top-level
+# domain data, not nested inside the `schedule` cache dict, so it survives
+# independently of cache rebuilds/pops.
+_SCHEDULE_UPDATED_AT_KEY = "schedule_updated_at"
+
 _LAST_COMMANDED_KEY = "last_commanded"
 
 
@@ -208,7 +215,57 @@ async def fetch_today_schedule(
         }
     _domain_data(hass)["schedule"] = cache
     _publish_schedule_states(hass, cache)
+
+    # Snapshot the server's current freshness stamp as the baseline
+    # `check_schedule_freshness` compares future polls against. Best
+    # effort: `get_schedules_updated_at` never raises (mirrors every
+    # other api.py call), and a failed/None capture just leaves the
+    # previous baseline in place — the next poll falls back to treating
+    # "no baseline" as "sync anyway" (see check_schedule_freshness).
+    updated_at = await api.get_schedules_updated_at(hass, entry)
+    if updated_at is not None:
+        _domain_data(hass)[_SCHEDULE_UPDATED_AT_KEY] = updated_at
+
     return cache
+
+
+async def check_schedule_freshness(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Cheap mid-day poll for a server-side re-optimization (US-RTG-027).
+
+    Rides the existing comfort-watchdog / slot-apply cadence — no new
+    `async_track_time_change` registration. A single `GET
+    /api/v1/schedules/updated-at` round-trip (no schedule bodies)
+    compares the server's current freshness stamp against the one
+    `fetch_today_schedule` recorded the last time it actually pulled a
+    schedule. When the server is newer — e.g. the spike guard just fired
+    a re-plan — re-fetch and immediately re-apply the current slot, which
+    arms its own +60s set-then-verify pass exactly like any other apply
+    (see `_schedule_apply_verification`). ISO-8601 strings compare
+    correctly with plain `<=`/`>` since the API always emits them in the
+    same fixed-offset, fixed-width shape.
+
+    Never raises: a None result (network error, 404 on an older API, or
+    no schedule row for today yet) is logged by `api.py` and simply
+    skipped here, leaving the caller's own comfort/apply duties to run
+    unaffected — the same "don't let a poll block real control" contract
+    every other function in this module follows.
+    """
+    current = await api.get_schedules_updated_at(hass, entry)
+    if current is None:
+        return
+
+    last_known = _domain_data(hass).get(_SCHEDULE_UPDATED_AT_KEY)
+    if last_known is not None and current <= last_known:
+        return
+
+    _LOGGER.info(
+        "Hungry Machines: schedule updated_at advanced (%s -> %s); "
+        "re-fetching and re-applying the current slot",
+        last_known,
+        current,
+    )
+    await fetch_today_schedule(hass, entry)
+    await apply_current_slot(hass, entry)
 
 
 def _slug(value: str) -> str:

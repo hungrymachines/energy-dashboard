@@ -153,6 +153,197 @@ async def test_fetch_publishes_schedule_states_for_dev_tools() -> None:
     assert "current_slot" in attrs
 
 
+@pytest.mark.asyncio
+async def test_get_schedules_updated_at_returns_the_string() -> None:
+    hass = _hass()
+    entry = _entry()
+    with patch.object(
+        scheduler.api,
+        "_authenticated_request",
+        AsyncMock(return_value={"updated_at": "2026-09-05T14:32:07.123456+00:00"}),
+    ):
+        result = await scheduler.api.get_schedules_updated_at(hass, entry)
+    assert result == "2026-09-05T14:32:07.123456+00:00"
+
+
+@pytest.mark.asyncio
+async def test_get_schedules_updated_at_none_when_no_schedule_row_yet() -> None:
+    """`{"updated_at": null}` (no appliance_schedules row for today) →
+    None, same as any other 'nothing to compare' outcome."""
+    hass = _hass()
+    entry = _entry()
+    with patch.object(
+        scheduler.api,
+        "_authenticated_request",
+        AsyncMock(return_value={"updated_at": None}),
+    ):
+        result = await scheduler.api.get_schedules_updated_at(hass, entry)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_schedules_updated_at_none_on_request_failure() -> None:
+    """Network error / 404 (older API) / 401 all come back as None from
+    the shared `_authenticated_request` helper, already logged there."""
+    hass = _hass()
+    entry = _entry()
+    with patch.object(
+        scheduler.api, "_authenticated_request", AsyncMock(return_value=None)
+    ):
+        result = await scheduler.api.get_schedules_updated_at(hass, entry)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_records_schedule_updated_at_baseline() -> None:
+    """US-RTG-027: a successful fetch snapshots the server's current
+    updated_at as the baseline `check_schedule_freshness` compares
+    future polls against."""
+    hass = _hass()
+    entry = _entry()
+    with (
+        patch.object(
+            scheduler.api, "get_schedules", AsyncMock(return_value=_schedules_body())
+        ),
+        patch.object(
+            scheduler.api,
+            "get_schedules_updated_at",
+            AsyncMock(return_value="2026-09-05T14:00:00+00:00"),
+        ),
+    ):
+        await scheduler.fetch_today_schedule(hass, entry)
+
+    assert (
+        hass.data[DOMAIN][scheduler._SCHEDULE_UPDATED_AT_KEY]
+        == "2026-09-05T14:00:00+00:00"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_leaves_baseline_untouched_when_updated_at_capture_fails() -> None:
+    """A failed/None updated-at capture (network error, 404 on an older
+    API) must not clobber a previously-recorded baseline — best effort,
+    per fetch_today_schedule's docstring."""
+    hass = _hass()
+    hass.data[DOMAIN] = {scheduler._SCHEDULE_UPDATED_AT_KEY: "2026-09-05T10:00:00+00:00"}
+    entry = _entry()
+    with (
+        patch.object(
+            scheduler.api, "get_schedules", AsyncMock(return_value=_schedules_body())
+        ),
+        patch.object(
+            scheduler.api, "get_schedules_updated_at", AsyncMock(return_value=None)
+        ),
+    ):
+        await scheduler.fetch_today_schedule(hass, entry)
+
+    assert (
+        hass.data[DOMAIN][scheduler._SCHEDULE_UPDATED_AT_KEY]
+        == "2026-09-05T10:00:00+00:00"
+    )
+
+
+@pytest.mark.asyncio
+async def test_check_schedule_freshness_skips_silently_when_poll_fails() -> None:
+    """Network error / 404 (older API) → get_schedules_updated_at returns
+    None → skipped with zero fetch/apply, never raises."""
+    hass = _hass()
+    hass.data[DOMAIN] = {scheduler._SCHEDULE_UPDATED_AT_KEY: "2026-09-05T10:00:00+00:00"}
+    entry = _entry()
+    with (
+        patch.object(
+            scheduler.api, "get_schedules_updated_at", AsyncMock(return_value=None)
+        ),
+        patch.object(scheduler, "fetch_today_schedule", AsyncMock()) as fetch_spy,
+        patch.object(scheduler, "apply_current_slot", AsyncMock()) as apply_spy,
+    ):
+        await scheduler.check_schedule_freshness(hass, entry)
+
+    fetch_spy.assert_not_awaited()
+    apply_spy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_check_schedule_freshness_skips_when_not_newer() -> None:
+    """Equal or older updated_at → no fetch, no apply."""
+    hass = _hass()
+    hass.data[DOMAIN] = {scheduler._SCHEDULE_UPDATED_AT_KEY: "2026-09-05T10:00:00+00:00"}
+    entry = _entry()
+    for same_or_older in ("2026-09-05T10:00:00+00:00", "2026-09-05T09:00:00+00:00"):
+        with (
+            patch.object(
+                scheduler.api,
+                "get_schedules_updated_at",
+                AsyncMock(return_value=same_or_older),
+            ),
+            patch.object(scheduler, "fetch_today_schedule", AsyncMock()) as fetch_spy,
+            patch.object(scheduler, "apply_current_slot", AsyncMock()) as apply_spy,
+        ):
+            await scheduler.check_schedule_freshness(hass, entry)
+
+        fetch_spy.assert_not_awaited()
+        apply_spy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_check_schedule_freshness_fetches_and_applies_when_newer() -> None:
+    """A server-side re-optimization (newer updated_at) → re-fetch, then
+    re-apply the current slot — the apply arms its own +60s verify per
+    US-RTG-025, so nothing extra is needed here."""
+    hass = _hass()
+    hass.data[DOMAIN] = {scheduler._SCHEDULE_UPDATED_AT_KEY: "2026-09-05T10:00:00+00:00"}
+    entry = _entry()
+    order: list[str] = []
+
+    async def _fake_fetch(*_a, **_k):
+        order.append("fetch")
+
+    async def _fake_apply(*_a, **_k):
+        order.append("apply")
+
+    with (
+        patch.object(
+            scheduler.api,
+            "get_schedules_updated_at",
+            AsyncMock(return_value="2026-09-05T14:32:07+00:00"),
+        ),
+        patch.object(
+            scheduler, "fetch_today_schedule", AsyncMock(side_effect=_fake_fetch)
+        ) as fetch_spy,
+        patch.object(
+            scheduler, "apply_current_slot", AsyncMock(side_effect=_fake_apply)
+        ) as apply_spy,
+    ):
+        await scheduler.check_schedule_freshness(hass, entry)
+
+    fetch_spy.assert_awaited_once_with(hass, entry)
+    apply_spy.assert_awaited_once_with(hass, entry)
+    assert order == ["fetch", "apply"]
+
+
+@pytest.mark.asyncio
+async def test_check_schedule_freshness_syncs_when_no_baseline_recorded_yet() -> None:
+    """No prior baseline (e.g. the initial capture inside
+    fetch_today_schedule never succeeded) degrades to "sync anyway"
+    rather than silently never catching up."""
+    hass = _hass()
+    hass.data[DOMAIN] = {}  # no _SCHEDULE_UPDATED_AT_KEY at all
+    entry = _entry()
+    with (
+        patch.object(
+            scheduler.api,
+            "get_schedules_updated_at",
+            AsyncMock(return_value="2026-09-05T14:32:07+00:00"),
+        ),
+        patch.object(scheduler, "fetch_today_schedule", AsyncMock()) as fetch_spy,
+        patch.object(scheduler, "apply_current_slot", AsyncMock()) as apply_spy,
+    ):
+        await scheduler.check_schedule_freshness(hass, entry)
+
+    fetch_spy.assert_awaited_once_with(hass, entry)
+    apply_spy.assert_awaited_once_with(hass, entry)
+
+
 def _hvac_cache(
     entity_id: str = "climate.living_room",
     setpoint: float = 71.5,

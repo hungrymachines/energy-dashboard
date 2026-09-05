@@ -20,6 +20,15 @@ v2.0+: drives a closed control loop across every registered appliance.
   (thermal model underestimated the heat/cool rate), it commands the unit
   back on at the band edge, with hysteresis to avoid short-cycling the
   compressor.
+* **Schedule freshness poll** (rides both cadences above, no extra
+  timer) — `scheduler.check_schedule_freshness` runs right before each
+  comfort-watchdog tick and each slot apply, making one cheap `GET
+  /api/v1/schedules/updated-at` call. When the server's stamp has
+  advanced past the one recorded at the last actual schedule fetch (e.g.
+  a mid-day spike-guard re-plan), it re-fetches and re-applies
+  immediately instead of waiting for the once-daily 05:05 refresh. A
+  failed/older/absent poll never blocks the comfort or apply duty that
+  triggered it.
 * **Weather push** (daily at 03:30 UTC + on integration startup) —
   `weather.push_today_forecast` reads the user's HA weather entity and
   POSTs its forecast so the API's nightly optimizer prefers it over
@@ -56,7 +65,12 @@ from .const import (
     SCRIPT_FILENAME,
     SCRIPT_URL,
 )
-from .scheduler import apply_current_slot, comfort_watchdog, fetch_today_schedule
+from .scheduler import (
+    apply_current_slot,
+    check_schedule_freshness,
+    comfort_watchdog,
+    fetch_today_schedule,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -122,6 +136,24 @@ async def _ensure_frontend_registered(hass: HomeAssistant) -> bool:
     return True
 
 
+async def _check_freshness_before(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Run `check_schedule_freshness`, but never let it block comfort/apply.
+
+    `check_schedule_freshness` is itself designed to never raise (a
+    network error or 404 just returns None and is skipped inside
+    scheduler.py) — this wrapper is defense-in-depth so an unexpected
+    exception there still can't take down the comfort watchdog or the
+    slot apply that calls it right after (US-RTG-027 AC: "comfort duties
+    always run even when the freshness call fails").
+    """
+    try:
+        await check_schedule_freshness(hass, entry)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning(
+            "Hungry Machines: schedule freshness check failed: %s", err
+        )
+
+
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     """Component-level setup — register the JS bundle once per HA process."""
     return await _ensure_frontend_registered(hass)
@@ -173,6 +205,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await fetch_today_schedule(hass, entry)
 
     async def _apply_slot(_now) -> None:
+        await _check_freshness_before(hass, entry)
         await apply_current_slot(hass, entry)
 
     unsubs.append(
@@ -202,6 +235,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # second check of the same apply within the same minute. A single
     # check per mark is enough since the next mark is only 5 min away.
     async def _comfort_watchdog(_now) -> None:
+        await _check_freshness_before(hass, entry)
         await comfort_watchdog(hass, entry)
 
     unsubs.append(

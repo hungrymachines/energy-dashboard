@@ -96,6 +96,26 @@ async def get_schedules(hass: HomeAssistant, entry: ConfigEntry) -> dict | None:
     return await _authenticated_request(hass, entry, "GET", "/api/v1/schedules")
 
 
+async def get_schedules_updated_at(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> str | None:
+    """Fetch /api/v1/schedules/updated-at — a cheap freshness poll.
+
+    Returns the ISO-8601 `updated_at` string, or None when: the request
+    fails (network error, 401/5xx — `_authenticated_request` already logs
+    and returns None for those), the API predates this route (404, same
+    handling), or the user has no `appliance_schedules` row for today yet
+    (`{"updated_at": null}`).
+    """
+    body = await _authenticated_request(
+        hass, entry, "GET", "/api/v1/schedules/updated-at"
+    )
+    if not isinstance(body, dict):
+        return None
+    updated_at = body.get("updated_at")
+    return updated_at if isinstance(updated_at, str) else None
+
+
 async def post_home_readings(
     hass: HomeAssistant, entry: ConfigEntry, readings: list[dict]
 ) -> bool:
