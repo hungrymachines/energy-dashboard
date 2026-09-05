@@ -10,11 +10,16 @@ v2.0+: drives a closed control loop across every registered appliance.
 * **Schedule apply** (every :00 / :30) — `scheduler.apply_current_slot`
   iterates the cache and calls the right service per appliance type:
   `climate.set_temperature` for HVAC, `switch.turn_on/off` for the rest.
-* **Comfort watchdog** (every 5 min) — `scheduler.comfort_watchdog`
-  closes the loop the open-loop schedule can't: when a scheduled-OFF HVAC
-  has drifted out of its comfort band (thermal model underestimated the
-  heat/cool rate), it commands the unit back on at the band edge, with
-  hysteresis to avoid short-cycling the compressor.
+  Each apply arms a one-shot verify 60s later (`scheduler._schedule_apply_
+  verification`) that re-checks the commanded mode/setpoint/fan against
+  the entity's live state and re-sends once on mismatch.
+* **Comfort watchdog** (the other five-minute marks: :05, :10, ..., :55,
+  skipping :00/:30 since the apply's own verify already covers those) —
+  `scheduler.comfort_watchdog` closes the loop the open-loop schedule
+  can't: when a scheduled-OFF HVAC has drifted out of its comfort band
+  (thermal model underestimated the heat/cool rate), it commands the unit
+  back on at the band edge, with hysteresis to avoid short-cycling the
+  compressor.
 * **Weather push** (daily at 03:30 UTC + on integration startup) —
   `weather.push_today_forecast` reads the user's HA weather entity and
   POSTs its forecast so the API's nightly optimizer prefers it over
@@ -188,7 +193,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # scheduled-OFF HVAC that has left its comfort band, commands the unit
     # back on at the band edge — with hysteresis so it doesn't short-cycle
     # (see scheduler.comfort_watchdog / comfort.decide). Offset to :45s so
-    # it never races the :00/:30 slot apply or the 5-min readings capture.
+    # it never races the 5-min readings capture.
+    #
+    # Excludes :00/:30 on purpose: those boundaries are the slot-apply's
+    # own job, and `_apply_hvac`'s set-then-verify pass already re-checks
+    # the commanded values 60s later (`_schedule_apply_verification` in
+    # scheduler.py) — running the watchdog there too would be a redundant
+    # second check of the same apply within the same minute. A single
+    # check per mark is enough since the next mark is only 5 min away.
     async def _comfort_watchdog(_now) -> None:
         await comfort_watchdog(hass, entry)
 
@@ -196,7 +208,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_track_time_change(
             hass,
             _comfort_watchdog,
-            minute=[0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55],
+            minute=[5, 10, 15, 20, 25, 35, 40, 45, 50, 55],
             second=45,
         )
     )
