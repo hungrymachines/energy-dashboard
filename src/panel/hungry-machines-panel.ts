@@ -1302,6 +1302,14 @@ export class HungryMachinesPanel extends LitElement {
     .dynamic-fields[hidden] {
       display: none;
     }
+    .spike-guard-field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .spike-guard-field .device-opt-toggle {
+      align-self: flex-start;
+    }
     .export-fields {
       display: flex;
       flex-direction: column;
@@ -1436,6 +1444,7 @@ export class HungryMachinesPanel extends LitElement {
     _chartSize: { state: true },
     _optToggleBusy: { state: true },
     _deviceOptToggleBusy: { state: true },
+    _spikeGuardToggleBusy: { state: true },
     _feedbackCategory: { state: true },
     _feedbackMessage: { state: true },
     _feedbackSubmitting: { state: true },
@@ -1455,6 +1464,7 @@ export class HungryMachinesPanel extends LitElement {
   // Per-appliance optimization toggle in-flight guards, keyed by
   // appliance_id, so one card's toggle spinner doesn't block the others.
   _deviceOptToggleBusy: Record<string, boolean> = {};
+  _spikeGuardToggleBusy = false;
   _editorOpen = false;
   _editorApplianceId = '';
   _editorApplianceType: ApplianceType = 'hvac';
@@ -1597,6 +1607,7 @@ export class HungryMachinesPanel extends LitElement {
       }
     } else if (view === 'settings') {
       void this._loadRatesIfNeeded();
+      void this._loadPreferencesIfNeeded();
     }
   }
 
@@ -1856,6 +1867,21 @@ export class HungryMachinesPanel extends LitElement {
     } finally {
       this._ratesInflight = false;
       this._ratesLoading = false;
+    }
+  }
+
+  // Settings-only load: a user landing directly on the Settings tab
+  // (no prior Dashboard visit) still needs the real spike_guard_enabled
+  // value, not just its cached-or-missing default.
+  private async _loadPreferencesIfNeeded(): Promise<void> {
+    if (this._preferences !== null) return;
+    if (this._auth.status !== 'authed') return;
+    try {
+      this._preferences = await getPreferences();
+      this._persistUserPrefs();
+    } catch {
+      // Leave preferences null — the spike guard toggle renders its
+      // safe default (enabled) until a fetch succeeds.
     }
   }
 
@@ -2745,6 +2771,54 @@ export class HungryMachinesPanel extends LitElement {
     }
   }
 
+  private _spikeGuardEnabled(): boolean {
+    // Missing field (older API) means enabled — matches the default the
+    // backend seeds for every user.
+    return this._preferences?.spike_guard_enabled !== false;
+  }
+
+  private _renderSpikeGuardToggle(visible: boolean): TemplateResult {
+    if (!visible) return html``;
+    const enabled = this._spikeGuardEnabled();
+    return html`
+      <div class="spike-guard-field">
+        <span class="label-text">Price spike guard</span>
+        <button
+          class="device-opt-toggle ${enabled ? '' : 'paused'}"
+          type="button"
+          role="switch"
+          aria-checked=${enabled ? 'true' : 'false'}
+          ?disabled=${this._spikeGuardToggleBusy}
+          @click=${() => void this._toggleSpikeGuard()}
+        >
+          <span class="opt-dot"></span>
+          ${enabled ? 'On' : 'Off'}
+        </button>
+        <p class="hint">
+          Dodge real-time price spikes automatically. Your comfort range
+          always applies. Turn off any time.
+        </p>
+      </div>
+    `;
+  }
+
+  private async _toggleSpikeGuard(): Promise<void> {
+    if (this._spikeGuardToggleBusy) return;
+    const next = !this._spikeGuardEnabled();
+    this._spikeGuardToggleBusy = true;
+    try {
+      this._preferences = await updatePreferences({
+        spike_guard_enabled: next,
+      });
+      this._persistUserPrefs();
+    } catch {
+      // PUT failed — leave _preferences untouched so the toggle reflects
+      // the server's actual state.
+    } finally {
+      this._spikeGuardToggleBusy = false;
+    }
+  }
+
   /** Appliance types the user can pause independently — the ones the
    * apply loop actually controls. Solar (forecast-only) and dehumidifier
    * (data-collection-only) have nothing to pause. */
@@ -3421,6 +3495,10 @@ export class HungryMachinesPanel extends LitElement {
     const pricingError = this._pricingError;
     const pricingSavedFlash = this._pricingSavedFlash;
     const dynamicActive = pricingSourceDraft === 'dynamic';
+    // Gated on the STORED pricing source/zone, not the draft selection —
+    // the guard is inert outside dynamic_zone='comed', so only show it
+    // once that's actually what's saved for this user.
+    const spikeGuardVisible = rates?.source === 'dynamic' && rates?.dynamic_zone === 'comed';
     const summaryText = !rates
       ? ratesLoading
         ? 'Loading rates…'
@@ -3582,6 +3660,7 @@ export class HungryMachinesPanel extends LitElement {
                 )}
               </select>
             </label>
+            ${this._renderSpikeGuardToggle(spikeGuardVisible)}
             ${availableDeliveryTariffs.length > 0
               ? html`
                   <label>

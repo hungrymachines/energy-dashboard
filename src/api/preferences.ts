@@ -14,6 +14,8 @@ export interface Preferences {
   optimize_hvac_mode?: boolean;
   /** Master pause switch — false stops the integration applying schedules. */
   optimization_enabled?: boolean;
+  /** Dodge real-time price spikes automatically (dynamic ComEd users only). */
+  spike_guard_enabled?: boolean;
 }
 
 export interface UpdatePreferencesBody {
@@ -27,6 +29,7 @@ export interface UpdatePreferencesBody {
   optimize_hvac_fan?: boolean;
   optimize_hvac_mode?: boolean;
   optimization_enabled?: boolean;
+  spike_guard_enabled?: boolean;
 }
 
 export function get(): Promise<Preferences> {
