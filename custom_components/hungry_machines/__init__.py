@@ -10,11 +10,25 @@ v2.0+: drives a closed control loop across every registered appliance.
 * **Schedule apply** (every :00 / :30) — `scheduler.apply_current_slot`
   iterates the cache and calls the right service per appliance type:
   `climate.set_temperature` for HVAC, `switch.turn_on/off` for the rest.
-* **Comfort watchdog** (every 5 min) — `scheduler.comfort_watchdog`
-  closes the loop the open-loop schedule can't: when a scheduled-OFF HVAC
-  has drifted out of its comfort band (thermal model underestimated the
-  heat/cool rate), it commands the unit back on at the band edge, with
-  hysteresis to avoid short-cycling the compressor.
+  Each apply arms a one-shot verify 60s later (`scheduler._schedule_apply_
+  verification`) that re-checks the commanded mode/setpoint/fan against
+  the entity's live state and re-sends once on mismatch.
+* **Comfort watchdog** (the other five-minute marks: :05, :10, ..., :55,
+  skipping :00/:30 since the apply's own verify already covers those) —
+  `scheduler.comfort_watchdog` closes the loop the open-loop schedule
+  can't: when a scheduled-OFF HVAC has drifted out of its comfort band
+  (thermal model underestimated the heat/cool rate), it commands the unit
+  back on at the band edge, with hysteresis to avoid short-cycling the
+  compressor.
+* **Schedule freshness poll** (rides both cadences above, no extra
+  timer) — `scheduler.check_schedule_freshness` runs right before each
+  comfort-watchdog tick and each slot apply, making one cheap `GET
+  /api/v1/schedules/updated-at` call. When the server's stamp has
+  advanced past the one recorded at the last actual schedule fetch (e.g.
+  a mid-day spike-guard re-plan), it re-fetches and re-applies
+  immediately instead of waiting for the once-daily 05:05 refresh. A
+  failed/older/absent poll never blocks the comfort or apply duty that
+  triggered it.
 * **Weather push** (daily at 03:30 UTC + on integration startup) —
   `weather.push_today_forecast` reads the user's HA weather entity and
   POSTs its forecast so the API's nightly optimizer prefers it over
@@ -51,7 +65,12 @@ from .const import (
     SCRIPT_FILENAME,
     SCRIPT_URL,
 )
-from .scheduler import apply_current_slot, comfort_watchdog, fetch_today_schedule
+from .scheduler import (
+    apply_current_slot,
+    check_schedule_freshness,
+    comfort_watchdog,
+    fetch_today_schedule,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -117,6 +136,24 @@ async def _ensure_frontend_registered(hass: HomeAssistant) -> bool:
     return True
 
 
+async def _check_freshness_before(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Run `check_schedule_freshness`, but never let it block comfort/apply.
+
+    `check_schedule_freshness` is itself designed to never raise (a
+    network error or 404 just returns None and is skipped inside
+    scheduler.py) — this wrapper is defense-in-depth so an unexpected
+    exception there still can't take down the comfort watchdog or the
+    slot apply that calls it right after (AC: "comfort duties
+    always run even when the freshness call fails").
+    """
+    try:
+        await check_schedule_freshness(hass, entry)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning(
+            "Hungry Machines: schedule freshness check failed: %s", err
+        )
+
+
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     """Component-level setup — register the JS bundle once per HA process."""
     return await _ensure_frontend_registered(hass)
@@ -168,6 +205,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await fetch_today_schedule(hass, entry)
 
     async def _apply_slot(_now) -> None:
+        await _check_freshness_before(hass, entry)
         await apply_current_slot(hass, entry)
 
     unsubs.append(
@@ -188,15 +226,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # scheduled-OFF HVAC that has left its comfort band, commands the unit
     # back on at the band edge — with hysteresis so it doesn't short-cycle
     # (see scheduler.comfort_watchdog / comfort.decide). Offset to :45s so
-    # it never races the :00/:30 slot apply or the 5-min readings capture.
+    # it never races the 5-min readings capture.
+    #
+    # Excludes :00/:30 on purpose: those boundaries are the slot-apply's
+    # own job, and `_apply_hvac`'s set-then-verify pass already re-checks
+    # the commanded values 60s later (`_schedule_apply_verification` in
+    # scheduler.py) — running the watchdog there too would be a redundant
+    # second check of the same apply within the same minute. A single
+    # check per mark is enough since the next mark is only 5 min away.
     async def _comfort_watchdog(_now) -> None:
+        await _check_freshness_before(hass, entry)
         await comfort_watchdog(hass, entry)
 
     unsubs.append(
         async_track_time_change(
             hass,
             _comfort_watchdog,
-            minute=[0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55],
+            minute=[5, 10, 15, 20, 25, 35, 40, 45, 50, 55],
             second=45,
         )
     )
