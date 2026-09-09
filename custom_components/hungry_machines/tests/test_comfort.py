@@ -4,8 +4,9 @@ These import `comfort.py` directly — it has no Home Assistant dependency —
 so they run under plain pytest without an HA test harness. The HA-coupled
 wrapper (`scheduler._comfort_band_override`) and the 5-min watchdog are
 integration-tested manually; the risk that needs automated coverage is the
-hysteresis logic (trigger / release deadband / minimum on-time), which
-lives entirely here.
+hysteresis logic (trigger / release deadband / minimum on-time) and
+which edge gets commanded (US-CTL-005: the FAR one), which live
+entirely here.
 
 Run: pytest custom_components/hungry_machines/tests/test_comfort.py
 """
@@ -35,11 +36,11 @@ def test_no_breach_no_override():
 
 
 def test_trigger_fires_the_moment_past_the_limit():
-    """Cooling: indoor just past the high edge → COOL at the band edge."""
+    """Cooling: indoor just past the high edge → COOL at the FAR edge."""
     override, latch = comfort.decide(
         indoor=76.1, high=76.0, low=64.0, sched_mode="cool", latch=None, now=T0,
     )
-    assert override == ("COOL", 76.0)
+    assert override == ("COOL", 64.0)
     assert latch["active"] is True
     assert latch["direction"] == "cool"
     assert latch["since"] == T0
@@ -58,7 +59,7 @@ def test_heat_direction_triggers_on_low_breach():
     override, latch = comfort.decide(
         indoor=63.9, high=76.0, low=64.0, sched_mode="heat", latch=None, now=T0,
     )
-    assert override == ("HEAT", 64.0)
+    assert override == ("HEAT", 76.0)
     assert latch["direction"] == "heat"
 
 
@@ -69,8 +70,8 @@ def test_auto_mode_covers_both_directions():
     lo, _ = comfort.decide(
         indoor=60.0, high=76.0, low=64.0, sched_mode="auto", latch=None, now=T0,
     )
-    assert hi == ("COOL", 76.0)
-    assert lo == ("HEAT", 64.0)
+    assert hi == ("COOL", 64.0)
+    assert lo == ("HEAT", 76.0)
 
 
 def test_unknown_mode_never_overrides():
@@ -90,7 +91,7 @@ def test_min_on_time_holds_even_after_room_recovers():
         indoor=70.0, high=76.0, low=64.0, sched_mode="cool",
         latch=latch, now=T0 + timedelta(seconds=300),
     )
-    assert override == ("COOL", 76.0)
+    assert override == ("COOL", 64.0)
     assert new_latch is latch  # unchanged, still engaged
 
 
@@ -98,7 +99,9 @@ def test_releases_only_when_inside_by_release_margin_and_min_on_met():
     """After MIN_ON_SECONDS AND back inside by RELEASE_MARGIN_F → release."""
     latch = {"active": True, "direction": "cool", "since": T0}
     later = T0 + timedelta(seconds=comfort.MIN_ON_SECONDS + 1)
-    # Back inside by exactly the release margin (76 - 1.0 = 75.0).
+    # Back inside the BREACHED edge by exactly the release margin
+    # (76 - 1.0 = 75.0) — release is measured against `high`, not the
+    # far edge the guard was commanding.
     override, new_latch = comfort.decide(
         indoor=75.0, high=76.0, low=64.0, sched_mode="cool",
         latch=latch, now=later,
@@ -117,7 +120,7 @@ def test_does_not_release_at_band_edge_even_after_min_on():
         indoor=75.5, high=76.0, low=64.0, sched_mode="cool",
         latch=latch, now=later,
     )
-    assert override == ("COOL", 76.0)
+    assert override == ("COOL", 64.0)
     assert new_latch is latch
 
 
@@ -128,7 +131,7 @@ def test_still_hot_after_min_on_keeps_conditioning():
         indoor=79.0, high=76.0, low=64.0, sched_mode="cool",
         latch=latch, now=later,
     )
-    assert override == ("COOL", 76.0)
+    assert override == ("COOL", 64.0)
     assert new_latch is latch
 
 
@@ -140,7 +143,7 @@ def test_heat_release_symmetric():
     still_low, l1 = comfort.decide(
         indoor=64.5, high=76.0, low=64.0, sched_mode="heat", latch=latch, now=later,
     )
-    assert still_low == ("HEAT", 64.0)
+    assert still_low == ("HEAT", 76.0)
     released, l2 = comfort.decide(
         indoor=65.0, high=76.0, low=64.0, sched_mode="heat", latch=latch, now=later,
     )
@@ -167,7 +170,7 @@ def test_idempotent_within_same_instant():
     # Enter.
     o1, l1 = _cool_schedule_state(latch=None)
     o2, l2 = _cool_schedule_state(latch=l1)
-    assert o1 == o2 == ("COOL", 76.0)
+    assert o1 == o2 == ("COOL", 64.0)
     assert l2 is l1  # stays engaged, `since` not bumped
 
     # Release.
@@ -188,8 +191,8 @@ def test_idempotent_within_same_instant():
 @pytest.mark.parametrize(
     "indoor,sched_mode,expected,direction",
     [
-        (80.0, "cool", ("COOL", 76.0), "cool"),         # overheat, cool/auto -> COOL
-        (60.0, "heat", ("HEAT", 64.0), "heat"),          # undercool, heat/auto -> HEAT
+        (80.0, "cool", ("COOL", 64.0), "cool"),         # overheat, cool/auto -> COOL at the far (low) edge
+        (60.0, "heat", ("HEAT", 76.0), "heat"),          # undercool, heat/auto -> HEAT at the far (high) edge
         (60.0, "cool", ("OFF", 64.0), "off_overcool"),   # overcool while cooling -> OFF
         (80.0, "heat", ("OFF", 76.0), "off_overheat"),   # overheat while heating -> OFF
     ],
@@ -294,7 +297,7 @@ def test_overshoot_f_widens_trigger_threshold():
         indoor=78.1, high=76.0, low=64.0, sched_mode="cool",
         latch=None, now=T0, overshoot_f=2.0,
     )
-    assert override2 == ("COOL", 76.0)
+    assert override2 == ("COOL", 64.0)
     assert latch2["direction"] == "cool"
 
 
@@ -309,7 +312,7 @@ def test_overshoot_f_widens_low_edge_trigger_too():
         indoor=61.9, high=76.0, low=64.0, sched_mode="heat",
         latch=None, now=T0, overshoot_f=2.0,
     )
-    assert override2 == ("HEAT", 64.0)
+    assert override2 == ("HEAT", 76.0)
 
 
 def test_overshoot_f_does_not_affect_release_threshold():
@@ -323,3 +326,98 @@ def test_overshoot_f_does_not_affect_release_threshold():
     )
     assert override is None
     assert new_latch is None
+
+
+# --- Far band edge (US-CTL-005) ----------------------------------------
+
+def test_high_breach_commands_the_far_low_edge():
+    """A high breach in cool mode commands the LOW edge. Commanding the
+    breached high edge is a no-op on a unit whose own thermostat reads
+    below the room — it is already holding that number."""
+    override, latch = comfort.decide(
+        indoor=80.0, high=76.0, low=64.0, sched_mode="cool", latch=None, now=T0,
+    )
+    assert override == ("COOL", 64.0)
+    assert latch["direction"] == "cool"
+
+
+def test_low_breach_commands_the_far_high_edge():
+    override, latch = comfort.decide(
+        indoor=60.0, high=76.0, low=64.0, sched_mode="heat", latch=None, now=T0,
+    )
+    assert override == ("HEAT", 76.0)
+    assert latch["direction"] == "heat"
+
+
+def test_far_edge_is_returned_while_latched_too():
+    """Every tick of an engaged latch re-commands the far edge, not the
+    breached one — the 5-min watchdog re-drives the unit from here."""
+    latch = {"active": True, "direction": "cool", "since": T0}
+    later = T0 + timedelta(seconds=comfort.MIN_ON_SECONDS + 60)
+    override, new_latch = comfort.decide(
+        indoor=75.5, high=76.0, low=64.0, sched_mode="cool", latch=latch, now=later,
+    )
+    assert override == ("COOL", 64.0)
+    assert new_latch is latch
+
+    heat_latch = {"active": True, "direction": "heat", "since": T0}
+    heat_override, heat_new = comfort.decide(
+        indoor=64.5, high=76.0, low=64.0, sched_mode="heat",
+        latch=heat_latch, now=later,
+    )
+    assert heat_override == ("HEAT", 76.0)
+    assert heat_new is heat_latch
+
+
+def test_missing_far_edge_falls_back_to_the_breached_edge():
+    """A slot that carries only the breached bound still gets an
+    override — at that bound, the pre-US-CTL-005 behaviour."""
+    override, latch = comfort.decide(
+        indoor=80.0, high=76.0, low=None, sched_mode="cool", latch=None, now=T0,
+    )
+    assert override == ("COOL", 76.0)
+    assert latch["direction"] == "cool"
+
+    heat_override, heat_latch = comfort.decide(
+        indoor=60.0, high=None, low=64.0, sched_mode="heat", latch=None, now=T0,
+    )
+    assert heat_override == ("HEAT", 64.0)
+    assert heat_latch["direction"] == "heat"
+
+
+def test_missing_far_edge_falls_back_while_latched():
+    latch = {"active": True, "direction": "cool", "since": T0}
+    override, new_latch = comfort.decide(
+        indoor=80.0, high=76.0, low=None, sched_mode="cool",
+        latch=latch, now=T0 + timedelta(seconds=comfort.MIN_ON_SECONDS + 60),
+    )
+    assert override == ("COOL", 76.0)
+    assert new_latch is latch
+
+
+def test_release_still_needs_inside_by_margin_and_min_on_with_far_edge():
+    """The far-edge setpoint does not change when the guard lets go: the
+    room must be inside the BREACHED edge by RELEASE_MARGIN_F *and*
+    MIN_ON_SECONDS must have elapsed. Three near-misses, then release."""
+    latch = {"active": True, "direction": "cool", "since": T0}
+    early = T0 + timedelta(seconds=comfort.MIN_ON_SECONDS - 1)
+    later = T0 + timedelta(seconds=comfort.MIN_ON_SECONDS + 1)
+
+    # Inside by the margin but min-on not met.
+    o1, l1 = comfort.decide(
+        indoor=75.0, high=76.0, low=64.0, sched_mode="cool", latch=latch, now=early,
+    )
+    assert o1 == ("COOL", 64.0) and l1 is latch
+
+    # Min-on met but only back AT the edge, not inside by the margin.
+    o2, l2 = comfort.decide(
+        indoor=76.0, high=76.0, low=64.0, sched_mode="cool", latch=latch, now=later,
+    )
+    assert o2 == ("COOL", 64.0) and l2 is latch
+
+    # Both conditions met — and note the room is nowhere near the
+    # commanded 64.0°F far edge; the margin is what stops the run.
+    o3, l3 = comfort.decide(
+        indoor=74.9, high=76.0, low=64.0, sched_mode="cool", latch=latch, now=later,
+    )
+    assert o3 is None and l3 is None

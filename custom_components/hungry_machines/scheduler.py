@@ -57,8 +57,8 @@ Closed-loop comfort failsafe: the per-slot apply is open-loop (it trusts
 the optimizer's overnight trajectory). `comfort_watchdog` runs every 5 min
 and, for any HVAC that has actually drifted out of its comfort band —
 including one that is already actively COOLing or HEATing and overshot
-the far edge — commands it back at the band edge with hysteresis — see
-`_comfort_band_override` and the pure state machine in `comfort.py`.
+the far edge — commands it toward the FAR band edge with hysteresis —
+see `_comfort_band_override` and the pure state machine in `comfort.py`.
 """
 from __future__ import annotations
 
@@ -694,10 +694,18 @@ def _comfort_band_override(
         mode outside {cool, heat, auto} breaches with no override — see
         `_log_comfort_silence`, the class of failure that would have
         caught the office incident.
-      * The override setpoint is the BAND EDGE, not the optimizer's
-        slot value — pull the house back into band (or stop actively
-        conditioning past it), then resume the plan at the next slot
-        boundary.
+      * The override setpoint is the FAR BAND EDGE, not the breached
+        one and not the optimizer's slot value: a high breach in
+        cool/auto commands COOL at `low_temps[slot]`, a low breach in
+        heat/auto commands HEAT at `high_temps[slot]`. A unit whose own
+        thermostat reads a different sensor than the room is already
+        parked at the breached edge, so re-commanding that setpoint
+        changes nothing — asking for the far edge is what makes it run.
+        `comfort.RELEASE_MARGIN_F` is what bounds how far it runs: the
+        guard releases once the room is back inside the BREACHED edge by
+        that margin, then the plan resumes at the next slot boundary. A
+        slot with no far edge falls back to the breached edge. OFF
+        overrides issue no setpoint at all.
     """
     now = now or dt_util.utcnow()
     latch_store = _domain_data(hass).setdefault(_COMFORT_LATCH_KEY, {})
@@ -788,18 +796,23 @@ def _comfort_band_override(
     was_active = bool(prev_latch and prev_latch.get("active"))
     now_active = bool(new_latch and new_latch.get("active"))
     if now_active and not was_active:
-        edge = override[1] if override else 0.0
+        commanded_edge = override[1] if override else 0.0
         direction = new_latch.get("direction") if new_latch else None
         edge_label = "high" if direction in ("cool", "off_overheat") else "low"
+        # The breached edge and the commanded one differ now that the
+        # guard commands the FAR edge — log both, or the line lies.
+        breached_edge = high if edge_label == "high" else low
+        if breached_edge is None:
+            breached_edge = commanded_edge
         _LOGGER.warning(
             "Hungry Machines comfort override slot=%d: %s indoor %.1f°F "
             "breached the %s band %.1f°F (schedule commanded %s) — "
             "commanding %s at %.1f°F (holds ≥%ds, releases at %.1f°F "
-            "inside)",
+            "inside the breached edge)",
             slot, entity_id, indoor,
-            edge_label, edge,
+            edge_label, breached_edge,
             mode_canonical or "no explicit mode",
-            override[0] if override else "?", edge,
+            override[0] if override else "?", commanded_edge,
             comfort.MIN_ON_SECONDS, comfort.RELEASE_MARGIN_F,
         )
         if aux_source_used:

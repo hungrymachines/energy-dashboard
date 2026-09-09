@@ -24,6 +24,18 @@ Hysteresis (why three thresholds, not one):
     even if the sensor briefly reads back inside. Belt-and-suspenders
     against compressor short-cycling on sensor noise.
 
+Which edge is commanded (why the FAR one): a high breach in cool/auto
+commands COOL at ``low``, a low breach in heat/auto commands HEAT at
+``high``. Commanding the BREACHED edge is a no-op on the units that
+need the guard most — a window unit whose internal thermostat reads a
+few degrees below the room is already parked at that setpoint, so
+re-sending it changes nothing and the room stays over the ceiling.
+Asking for the far edge is what makes the unit actually run. It does
+not run all the way there: ``RELEASE_MARGIN_F``, not the setpoint,
+bounds the excursion, since the guard releases as soon as the room is
+back inside the BREACHED edge by that margin. A slot that carries no
+far edge falls back to the breached edge (the old behaviour).
+
 Eligibility (which slots this runs against) is decided entirely by the
 caller -- every slot is a candidate, including one that already commands
 COOL/HEAT, since active conditioning can itself overshoot past the far
@@ -58,9 +70,10 @@ MIN_ON_SECONDS = 600  # 10 minutes
 
 # An override decision: (canonical_mode, edge) or None to apply the
 # schedule as-is. canonical_mode is "COOL" / "HEAT" / "OFF". For COOL/HEAT,
-# edge is the setpoint to command — the unit pulls the house just back to
-# the limit, then the schedule resumes. For OFF, edge is the crossed band
-# edge for logging/context only; the caller issues no setpoint.
+# edge is the setpoint to command — the FAR band edge, so a unit reading a
+# different sensor than the room still acts; the release margin, not the
+# setpoint, is what stops it. For OFF, edge is the crossed band edge for
+# logging/context only; the caller issues no setpoint.
 Override = Optional[Tuple[str, float]]
 
 # The per-entity latch persisted by the caller between calls. Shape:
@@ -89,10 +102,12 @@ def decide(
     ``sched_mode`` — the day's mode: ``cool`` / ``heat`` / ``auto`` gates
                      which override kind may fire; anything else → no
                      override. Four kinds, gated by mode and which edge is
-                     breached: overheat+cool/auto → COOL at ``high``;
-                     undercool+heat/auto → HEAT at ``low``; overcool+cool
-                     (actively cooling past ``low``) → OFF; overheat+heat
-                     (actively heating past ``high``) → OFF.
+                     breached: overheat+cool/auto → COOL at the FAR edge
+                     ``low`` (``high`` when the slot has no ``low``);
+                     undercool+heat/auto → HEAT at ``high`` (``low`` when
+                     absent); overcool+cool (actively cooling past ``low``)
+                     → OFF; overheat+heat (actively heating past ``high``)
+                     → OFF.
     ``latch``      — the caller's persisted latch (see ``Latch``), or None.
     ``now``        — current time; drives the minimum-on-time clock.
     ``overshoot_f`` — widens both trigger thresholds by this many degrees
@@ -116,14 +131,16 @@ def decide(
             return None, None
         if indoor <= high - RELEASE_MARGIN_F and held_long_enough:
             return None, None
-        return ("COOL", high), latch
+        # Release still measures against `high` (the breached edge); only
+        # the commanded setpoint is the far edge.
+        return ("COOL", low if low is not None else high), latch
 
     if active and direction == "heat":
         if low is None:
             return None, None
         if indoor >= low + RELEASE_MARGIN_F and held_long_enough:
             return None, None
-        return ("HEAT", low), latch
+        return ("HEAT", high if high is not None else low), latch
 
     if active and direction == "off_overcool":
         if low is None:
@@ -145,10 +162,12 @@ def decide(
     low_breach = low is not None and indoor < low - TRIGGER_MARGIN_F - overshoot_f
 
     if high_breach and sched_mode in ("cool", "auto"):
-        return ("COOL", high), {"active": True, "direction": "cool", "since": now}
+        far = low if low is not None else high
+        return ("COOL", far), {"active": True, "direction": "cool", "since": now}
 
     if low_breach and sched_mode in ("heat", "auto"):
-        return ("HEAT", low), {"active": True, "direction": "heat", "since": now}
+        far = high if high is not None else low
+        return ("HEAT", far), {"active": True, "direction": "heat", "since": now}
 
     if low_breach and sched_mode == "cool":
         return ("OFF", low), {"active": True, "direction": "off_overcool", "since": now}

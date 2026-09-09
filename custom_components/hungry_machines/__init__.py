@@ -18,8 +18,9 @@ v2.0+: drives a closed control loop across every registered appliance.
   `scheduler.comfort_watchdog` closes the loop the open-loop schedule
   can't: when a scheduled-OFF HVAC has drifted out of its comfort band
   (thermal model underestimated the heat/cool rate), it commands the unit
-  back on at the band edge, with hysteresis to avoid short-cycling the
-  compressor.
+  back on at the FAR band edge, with hysteresis to avoid short-cycling
+  the compressor (the release margin, not the setpoint, is what stops
+  the run).
 * **Schedule freshness poll** (rides both cadences above, no extra
   timer) — `scheduler.check_schedule_freshness` runs right before each
   comfort-watchdog tick and each slot apply, making one cheap `GET
@@ -224,7 +225,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # slot boundaries (immature thermal model, hotter-than-forecast day).
     # This checks the live indoor temperature every 5 min and, for a
     # scheduled-OFF HVAC that has left its comfort band, commands the unit
-    # back on at the band edge — with hysteresis so it doesn't short-cycle
+    # back on at the far band edge — with hysteresis so it doesn't short-cycle
     # (see scheduler.comfort_watchdog / comfort.decide). Offset to :45s so
     # it never races the 5-min readings capture.
     #
