@@ -27,7 +27,7 @@ All three share one sign-in. Sign in once via the panel and the cards activate e
 ## How it works
 
 1. You register your appliances and set your preferences in the panel inside Home Assistant. Each HVAC is mapped to its own climate entity (and optional indoor-temperature, humidity, and power sensors); EV chargers, batteries, and water heaters are mapped to their own entities. Solar has no control entity — nothing to switch — but you can point it at a production sensor, and the forecast then learns from your array's real output instead of its nameplate rating.
-2. Throughout the day, your Home Assistant captures readings from each appliance (HVAC: indoor temperature, HVAC state and mode, fan, target setpoint, humidity, power) and pushes them to the Hungry Machines Optimization API. The optimizer uses this stream to fit a **per-HVAC thermal model** — without it, the backend falls back to default rates and the optimization is significantly less exact. On the first warm day after you add an HVAC, the backend runs a short one-time **calibration window** (a forced morning cooling pattern) so it can learn how that unit responds; the panel shows a banner while it's running, with a **Skip** option.
+2. Throughout the day, your Home Assistant captures readings from each appliance (HVAC: indoor temperature, HVAC state and mode, fan, target setpoint, humidity, power) and pushes them to the Hungry Machines Optimization API. If you mapped an indoor-temperature sensor to an HVAC, that sensor is the temperature Hungry Machines models, optimizes and holds inside your band; without one it uses the thermostat's own reading. The optimizer uses this stream to fit a **per-HVAC thermal model** — without it, the backend falls back to default rates and the optimization is significantly less exact. On the first warm day after you add an HVAC, the backend runs a short one-time **calibration window** (a forced morning cooling pattern) so it can learn how that unit responds; the panel shows a banner while it's running, with a **Skip** option.
 3. Each night, Hungry Machines resolves a 24-hour weather forecast and your rates, then runs an optimization per appliance that picks operating intervals to minimize cost while staying inside your comfort and charge constraints.
 4. Your Home Assistant pulls the resulting schedule and, on every 30-minute boundary, applies it to each appliance. For HVAC that means setpoint, mode, and fan; for EV/battery/water heater it switches the device on or off. The panel and cards in this package show what's running, what's coming next, and how much you save.
 
@@ -37,7 +37,7 @@ The optimization itself (per-HVAC thermal models, HVAC scheduling, EV/battery lo
 
 - Home Assistant with [HACS](https://hacs.xyz/docs/setup/download) installed.
 - A Hungry Machines account — sign up at [hungrymachines.io](https://hungrymachines.io).
-- For each HVAC you want optimized, a `climate.*` entity in Home Assistant. A power sensor, a dedicated indoor-temperature sensor, and a humidity sensor are optional but improve the model (you map all of these per-appliance when you add it in the panel). A `weather.*` entity is optional too; pick it in the panel's **Settings** tab to feed the optimizer your local forecast (the backend falls back to generic data if you don't).
+- For each HVAC you want optimized, a `climate.*` entity in Home Assistant. A power sensor, a dedicated indoor-temperature sensor, and a humidity sensor are optional but improve the model (you map all of these per-appliance when you add it in the panel). A mapped indoor-temperature sensor becomes the room Hungry Machines optimizes for, so put it where you actually sit. A `weather.*` entity is optional too; pick it in the panel's **Settings** tab to feed the optimizer your local forecast (the backend falls back to generic data if you don't).
 
 ---
 
@@ -69,7 +69,7 @@ A **Hungry Machines** entry now appears in your sidebar, and the two Lovelace ca
 Click the **Hungry Machines** entry in the sidebar and enter the same hungrymachines.io email and password to load your dashboard. The first time in, the dashboard is empty — use **Add appliance** to register each device you want optimized:
 
 - Pick a type (HVAC, EV charger, home battery, water heater, or solar).
-- For HVAC, choose the `climate.*` entity it controls and, optionally, dedicated indoor-temperature / humidity / power sensors. Add a card per HVAC if you have more than one — each gets its own thermal model and schedule.
+- For HVAC, choose the `climate.*` entity it controls and, optionally, dedicated indoor-temperature / humidity / power sensors. The indoor-temperature sensor is the one Hungry Machines models, optimizes and holds inside your band — leave it empty to use the thermostat's own reading. Add a card per HVAC if you have more than one — each gets its own thermal model and schedule.
 - For EV charger / battery / water heater, choose the switch and any state-of-charge or tank-temperature sensor.
 - For solar, enter your system size, tilt, and azimuth, and optionally pick a **production sensor** — a `sensor.*` reporting your inverter's or plug's instantaneous output in W or kW (not an energy `kWh` sensor). Solar has no switch to control; the sensor is what lets Hungry Machines learn your array's real output and shading instead of estimating from the nameplate rating.
 

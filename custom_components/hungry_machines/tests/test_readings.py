@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from hungry_machines import readings
+from hungry_machines import readings, scheduler
 from hungry_machines.const import DOMAIN
 
 
@@ -1127,10 +1127,11 @@ async def test_hvac_fallback_sensor_with_unparseable_state_skipped() -> None:
 
 
 @pytest.mark.asyncio
-async def test_hvac_prefers_climate_current_temperature_over_fallback() -> None:
-    """When the climate entity DOES populate current_temperature, the
-    fallback sensor is ignored — the climate entity is the
-    authoritative source whenever it has a value."""
+async def test_hvac_configured_sensor_wins_over_climate_current_temperature() -> None:
+    """US-CTL-004: the configured room sensor is AUTHORITATIVE. Even
+    when the climate entity populates current_temperature, the sensor
+    the user wired in is the temperature we model, optimize and hold —
+    and the reading says so with indoor_source='sensor'."""
     appliance = {
         "id": "a-1",
         "appliance_type": "hvac",
@@ -1139,9 +1140,9 @@ async def test_hvac_prefers_climate_current_temperature_over_fallback() -> None:
             "indoor_temp_entity_id": "sensor.living_room_temp",
         },
     }
-    # Climate has a real value; sensor has a different value.
+    # Both sources have a real value; they disagree on purpose.
     climate_state = _state("cool", {"current_temperature": 71.5, "temperature": 72.0})
-    sensor_state = _state("99.9", {})
+    sensor_state = _state("77.4", {})
     hass = _hass({
         "climate.living_room": climate_state,
         "sensor.living_room_temp": sensor_state,
@@ -1153,7 +1154,116 @@ async def test_hvac_prefers_climate_current_temperature_over_fallback() -> None:
         n = await readings.capture_readings(hass, entry)
     assert n == 1
     posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
-    assert posted["indoor_temp"] == 71.5  # NOT 99.9
+    assert posted["indoor_temp"] == 77.4  # NOT the climate entity's 71.5
+    assert posted["indoor_source"] == "sensor"
+
+
+@pytest.mark.asyncio
+async def test_hvac_uses_climate_entity_and_tags_entity_when_no_sensor() -> None:
+    """No room sensor configured → the climate entity's own reading is
+    used and tagged indoor_source='entity'."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    climate_state = _state("cool", {"current_temperature": 71.5, "temperature": 72.0})
+    hass = _hass({"climate.living_room": climate_state})
+    entry = _entry()
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        n = await readings.capture_readings(hass, entry)
+    assert n == 1
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["indoor_temp"] == 71.5
+    assert posted["indoor_source"] == "entity"
+
+
+@pytest.mark.asyncio
+async def test_hvac_falls_back_to_climate_entity_when_sensor_unusable() -> None:
+    """A configured sensor that can't produce a number (unavailable /
+    'unknown') does NOT block the reading — the climate entity's own
+    value is used and tagged 'entity'."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {
+            "entity_id": "climate.living_room",
+            "indoor_temp_entity_id": "sensor.living_room_temp",
+        },
+    }
+    climate_state = _state("cool", {"current_temperature": 71.5})
+    sensor_state = _state("unavailable", {})
+    hass = _hass({
+        "climate.living_room": climate_state,
+        "sensor.living_room_temp": sensor_state,
+    })
+    entry = _entry()
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        n = await readings.capture_readings(hass, entry)
+    assert n == 1
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["indoor_temp"] == 71.5
+    assert posted["indoor_source"] == "entity"
+
+
+@pytest.mark.asyncio
+async def test_hvac_reading_flags_override_active_from_comfort_latch() -> None:
+    """US-CTL-004: readings carry override_active so the backend can
+    tell a slot the plan drove from one the local comfort guard took
+    over. True while the latch for this climate entity is engaged."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.test"},
+    }
+    state = _state("cool", {"current_temperature": 80.0})
+    hass = _hass({"climate.test": state})
+    hass.data[DOMAIN] = {
+        scheduler._COMFORT_LATCH_KEY: {
+            "climate.test": {"active": True, "direction": "cool"},
+        }
+    }
+    entry = _entry()
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["override_active"] is True
+
+
+@pytest.mark.asyncio
+async def test_hvac_reading_override_active_false_without_latch() -> None:
+    """No latch at all, and a released latch, both read as False."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.test"},
+    }
+    state = _state("cool", {"current_temperature": 72.0})
+
+    hass = _hass({"climate.test": state})
+    entry = _entry()
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+    assert hass.data[DOMAIN]["readings_buffer"]["home"][0]["override_active"] is False
+
+    hass2 = _hass({"climate.test": state})
+    hass2.data[DOMAIN] = {
+        scheduler._COMFORT_LATCH_KEY: {"climate.test": {"active": False}}
+    }
+    entry2 = _entry()
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass2, entry2)
+    assert hass2.data[DOMAIN]["readings_buffer"]["home"][0]["override_active"] is False
 
 
 @pytest.mark.asyncio

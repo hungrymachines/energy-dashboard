@@ -48,7 +48,7 @@ const AUX_FIELDS: Partial<Record<ApplianceType, { name: string; label: string; h
   hvac: {
     name: 'indoor_temp_entity_id',
     label: 'Indoor temperature sensor (optional)',
-    help: 'sensor.* exposing indoor temp in °F — used when the climate entity reports current_temperature: null (Tuya wrappers, IR-blaster controllers, etc.)',
+    help: "When set, this is the temperature Hungry Machines models, optimizes and holds inside your band. Leave empty to use the thermostat's own reading.",
     domain: 'sensor',
   },
   ev_charger: {

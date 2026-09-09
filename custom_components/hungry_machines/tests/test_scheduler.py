@@ -2221,6 +2221,68 @@ async def test_comfort_override_aux_engage_logs_which_source_drove_it(caplog) ->
 
 
 @pytest.mark.asyncio
+async def test_comfort_guard_reads_aux_sensor_before_climate_entity() -> None:
+    """US-CTL-004: the configured room sensor is authoritative, so the
+    guard judges the band against IT even when the climate entity has a
+    perfectly usable current_temperature. Thermostat says 70°F (inside a
+    76°F high band, no override); the room sensor says 79.5°F, and the
+    guard must act on the room."""
+    climate_state = _climate_state("off", supports_range=False,
+                                   hvac_modes=["off", "cool"])
+    climate_state.attributes["current_temperature"] = 70.0
+    aux_state = MagicMock()
+    aux_state.state = "79.5"
+    hass = _multi_hvac_hass({
+        "climate.living_room": climate_state,
+        "sensor.aux_temp": aux_state,
+    })
+    entry = _entry()
+    cache = _override_cache(indoor_temp_entity_id="sensor.aux_temp")
+    cache["schedule"]["hvac-1"]["schedule"]["high_temps"] = [76.0] * 48
+    hass.data[DOMAIN] = cache
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.apply_current_slot(hass, entry)
+
+    calls = hass.services.async_call.await_args_list
+    mode_calls = [c for c in calls if c.args[1] == "set_hvac_mode"]
+    temp_calls = [c for c in calls if c.args[1] == "set_temperature"]
+    assert mode_calls and mode_calls[0].args[2]["hvac_mode"] == "cool"
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 76.0
+    latch = hass.data[DOMAIN]["comfort_latch"]["climate.living_room"]
+    assert latch["active"] is True
+
+
+@pytest.mark.asyncio
+async def test_comfort_guard_uses_climate_entity_when_aux_unusable() -> None:
+    """A configured room sensor that can't produce a number falls
+    through to the climate entity's own reading — the guard still
+    protects the house rather than standing down."""
+    climate_state = _climate_state("off", supports_range=False,
+                                   hvac_modes=["off", "cool"])
+    climate_state.attributes["current_temperature"] = 79.5
+    aux_state = MagicMock()
+    aux_state.state = "unknown"
+    hass = _multi_hvac_hass({
+        "climate.living_room": climate_state,
+        "sensor.aux_temp": aux_state,
+    })
+    entry = _entry()
+    cache = _override_cache(indoor_temp_entity_id="sensor.aux_temp")
+    cache["schedule"]["hvac-1"]["schedule"]["high_temps"] = [76.0] * 48
+    hass.data[DOMAIN] = cache
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.apply_current_slot(hass, entry)
+
+    temp_calls = [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_temperature"
+    ]
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 76.0
+
+
+@pytest.mark.asyncio
 async def test_fetch_caches_indoor_temp_entity_id_when_configured() -> None:
     """US-CBE-003 added indoor_temp_entity_id to the /schedules entities
     projection; the schedule cache must carry it through for the aux

@@ -34,7 +34,7 @@ from homeassistant.core import HomeAssistant
 
 from . import api
 from .const import DOMAIN
-from .scheduler import get_last_commanded
+from .scheduler import _COMFORT_LATCH_KEY, get_last_commanded
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +347,23 @@ def _read_indoor_humidity(
     return fallback_value
 
 
+def _override_active(hass: HomeAssistant, entity_id: str) -> bool:
+    """True while the local comfort guard is holding an override on
+    `entity_id`.
+
+    The guard's latch lives in `hass.data[DOMAIN]['comfort_latch']`
+    (`scheduler._COMFORT_LATCH_KEY`), keyed by climate entity id, and is
+    "engaged" when that entry carries `active: True`. Readings carry the
+    flag so the backend can tell a slot the plan drove from a slot the
+    failsafe took over.
+    """
+    latch_store = (hass.data.get(DOMAIN) or {}).get(_COMFORT_LATCH_KEY)
+    if not isinstance(latch_store, dict):
+        return False
+    latch = latch_store.get(entity_id)
+    return bool(isinstance(latch, dict) and latch.get("active"))
+
+
 def _build_hvac_home_reading(
     hass: HomeAssistant,
     state: Any,
@@ -357,15 +374,23 @@ def _build_hvac_home_reading(
 ) -> dict | None:
     """Build the /api/v1/readings payload from the HVAC climate entity.
 
-    Indoor temperature resolution:
-      1. The climate entity's `current_temperature` attribute (the
-         universal HA convention).
-      2. Fallback: `indoor_temp_entity_id` from the appliance config.
-         Used when the climate entity declares the attribute but
-         reports it as None — common with Tuya/Smart Life thermostat
-         wrappers, IR-blaster AC controllers, and Generic Thermostat
-         helpers, which don't have an embedded thermistor and expect
-         the user to wire in a separate sensor.
+    Indoor temperature resolution (US-CTL-004):
+      1. `indoor_temp_entity_id` from the appliance config. A user who
+         wired in a room sensor did so because it is the temperature
+         they care about, so it is authoritative: it is the number the
+         backend fits its thermal model to, optimizes against, and the
+         comfort guard holds inside the band.
+      2. The climate entity's `current_temperature` attribute (the
+         universal HA convention) — used when no room sensor is
+         configured, or when the configured one is missing/non-numeric.
+         Thermostats that report it as None (Tuya/Smart Life wrappers,
+         IR-blaster AC controllers, Generic Thermostat helpers) have no
+         embedded thermistor and are exactly the units a room sensor is
+         wired in for.
+
+    `reading['indoor_source']` records which of the two produced the
+    value ('sensor' or 'entity') so the backend can tell a modelled
+    room temperature from a thermostat's own reading.
 
     Power resolution:
       * If `power_sensor_entity_id` is set on the appliance config,
@@ -379,11 +404,12 @@ def _build_hvac_home_reading(
     Returns None (no reading appended) when neither indoor source
     produces a usable value, with a single INFO log explaining why.
     """
-    indoor_temp = state.attributes.get("current_temperature")
-    if indoor_temp is None and indoor_temp_entity_id:
-        fallback_state = hass.states.get(indoor_temp_entity_id) if hass.states else None
-        if fallback_state is not None:
-            raw = getattr(fallback_state, "state", None)
+    indoor_temp: Any = None
+    indoor_source: str | None = None
+    if indoor_temp_entity_id:
+        sensor_state = hass.states.get(indoor_temp_entity_id) if hass.states else None
+        if sensor_state is not None:
+            raw = getattr(sensor_state, "state", None)
             indoor_temp = _coerce_float(raw)
             if indoor_temp is None:
                 _record_aux_status(
@@ -399,12 +425,17 @@ def _build_hvac_home_reading(
                     purpose="indoor temperature",
                     last_value=indoor_temp,
                 )
+                indoor_source = "sensor"
         else:
             _record_aux_status(
                 hass, indoor_temp_entity_id,
                 status="entity_missing",
                 purpose="indoor temperature",
             )
+    if indoor_temp is None:
+        indoor_temp = state.attributes.get("current_temperature")
+        if indoor_temp is not None:
+            indoor_source = "entity"
     if indoor_temp is None:
         _LOGGER.info(
             "Hungry Machines: HVAC entity '%s' reports current_temperature=None "
@@ -421,6 +452,14 @@ def _build_hvac_home_reading(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "indoor_temp": indoor_temp,
         "hvac_state": _resolve_hvac_state(state),
+        # Which source the temperature came from — the backend fitter
+        # treats a room sensor and a thermostat's own reading as
+        # different measurements of different places (US-CTL-003).
+        "indoor_source": indoor_source,
+        # Whether the local comfort guard is currently overriding the
+        # scheduled slot for this entity. The backend excludes guarded
+        # intervals from "the plan ran as written" accounting.
+        "override_active": _override_active(hass, state.entity_id),
     }
     # Tag each reading with its HVAC appliance so the backend's
     # per-appliance sensor stream (migration 025 / US-MHVAC-006) routes

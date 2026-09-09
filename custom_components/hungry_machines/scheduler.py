@@ -722,28 +722,33 @@ def _comfort_band_override(
 
     state = hass.states.get(entity_id) if hass.states else None
     attrs = getattr(state, "attributes", None) or {} if state else {}
-    try:
-        indoor = float(attrs.get("current_temperature"))
-    except (TypeError, ValueError):
-        indoor = None
 
-    aux_entity_id: str | None = None
+    # US-CTL-004: the configured room sensor is AUTHORITATIVE, not a
+    # fallback. It is the temperature the backend fits, optimizes and
+    # publishes a band around, so the guard has to judge that same
+    # number — a guard watching the thermostat's own reading while the
+    # plan was built from the room sensor holds a different room.
+    indoor: float | None = None
     aux_source_used = False
+    aux_entity_id = _aux_indoor_temp_entity_id(hass, entity_id)
+    if aux_entity_id:
+        aux_state = hass.states.get(aux_entity_id) if hass.states else None
+        raw = getattr(aux_state, "state", None) if aux_state else None
+        # Local import: readings.py imports get_last_commanded from
+        # this module at module load time, so a top-level import
+        # here would be circular.
+        from .readings import _coerce_float
+        indoor = _coerce_float(raw)
+        aux_source_used = indoor is not None
     if indoor is None:
-        # The climate entity can't self-report (Tuya/IR-blaster/Generic
-        # Thermostat wrappers, or a real read failure) — fall back to
-        # the appliance's configured indoor sensor, same coercion
-        # `readings.py` uses for the exact same class of unit.
-        aux_entity_id = _aux_indoor_temp_entity_id(hass, entity_id)
-        if aux_entity_id:
-            aux_state = hass.states.get(aux_entity_id) if hass.states else None
-            raw = getattr(aux_state, "state", None) if aux_state else None
-            # Local import: readings.py imports get_last_commanded from
-            # this module at module load time, so a top-level import
-            # here would be circular.
-            from .readings import _coerce_float
-            indoor = _coerce_float(raw)
-            aux_source_used = indoor is not None
+        # No room sensor configured, or it's missing/non-numeric — the
+        # climate entity's own reading is the second source. Tuya/
+        # IR-blaster/Generic Thermostat wrappers report None here, which
+        # is the case the room sensor exists to cover.
+        try:
+            indoor = float(attrs.get("current_temperature"))
+        except (TypeError, ValueError):
+            indoor = None
 
     if indoor is None:
         # Can't read the room from either source — release conservatively
@@ -752,9 +757,9 @@ def _comfort_band_override(
         # longer silent.
         _persist(None)
         reason = (
-            f"slot={slot} has no usable indoor temperature (climate "
-            "entity's current_temperature is missing/invalid, aux sensor "
-            f"{aux_entity_id} is also unavailable/non-numeric)"
+            f"slot={slot} has no usable indoor temperature (aux sensor "
+            f"{aux_entity_id} is unavailable/non-numeric and the climate "
+            "entity's current_temperature is missing/invalid too)"
             if aux_entity_id
             else
             f"slot={slot} has no usable indoor temperature (climate "
@@ -800,8 +805,8 @@ def _comfort_band_override(
         if aux_source_used:
             _LOGGER.warning(
                 "Hungry Machines comfort override slot=%d: %s indoor "
-                "reading came from the aux sensor %s — the climate "
-                "entity's current_temperature was unavailable",
+                "reading came from the aux sensor %s — the configured "
+                "room sensor is the authoritative indoor source",
                 slot, entity_id, aux_entity_id,
             )
         _log_comfort_silence(hass, entity_id, None)
