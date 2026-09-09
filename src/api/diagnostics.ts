@@ -89,3 +89,22 @@ export interface SensorHealthResponse {
 export function getSensorHealth(): Promise<SensorHealthResponse> {
   return apiFetch<SensorHealthResponse>('/api/v1/integration/sensors');
 }
+
+/**
+ * `GET /health` — the API's own liveness route. `api_build` is the
+ * short git SHA the running container was built from (US-CTL-002);
+ * it's absent on older deployments and on a container built without
+ * the `API_BUILD` build-arg, which report `'dev'` instead.
+ *
+ * Unauthenticated, but it goes through `apiFetch` like everything
+ * else so it picks up the configured base URL.
+ */
+export interface ApiHealth {
+  status?: string;
+  version?: string;
+  api_build?: string;
+}
+
+export function getApiHealth(): Promise<ApiHealth> {
+  return apiFetch<ApiHealth>('/health');
+}

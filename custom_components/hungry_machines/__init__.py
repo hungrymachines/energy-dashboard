@@ -40,7 +40,6 @@ v2.0+: drives a closed control loop across every registered appliance.
 """
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 
@@ -57,6 +56,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_time_change
 
 from . import readings, weather
+from .version import MANIFEST_VERSION
 from .const import (
     DOMAIN,
     PANEL_ICON,
@@ -76,29 +76,6 @@ from .scheduler import (
 _LOGGER = logging.getLogger(__name__)
 
 _FRONTEND_REGISTERED = "_frontend_registered"
-
-
-def _read_manifest_version() -> str:
-    """Read the integration version from manifest.json.
-
-    Called once at module import time (synchronous, before HA's event
-    loop starts) and cached in MANIFEST_VERSION below. The previous
-    inline call from _ensure_frontend_registered triggered HA's
-    blocking-IO-on-event-loop warning per
-    https://developers.home-assistant.io/docs/asyncio_blocking_operations/
-    """
-    try:
-        with (Path(__file__).parent / "manifest.json").open() as f:
-            return str(json.load(f).get("version") or "0")
-    except (OSError, ValueError):
-        return "0"
-
-
-# Read once at import. HA imports custom_components synchronously during
-# integration loading (before the event loop fully spins up), so doing
-# the file IO here is safe — and avoids the blocking-call warning when
-# we use the value below to build the cache-busting JS URL.
-MANIFEST_VERSION = _read_manifest_version()
 
 
 async def _ensure_frontend_registered(hass: HomeAssistant) -> bool:
