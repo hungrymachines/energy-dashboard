@@ -34,6 +34,8 @@ export interface RatesResponse {
   rates_cents_per_kwh: number[];
   unit: string;
   source: 'custom' | 'zone' | 'dynamic';
+  /** Which seasonal rate table the zone curve came from. Always emitted. */
+  season: string;
   hourly_rates_cents_per_kwh: number[] | null;
   pricing_source: 'zone' | 'custom' | 'dynamic';
   dynamic_zone: string | null;

@@ -188,6 +188,28 @@ One file per endpoint group in `src/api/`:
 
 **Mirror discipline:** the API contract is owned by the backend repo (`hungry-machines-api/API_CONTRACT.md`). These wrappers are the local mirror — when the contract changes, the diff lands server-side first and this repo follows. Do not invent new endpoint shapes here.
 
+**Regenerate the snapshot at every release bump, not only on a known schema
+change.** `openapi.snapshot.json` drives `npm run codegen`, and
+`npm run check:contract` compares each hand-typed wrapper against the generated
+types with `Hand extends Generated`. That assertion can only fail when Generated
+declares a *required* field the hand type lacks — so a snapshot older than the
+field is structurally unable to report it, and the gate stays green on real
+drift. At the 3.7.0 bump the snapshot still described a 21-path API against a
+live 61-path one, and regenerating it turned up six always-emitted fields the
+wrappers had been missing for about three months. The regeneration is the check:
+
+```bash
+PYTHONPATH=../hungry-machines-api python3 -c "
+import json
+from app.main import app
+with open('openapi.snapshot.json', 'w') as f:
+    f.write(json.dumps(app.openapi(), indent=2))
+"
+npm run codegen && npm run check:contract
+```
+
+Commit `openapi.snapshot.json` and `src/api/generated.ts` together.
+
 ---
 
 ## 5. Component Contracts

@@ -38,6 +38,204 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/trigger/weekly": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Trigger Weekly
+         * @description Force the weekly thermal-model refit (all active users).
+         */
+        post: operations["trigger_weekly_admin_trigger_weekly_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/trigger/initial_fit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Trigger Initial Fit
+         * @description Force the daily initial-period fit pass.
+         *
+         *     Targets every user in their first `INITIAL_PERIOD_DAYS` (14) days of
+         *     learning — both no-model users and users whose first fit is recent.
+         *     Skips users who have graduated to the weekly cadence.
+         */
+        post: operations["trigger_initial_fit_admin_trigger_initial_fit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/trigger/dynamic_prefetch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Trigger Dynamic Prefetch
+         * @description Force the day-ahead dynamic-pricing prefetch (US-MRH-001).
+         *
+         *     Warms the ``pjm_day_ahead_prices`` cache for every active dynamic zone
+         *     without waiting for the 01:45 UTC cron. Runs the same provider-dispatch
+         *     job the scheduler fires; returns the counts dict for observability.
+         */
+        post: operations["trigger_dynamic_prefetch_admin_trigger_dynamic_prefetch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/trigger/comed_settled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Trigger Comed Settled
+         * @description Force the daily ComEd settled-price ingest (US-RTG-002).
+         *
+         *     Fetches ComEd's settled hourly feed for yesterday + today and caches
+         *     it under ``location='COMED_RT'`` without waiting for the 06:15 UTC
+         *     cron. No-ops (zero HTTP) when no user is dynamic-pricing on comed.
+         */
+        post: operations["trigger_comed_settled_admin_trigger_comed_settled_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/trigger/urdb_import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Trigger Urdb Import
+         * @description Run a scoped NREL URDB import inline (US-VRE-012).
+         *
+         *     Fetches the state/utility's approved residential tariffs, translates
+         *     them into ``tariff_rulesets`` rows (``source='urdb'``,
+         *     ``verified=false``), and upserts keyed
+         *     ``(source, external_id, effective_from)``. Verified rows are never
+         *     overwritten. An unscoped call is rejected — importing the entire
+         *     URDB is never one misclick away.
+         */
+        post: operations["trigger_urdb_import_admin_trigger_urdb_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/tariffs/{ruleset_id}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Toggle Tariff Verified
+         * @description Toggle a tariff ruleset's ``verified`` flag (US-VRE-012).
+         *
+         *     Flipping to verified removes the community-sourced disclaimer from
+         *     ``GET /api/v1/rates/tariffs`` and makes the row immutable to URDB
+         *     re-imports; flipping back restores the disclaimer (and mutability).
+         */
+        patch: operations["toggle_tariff_verified_admin_tariffs__ruleset_id__verify_patch"];
+        trace?: never;
+    };
+    "/admin/trigger/fit/{target_user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Trigger Fit For User
+         * @description Force a thermal-model fit for one specific user. Used to bootstrap
+         *     or refresh a single user's model out-of-band (e.g. after fixing bad
+         *     data or onboarding a pilot user).
+         */
+        post: operations["trigger_fit_for_user_admin_trigger_fit__target_user_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/trigger/fleet_metrics_backfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Trigger Fleet Metrics Backfill
+         * @description Replay the fleet-metrics rollup over a historical date window (US-MET-010).
+         *
+         *     For every day in `[since, until]` inclusive, recomputes
+         *     `appliance_metrics_daily` / `user_metrics_daily` / `fleet_metrics_daily`
+         *     (including the customer-facing peaks/flexibility columns from migration 053)
+         *     and materializes the `cohort_stats_daily` distributions. Historical price
+         *     curves come from the existing `get_user_rates(user_id, target_date)` path, so
+         *     a past day reconstructs against the same cached day-ahead rows and tariff
+         *     rulesets it saw at the time — nothing in this system is purged.
+         *
+         *     Idempotent per `(id, date)` and per cohort key: the metric and cohort upserts
+         *     overwrite on their UNIQUE keys, so backfilling a range that overlaps existing
+         *     rows never duplicates or double-counts. Runs inline (may take a while over a
+         *     long window). Returns the per-day summary list.
+         */
+        post: operations["trigger_fleet_metrics_backfill_admin_trigger_fleet_metrics_backfill_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/signup": {
         parameters: {
             query?: never;
@@ -128,7 +326,17 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Post Readings */
+        /**
+         * Post Readings
+         * @description Push a batch of sensor readings.
+         *
+         *     Accepts EITHER a user JWT (the HACS client) OR a device token (a fleet
+         *     satellite, US-SAT-06). For a device the owning `user_id` comes from the
+         *     device and every reading's `appliance_id` is FORCED to the device's bound
+         *     appliance — a satellite drives exactly one HVAC and must not be able to
+         *     write another unit's stream; a mismatching client-supplied `appliance_id`
+         *     is rejected with 400 rather than silently overwritten.
+         */
         post: operations["post_readings_api_v1_readings_post"];
         delete?: never;
         options?: never;
@@ -182,8 +390,186 @@ export interface paths {
          * Get All Schedules
          * @description Unified endpoint: returns all appliance schedules for the
          *     authenticated user. The integration polls this once per day.
+         *
+         *     The response includes an `integration_health` block so the panel
+         *     can render a banner when the HACS push pipeline goes stale or the
+         *     thermostat sensor freezes — same probe that powers
+         *     `GET /api/v1/integration/health` (which exists for clients that
+         *     only need the health check, e.g. a dashboard ping).
          */
         get: operations["get_all_schedules_api_v1_schedules_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/schedules/updated-at": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Schedules Updated At
+         * @description Cheap freshness poll: the latest `created_at` across the user's
+         *     `appliance_schedules` rows for today, without downloading any
+         *     schedule bodies. Lets a client learn a re-optimization landed (e.g.
+         *     a spike-guard re-plan) without pulling the full `/schedules` payload
+         *     on every check.
+         *
+         *     `appliance_schedules` is append-only, so the max `created_at` for
+         *     today IS the correct freshness token — a later write always means a
+         *     newer optimization, never a mutation of an existing row.
+         */
+        get: operations["get_schedules_updated_at_api_v1_schedules_updated_at_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integration/sensors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Integration Sensor Health
+         * @description Per-sensor health for every configured aux entity on each of
+         *     the user's HVAC appliances.
+         *
+         *     Surfaces silently-missing sensor configurations (e.g. the user
+         *     typo'd the power_sensor_entity_id) by checking what fraction of
+         *     recent readings actually populate the corresponding column.
+         *
+         *     Returns a list of dicts — each entry describes one (appliance,
+         *     sensor) pair with a verdict ('healthy' | 'intermittent' |
+         *     'missing_or_broken' | 'no_data') and a human-readable message.
+         *     Empty list when the user has no aux sensors configured.
+         */
+        get: operations["get_integration_sensor_health_api_v1_integration_sensors_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integration/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Integration Health
+         * @description Standalone integration-health probe.
+         *
+         *     Same payload as the `integration_health` block on `/schedules` —
+         *     surfaced separately so the panel / dashboard can poll it without
+         *     pulling the full schedule payload. Useful for a "Connection: OK /
+         *     Stale / Frozen" badge that refreshes more often than the schedule.
+         *
+         *     Status values:
+         *       * `healthy`       — recent readings present, indoor temp varying.
+         *       * `stale_data`    — last reading > 30 minutes old.
+         *       * `frozen_sensor` — readings arriving but indoor_temp variance
+         *                           collapsed (e.g. the May-27 pilot freeze).
+         *       * `no_data`       — zero readings in the last 6 hours.
+         *
+         *     Response carries the user-wide verdict at the top level
+         *     (back-compat with single-HVAC clients) plus an `appliances` list
+         *     keyed by appliance_id with the per-HVAC verdict (US-MHVAC-013).
+         *     Non-HVAC appliances are omitted from the breakdown — only HVAC
+         *     appliances feed the indoor_temp / hvac_state stream the probe
+         *     classifies on.
+         */
+        get: operations["get_integration_health_api_v1_integration_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integration/health/divergence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Integration Divergence
+         * @description Three-signal divergence report over the last 24 hours.
+         *
+         *     Surfaces how often each of the three signal sources (commanded,
+         *     power, entity-reported) was available and how often pairs agreed.
+         *     Used by the panel diagnostics view to render the
+         *     "Thermostat reports unreliable state" banner without making the
+         *     user squint at raw readings.
+         *
+         *     Verdict values:
+         *       * `healthy`                       — all three signals agree
+         *       * `entity_unreliable`             — entity lies; commanded +
+         *                                           power are still trustworthy
+         *       * `thermostat_ignoring_commands`  — AC physically not obeying
+         *       * `commanded_missing`             — pre-Phase-2 HACS client
+         *       * `no_data` / `unknown`           — no readings / DB error
+         */
+        get: operations["get_integration_divergence_api_v1_integration_health_divergence_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/schedules/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Schedule History
+         * @description Return EVERY stored optimization for each appliance/date in the window.
+         *
+         *     `appliance_schedules` is append-only so each nightly compute survives
+         *     later writes. This endpoint exposes that history so the panel /
+         *     admins can compare what the optimizer chose night-over-night for the
+         *     same target day.
+         *
+         *     Window is capped at `_HISTORY_MAX_DAYS` (90); requesting more raises
+         *     400. Output shape:
+         *     ```
+         *     {
+         *       "start": "...", "end": "...",
+         *       "appliances": [
+         *         {"appliance_id": "...", "appliance_type": "...", "name": "...",
+         *          "history": [<full appliance_schedules row>, ...]},
+         *         ...
+         *       ]
+         *     }
+         *     ```
+         *     The history list contains the raw row (schedule JSONB, constraints_used,
+         *     costs, savings, created_at) — callers diff or chart whichever fields they
+         *     care about.
+         */
+        get: operations["get_schedule_history_api_v1_schedules_history_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -253,7 +639,21 @@ export interface paths {
         /** Update Appliance */
         put: operations["update_appliance_api_v1_appliances__appliance_id__put"];
         post?: never;
-        delete?: never;
+        /**
+         * Delete Appliance
+         * @description Permanently delete an appliance the authenticated user owns.
+         *
+         *     Cascades through the schema: `appliance_readings`, `appliance_schedules`,
+         *     and any appliance-scoped constraint rows are removed via the
+         *     `ON DELETE CASCADE` foreign keys defined in migration 002. The
+         *     user's `thermal_models` row is per-user (not per-appliance) and is
+         *     preserved — re-registering an HVAC appliance lets the model keep
+         *     using prior learned parameters.
+         *
+         *     Returns 204 on success, 404 when the appliance doesn't exist or
+         *     isn't owned by the caller.
+         */
+        delete: operations["delete_appliance_api_v1_appliances__appliance_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -283,7 +683,16 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Get Constraints
+         * @description Read the stored constraints for a non-HVAC appliance.
+         *
+         *     The `constraints` column is intentionally omitted from the appliance
+         *     list projection (it's optimizer-facing), so the constraint editor needs
+         *     this endpoint to re-display what the user last saved. Returns an empty
+         *     dict when none have been set. (HVAC uses /preferences instead.)
+         */
+        get: operations["get_constraints_api_v1_appliances__appliance_id__constraints_get"];
         put?: never;
         /** Set Constraints */
         post: operations["set_constraints_api_v1_appliances__appliance_id__constraints_post"];
@@ -300,11 +709,325 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Appliance Schedule */
+        /**
+         * Get Appliance Schedule
+         * @description Pull a single appliance's optimized schedule.
+         *
+         *     Accepts EITHER a user JWT (the HACS client) OR a device token (a fleet
+         *     satellite, US-SAT-06). A satellite is scoped to its ONE bound appliance:
+         *     requesting any other {appliance_id} is 403, never a data leak — the check
+         *     runs before the appliance lookup so a foreign id can't even be probed.
+         */
         get: operations["get_appliance_schedule_api_v1_appliances__appliance_id__schedule_get"];
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/appliances/{appliance_id}/command": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Appliance Command
+         * @description Enqueue a live-control command for a satellite's HVAC appliance.
+         *
+         *     Owner-checked (user JWT). Validated against the appliance's IR setpoint
+         *     clamps, written to the durable `device_commands` queue, then the in-process
+         *     command bus is signaled so a device parked in a long-poll (US-SAT-08) wakes
+         *     immediately instead of waiting out its poll. Returns 202 `{command_id}`.
+         *
+         *     Override semantics: a command holds until the next 30-min slot boundary
+         *     re-applies the schedule UNLESS `hold=true`, in which case it holds until the
+         *     user changes it — mirroring the HACS manual-override behavior.
+         *
+         *     Errors:
+         *       * 400 — empty command (no actionable field) or a `target_temp_f` outside
+         *         the appliance's `[setpoint_min_f, setpoint_max_f]` IR range.
+         *       * 404 — appliance not found / not owned by the caller.
+         *       * 409 — the appliance has no bound device to receive the command.
+         */
+        post: operations["post_appliance_command_api_v1_appliances__appliance_id__command_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/appliances/{appliance_id}/preferences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Appliance Preferences */
+        get: operations["get_appliance_preferences_api_v1_appliances__appliance_id__preferences_get"];
+        /** Put Appliance Preferences */
+        put: operations["put_appliance_preferences_api_v1_appliances__appliance_id__preferences_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/enroll-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Enroll Token
+         * @description Mint a single-use enrollment token (15-min TTL) for the caller.
+         *
+         *     Returns the plaintext token exactly once; only its sha256 hash is
+         *     persisted. The device redeems it via POST /api/v1/devices/claim.
+         */
+        post: operations["create_enroll_token_api_v1_devices_enroll_token_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Claim Device
+         * @description Redeem an enrollment token to bind a satellite to the minting user.
+         *
+         *     Public (no auth): the device presents the enroll token as its proof of a
+         *     signed-in user's intent. Creates the HVAC appliance the satellite drives
+         *     and the bound `devices` row, then returns the device's permanent bearer
+         *     token exactly once.
+         *
+         *     Errors:
+         *       * 400 — invalid / already-used / expired enrollment token (distinct
+         *         detail strings).
+         *       * 409 — the device_id is already claimed by someone.
+         */
+        post: operations["claim_device_api_v1_devices_claim_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Device Config
+         * @description Return the satellite's runtime config, computed for its owning user.
+         *
+         *     SLOT 0 IS LOCAL MIDNIGHT. Every 48-slot artifact in this system — the
+         *     schedule the device pulls AND the `comfort_band` returned here — is keyed
+         *     to the owning user's LOCAL midnight, not UTC (see the "Schedule slot 0 =
+         *     midnight LOCAL time, not UTC" invariant in hungry-machines-api/CLAUDE.md:
+         *     a prior HACS build read the process/UTC clock and applied the whole grid on
+         *     a 4-hour-shifted offset for EDT users). A satellite has no tz database, so
+         *     the server hands it the `timezone` + a two-entry offset table
+         *     (`utc_offset_minutes_now` + `next_transition`); the firmware slot engine
+         *     (US-SAT-12) maps UTC epoch -> local slot from that table, DST included.
+         *
+         *     Fields:
+         *       * timezone / utc_offset_minutes_now / next_transition — the offset table.
+         *         `next_transition` is null for zones that don't observe DST.
+         *       * setpoint_min_f / setpoint_max_f — the IR remote's setpoint clamp
+         *         (from the appliance config, else 61/86).
+         *       * comfort_band — today's 48-slot {high_temps_f, low_temps_f}, local-midnight
+         *         grid, from the appliance's comfort preferences via the comfort service.
+         *       * reading_push_interval_s / capture_interval_s / command_poll_wait_s —
+         *         the satellite's steady-state loop cadence.
+         */
+        get: operations["get_device_config_api_v1_devices_config_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/price-schedule": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Device Price Schedule
+         * @description Return a stoplight's local price curve + per-slot tiers for today+tomorrow.
+         *
+         *     A display-only stoplight (US-STOP-001) pulls this to cache a full day (or
+         *     two) of prices and their cheap/normal/expensive tiers, so it keeps lighting
+         *     the right lamp when the network blips. Tiers come from the SAME range-thirds
+         *     classifier the phone's Right Now indicator uses (`app.services.price_tier`),
+         *     so lamp and phone agree by construction.
+         *
+         *     SLOT 0 IS LOCAL MIDNIGHT (the invariant every 48-slot artifact shares; see
+         *     `get_device_config`). Response: {tz, generated_at (UTC ISO-8601), currency,
+         *     slots:[{start, end, price_cents, tier}]}. `start`/`end` are LOCAL ISO-8601
+         *     with offset; `price_cents` is rounded to 1 dp; `tier` is
+         *     cheap|normal|expensive. Each day is tiered against ITS OWN curve.
+         *
+         *     Emits an ETag over the serialized slots and honours If-None-Match -> 304
+         *     (curve unchanged, empty body) so a stoplight polling hourly mostly gets an
+         *     empty response.
+         */
+        get: operations["get_device_price_schedule_api_v1_devices_price_schedule_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Poll Device Commands
+         * @description Long-poll for pending live-control commands (device token).
+         *
+         *     Returns the bound appliance's undelivered `device_commands` immediately,
+         *     oldest first, stamping `delivered_at` on each as it hands them over. When
+         *     none are pending and `wait > 0`, parks on the in-process command bus for up
+         *     to `min(wait, 55)` seconds and re-reads the moment an enqueue (US-SAT-07)
+         *     signals — so a user command reaches the device in seconds, not on the next
+         *     scheduled poll. Returns `[]` on timeout. `wait=0` never blocks (a plain
+         *     "anything for me?" check).
+         *
+         *     **Restart-durable.** Delivery state lives in `device_commands`
+         *     (`delivered_at`), not in the command bus's process memory. If the API
+         *     restarts while a command is undelivered, the in-memory Event is gone but the
+         *     row is not — the next poll's authoritative DB read returns it with no signal
+         *     required. The bus is a latency optimization layered on the durable queue.
+         */
+        get: operations["poll_device_commands_api_v1_devices_commands_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Device State
+         * @description Report the state a satellite has applied (device token).
+         *
+         *     Three effects: (1) if `command_id` is set, stamp `acked_at` on that
+         *     `device_commands` row (scoped to the device's appliance); (2) update the
+         *     device's `firmware_version` / `rssi` when reported; (3) write a
+         *     `sensor_readings` echo row carrying the commanded state so the cloud's
+         *     assumed-state view is fresh between readings pushes. Idempotent-ish: a
+         *     duplicate ack simply re-stamps the same timestamp.
+         */
+        post: operations["post_device_state_api_v1_devices_state_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Devices
+         * @description List the caller's claimed devices with their type + health fields.
+         *
+         *     Returns one entry per bound `devices` row owned by the user. Each entry
+         *     carries `device_type` (`ir-climate` | `stoplight`) so the UI can render a
+         *     display-only stoplight (appliance_id NULL, no appliance behind it) without
+         *     treating it as a broken HVAC (US-STOP-005). A stoplight row is listed
+         *     normally — never filtered out for lacking an appliance. Unclaimed factory
+         *     rows (user_id NULL) never appear — they belong to no account yet.
+         *     Absent telemetry (`firmware_version` / `last_seen_at` / `rssi`) is returned
+         *     as null, never a fabricated zero, so the UI can show an honest em-dash
+         *     (fleet-dashboard honesty rule; US-SAT-22 renders the health chip).
+         */
+        get: operations["list_devices_api_v1_devices_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/{device_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Unclaim Device
+         * @description Unbind a satellite the caller owns, keeping the row for factory identity.
+         *
+         *     Clears `user_id` / `appliance_id` / `token_hash` back to NULL so the device
+         *     is re-claimable in place (mirrors the unclaimed factory state from
+         *     US-SAT-01; `_is_claimed` reads exactly these three fields) — the old device
+         *     token immediately stops authenticating (its hash no longer matches any
+         *     row, so `get_current_device` -> 401). The `devices` row itself survives
+         *     (last_seen_at / rssi / firmware history stay for factory identity), and the
+         *     bound **appliance is NOT deleted**: its readings, thermal model, and
+         *     schedule history remain. To also remove the appliance, the user deletes it
+         *     separately via `DELETE /api/v1/appliances/{id}`.
+         *
+         *     Owner-checked: a device the caller doesn't own (or an unknown id) -> 404,
+         *     never leaking another account's device existence. Returns 204 on success.
+         */
+        delete: operations["unclaim_device_api_v1_devices__device_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -379,6 +1102,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/rates/tariffs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Tariffs
+         * @description Browse the versioned tariff store (``tariff_rulesets``).
+         *
+         *     Filtering, sorting, and pagination happen in Python — the store is
+         *     small (hand-curated + per-RIN/URDB ingestion, not a bulk mirror), and
+         *     this keeps the endpoint testable against the mock DB. Revisit with
+         *     server-side filters if the store ever approaches PostgREST's 1000-row
+         *     page cap.
+         *
+         *     Unverified rows carry a ``disclaimer`` field (community-sourced data);
+         *     verified rows omit it entirely.
+         */
+        get: operations["list_tariffs_api_v1_rates_tariffs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/weather": {
         parameters: {
             query?: never;
@@ -403,6 +1155,373 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/calibration/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Calibration Status
+         * @description Return calibration state for an appliance.
+         *
+         *     Response always has:
+         *       * `appliance_id` — echoes the (resolved) id
+         *       * `is_complete` — true iff there's a `completed` or `skipped` row
+         *       * `is_in_progress` — true iff there's an `in_progress` row
+         *       * `latest_run` — projected latest row (may be null)
+         *       * `history` — all past rows newest-first
+         *       * `can_skip` — true if there's anything to skip (no terminal row)
+         */
+        get: operations["get_calibration_status_api_v1_calibration_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calibration/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Calibration
+         * @description Force a fresh calibration run.
+         *
+         *     Used when the user wants to re-calibrate (e.g. after AC repair or
+         *     capacity change) or to override a deferred / skipped status. The
+         *     new `in_progress` row supersedes prior runs without deleting them
+         *     (audit-friendly).
+         *
+         *     Returns 201 with the new row's projection. The actual schedule
+         *     won't get emitted until the next nightly tick.
+         */
+        post: operations["start_calibration_api_v1_calibration_start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/calibration/skip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Skip Calibration
+         * @description Mark calibration skipped for this appliance.
+         *
+         *     Permanent — future nightlies will see a `skipped` terminal-status
+         *     row and won't try calibration again. Reverting requires hitting
+         *     `/calibration/start` to insert a fresh `in_progress` row.
+         */
+        post: operations["skip_calibration_api_v1_calibration_skip_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/newsletter/interests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Interests */
+        post: operations["submit_interests_api_v1_newsletter_interests_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Feedback */
+        post: operations["submit_feedback_api_v1_feedback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/fleet/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fleet Overview */
+        get: operations["fleet_overview_admin_fleet_overview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/fleet/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fleet Feedback */
+        get: operations["fleet_feedback_admin_fleet_feedback_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/fleet/devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Fleet Devices
+         * @description Every ``devices`` row projected to its type + health columns, newest
+         *     ``last_seen_at`` first (never-seen devices — NULL last_seen_at — sort
+         *     last). Thin single-table scan; ``[]`` on an empty/missing table or an
+         *     unavailable Supabase client (``_load_all`` swallows the error), never a
+         *     500. Both device kinds are returned; the SPA tells a stoplight apart by
+         *     ``device_type``.
+         */
+        get: operations["fleet_devices_admin_fleet_devices_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/fleet/appliances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fleet Appliances */
+        get: operations["fleet_appliances_admin_fleet_appliances_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/fleet/appliances/{appliance_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fleet Appliance Detail */
+        get: operations["fleet_appliance_detail_admin_fleet_appliances__appliance_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/fleet/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fleet Users */
+        get: operations["fleet_users_admin_fleet_users_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/metrics/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Me Metrics Summary
+         * @description The authenticated customer's headline numbers over a trailing window.
+         *
+         *     Aggregation is anchored on the customer's most recent rollup date and
+         *     reaches back `window` days. Cumulative fields (savings dollars, peak hours
+         *     idle, override events) are summed; intensity fields (percentages, comfort
+         *     band degree-hours) are meaned — so the meaned figures stay comparable no
+         *     matter how many days of data a home has. Every metric is `None` (→ em dash)
+         *     when nothing contributed it; a home with no rows yet gets a 200 of nulls.
+         */
+        get: operations["me_metrics_summary_api_v1_me_metrics_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/metrics/daily": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Me Metrics Daily
+         * @description The caller's per-day metrics over a date window, for charting a trend.
+         *
+         *     Unlike `/summary` this is NOT aggregated: each entry is one calendar day's
+         *     own savings/peaks/flexibility/comfort straight off `user_metrics_daily`.
+         *     Days with no rollup row are **omitted** (not zero-filled), so gaps read as
+         *     "no data that day" rather than a fabricated zero. Ordered oldest → newest.
+         *
+         *     The window is capped at `_MAX_WINDOW_DAYS` (90), mirroring the
+         *     `/schedules/history` ceiling; a wider span or `start > end` returns `400`.
+         */
+        get: operations["me_metrics_daily_api_v1_me_metrics_daily_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/metrics/day/{date}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Me Metrics Day
+         * @description One LOCAL day's plan-vs-actual for the caller's HVAC (US-MET-007).
+         *
+         *     Returns the plan the optimizer intended — the 48-slot commanded setpoints,
+         *     the comfort band, and the price curve — the measured indoor temperature,
+         *     and where the plan and reality diverged, split into two SEPARATE lists:
+         *
+         *       * ``overrides`` — the customer changed the plan (we commanded it
+         *         correctly; the thermostat showed something else, persistently).
+         *       * ``conformance_defects`` — WE failed to deliver it (the commanded
+         *         setpoint itself diverged from the plan).
+         *
+         *     Keeping them apart is the whole point: an override is the customer's
+         *     decision, a defect is our bug, and the UI must never conflate them.
+         *     Per-episode detail isn't persisted (the rollup keeps only daily counts and
+         *     the hour histogram), so this route re-runs the detector over the day's
+         *     ``sensor_readings``. A day with no plan / no attributable readings returns
+         *     empty lists and null arrays with a ``200`` — never a ``404``.
+         */
+        get: operations["me_metrics_day_api_v1_me_metrics_day__date__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/rankings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Me Rankings
+         * @description How the caller stacks up against comparable homes — without revealing
+         *     anything about those homes (US-MET-009).
+         *
+         *     For each of the four ranked, higher-is-better metrics (savings percent,
+         *     off-peak share, flexibility degree-hours, machine types connected) the route
+         *     resolves the caller's tightest eligible cohort — ZIP code → area → rate plan
+         *     → fleet — then places the caller's own windowed value against that cohort's
+         *     precomputed distribution (`cohort_stats_daily`, materialized nightly). Only
+         *     the caller's **rank, percentile and own value** ship: never the cohort
+         *     population count (no `n`/`count`/`total`/`size` under any key) and never
+         *     another home's value. A metric the caller can't be ranked on yet carries a
+         *     `null` rank (never `0`); a home with no cohort distribution still sees its
+         *     own value with null ranks, `200` — never a `404`.
+         */
+        get: operations["me_rankings_api_v1_me_rankings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/partner/rates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Partner Rates
+         * @description Every resolvable pricing scheme, one call. See module docstring.
+         */
+        get: operations["partner_rates_partner_rates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -417,7 +1536,64 @@ export interface components {
              * Config
              * @default {}
              */
-            config: Record<string, never>;
+            config: {
+                [key: string]: unknown;
+            };
+        };
+        /** AppliancePreferencesResponse */
+        AppliancePreferencesResponse: {
+            /** Base Temperature */
+            base_temperature: number;
+            /** Savings Level */
+            savings_level: number;
+            /** Time Away */
+            time_away: string;
+            /** Time Home */
+            time_home: string;
+            /** Optimization Mode */
+            optimization_mode: string;
+            /** Hourly High Temps F */
+            hourly_high_temps_f?: number[] | null;
+            /** Hourly Low Temps F */
+            hourly_low_temps_f?: number[] | null;
+            /**
+             * Optimize Hvac Fan
+             * @default false
+             */
+            optimize_hvac_fan: boolean;
+            /**
+             * Optimize Hvac Mode
+             * @default false
+             */
+            optimize_hvac_mode: boolean;
+            /**
+             * Optimization Enabled
+             * @default true
+             */
+            optimization_enabled: boolean;
+        };
+        /** AppliancePreferencesUpdate */
+        AppliancePreferencesUpdate: {
+            /** Base Temperature */
+            base_temperature?: number | null;
+            /** Savings Level */
+            savings_level?: number | null;
+            /** Time Away */
+            time_away?: string | null;
+            /** Time Home */
+            time_home?: string | null;
+            /** Optimization Mode */
+            optimization_mode?: string | null;
+            /** Hourly High Temps F */
+            hourly_high_temps_f?: number[] | null;
+            /** Hourly Low Temps F */
+            hourly_low_temps_f?: number[] | null;
+            /** Optimize Hvac Fan */
+            optimize_hvac_fan?: boolean | null;
+            /** Optimize Hvac Mode */
+            optimize_hvac_mode?: boolean | null;
+            /** Optimization Enabled */
+            optimization_enabled?: boolean | null;
         };
         /** ApplianceReading */
         ApplianceReading: {
@@ -433,19 +1609,52 @@ export interface components {
             /** Power Watts */
             power_watts?: number | null;
             /** Metadata */
-            metadata?: Record<string, never> | null;
+            metadata?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** ApplianceUpdate */
         ApplianceUpdate: {
             /** Name */
             name?: string | null;
             /** Config */
-            config?: Record<string, never> | null;
+            config?: {
+                [key: string]: unknown;
+            } | null;
+            /** Optimization Enabled */
+            optimization_enabled?: boolean | null;
         };
         /** CheckoutResponse */
         CheckoutResponse: {
             /** Url */
             url: string;
+        };
+        /**
+         * ClientInfo
+         * @description Who sent this batch — display-only telemetry, never control input.
+         *
+         *     Every push from a release that knows about it identifies the software
+         *     on the other end: the HACS integration's manifest version, and (on a
+         *     fleet node) the blessed bundle tag the container was started with. It
+         *     lets a later control change be graded per home — "the homes still on
+         *     3.6.0 behaved like this, the ones on 3.7.0 like that" — instead of
+         *     guessing which fix a given day's readings were produced under.
+         *
+         *     Optional on the batch: older clients omit it and nothing else about
+         *     the batch changes.
+         */
+        ClientInfo: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "hacs" | "node";
+            /** Version */
+            version: string;
+            /** Node Bundle */
+            node_bundle?: string | null;
+            /** Ha Version */
+            ha_version?: string | null;
         };
         /** CreateCheckoutRequest */
         CreateCheckoutRequest: {
@@ -455,6 +1664,134 @@ export interface components {
             success_url: string;
             /** Cancel Url */
             cancel_url: string;
+        };
+        /** DeliveryTariffOption */
+        DeliveryTariffOption: {
+            /** Id */
+            id: number;
+            /** External Id */
+            external_id: string;
+            /** Plan Name */
+            plan_name: string;
+            /** Utility */
+            utility: string;
+            /** Region */
+            region: string;
+            /** Period Rates */
+            period_rates?: {
+                [key: string]: number;
+            } | null;
+        };
+        /** DeviceClaim */
+        DeviceClaim: {
+            /** Enroll Token */
+            enroll_token: string;
+            /** Device Id */
+            device_id: string;
+            /** Name */
+            name: string;
+            /**
+             * Device Type
+             * @default ir-climate
+             */
+            device_type: string;
+            /** Hvac Type */
+            hvac_type?: ("central_ac" | "window_ac" | "heat_pump" | "furnace" | "mini_split") | null;
+            /** Ir Protocol */
+            ir_protocol?: string | null;
+            /** Setpoint Min F */
+            setpoint_min_f?: number | null;
+            /** Setpoint Max F */
+            setpoint_max_f?: number | null;
+        };
+        /**
+         * DeviceCommand
+         * @description A live-control command for a satellite's HVAC appliance (US-SAT-07).
+         *
+         *     Every actionable field is optional — the command is a *partial* override
+         *     the device folds over its assumed state (US-SAT-13), so a user can nudge
+         *     just the setpoint without restating mode/fan. `hold` governs how long the
+         *     override survives a schedule re-apply.
+         */
+        DeviceCommand: {
+            /** Power */
+            power?: boolean | null;
+            /** Mode */
+            mode?: ("COOL" | "HEAT" | "OFF") | null;
+            /** Target Temp F */
+            target_temp_f?: number | null;
+            /** Fan */
+            fan?: ("low" | "high" | "auto") | null;
+            /**
+             * Hold
+             * @default false
+             */
+            hold: boolean;
+        };
+        /**
+         * DeviceState
+         * @description The state a satellite reports it has actually applied (US-SAT-08).
+         *
+         *     Open-loop IR gives no hardware feedback, so the device is the source of
+         *     truth for what it commanded. This echo lets the cloud show a fresh assumed
+         *     state between the (hourly) readings pushes and, when it carries a
+         *     `command_id`, closes the loop on a live-control command.
+         */
+        DeviceState: {
+            /** Mode */
+            mode?: ("COOL" | "HEAT" | "OFF") | null;
+            /** Target Temp F */
+            target_temp_f?: number | null;
+            /** Fan */
+            fan?: ("low" | "high" | "auto") | null;
+            /** Power */
+            power?: boolean | null;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "schedule" | "command" | "override" | "watchdog";
+            /** Command Id */
+            command_id?: number | null;
+            /** Firmware Version */
+            firmware_version?: string | null;
+            /** Rssi */
+            rssi?: number | null;
+        };
+        /** DynamicZoneOption */
+        DynamicZoneOption: {
+            /** Slug */
+            slug: string;
+            /** Iso */
+            iso: string;
+            /** Label */
+            label: string;
+        };
+        /** FeedbackResponse */
+        FeedbackResponse: {
+            /** Stored */
+            stored: boolean;
+        };
+        /** FeedbackSubmission */
+        FeedbackSubmission: {
+            /** Message */
+            message: string;
+            /**
+             * Category
+             * @default comment
+             */
+            category: string;
+        };
+        /**
+         * FleetMetricsBackfillRequest
+         * @description Date window for the fleet-metrics backfill (US-MET-010). `since` is
+         *     required (ISO `YYYY-MM-DD`); `until` defaults to yesterday when omitted.
+         */
+        FleetMetricsBackfillRequest: {
+            /** Since */
+            since: string;
+            /** Until */
+            until?: string | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -478,6 +1815,30 @@ export interface components {
             low_temps: number[];
             /** Temp Trajectory */
             temp_trajectory?: number[] | null;
+            /** Setpoint Temps */
+            setpoint_temps?: number[] | null;
+        };
+        /** InterestsResponse */
+        InterestsResponse: {
+            /** Stored */
+            stored: boolean;
+        };
+        /** InterestsSubmission */
+        InterestsSubmission: {
+            /**
+             * Interests
+             * @default []
+             */
+            interests: string[];
+            /** Other Text */
+            other_text?: string | null;
+            /** Email */
+            email?: string | null;
+            /**
+             * Source
+             * @default welcome_page
+             */
+            source: string;
         };
         /** LoginRequest */
         LoginRequest: {
@@ -529,6 +1890,31 @@ export interface components {
             hourly_high_temps_f?: number[] | null;
             /** Hourly Low Temps F */
             hourly_low_temps_f?: number[] | null;
+            /**
+             * Optimize Hvac Fan
+             * @default false
+             */
+            optimize_hvac_fan: boolean;
+            /**
+             * Optimize Hvac Mode
+             * @default false
+             */
+            optimize_hvac_mode: boolean;
+            /**
+             * Optimization Enabled
+             * @default true
+             */
+            optimization_enabled: boolean;
+            /**
+             * Newsletter Opt In
+             * @default true
+             */
+            newsletter_opt_in: boolean;
+            /**
+             * Spike Guard Enabled
+             * @default true
+             */
+            spike_guard_enabled: boolean;
         };
         /** PreferencesUpdate */
         PreferencesUpdate: {
@@ -546,6 +1932,33 @@ export interface components {
             hourly_high_temps_f?: number[] | null;
             /** Hourly Low Temps F */
             hourly_low_temps_f?: number[] | null;
+            /** Optimize Hvac Fan */
+            optimize_hvac_fan?: boolean | null;
+            /** Optimize Hvac Mode */
+            optimize_hvac_mode?: boolean | null;
+            /** Optimization Enabled */
+            optimization_enabled?: boolean | null;
+            /** Newsletter Opt In */
+            newsletter_opt_in?: boolean | null;
+            /** Spike Guard Enabled */
+            spike_guard_enabled?: boolean | null;
+        };
+        /** PricingZoneOption */
+        PricingZoneOption: {
+            /** Id */
+            id: number;
+            /** Slug */
+            slug: string;
+            /** Utility */
+            utility: string;
+            /** Plan */
+            plan: string;
+            /** Region */
+            region: string;
+            /** Label */
+            label: string;
+            /** Notes */
+            notes: string;
         };
         /** RatesResponse */
         RatesResponse: {
@@ -557,18 +1970,67 @@ export interface components {
             rates_cents_per_kwh: number[];
             /** Source */
             source: string;
+            /** Season */
+            season: string;
             /** Hourly Rates Cents Per Kwh */
             hourly_rates_cents_per_kwh?: number[] | null;
+            /** Pricing Source */
+            pricing_source: string;
+            /** Dynamic Zone */
+            dynamic_zone?: string | null;
+            /** Pricing Adder Cents Per Kwh */
+            pricing_adder_cents_per_kwh?: number | null;
+            /** Tariff Ruleset Id */
+            tariff_ruleset_id?: number | null;
+            /** Rate Rin */
+            rate_rin?: string | null;
+            /** Rin Status */
+            rin_status?: string | null;
+            /** Available Dynamic Zones */
+            available_dynamic_zones: components["schemas"]["DynamicZoneOption"][];
+            /** Available Pricing Zones */
+            available_pricing_zones: components["schemas"]["PricingZoneOption"][];
+            /** Adder Grid Ruleset Id */
+            adder_grid_ruleset_id?: number | null;
+            /**
+             * Available Delivery Tariffs
+             * @default []
+             */
+            available_delivery_tariffs: components["schemas"]["DeliveryTariffOption"][];
+            /** Delivery Tod Cents */
+            delivery_tod_cents?: {
+                [key: string]: number;
+            } | null;
             /**
              * Unit
              * @default cents/kWh
              */
             unit: string;
+            /** Export Rates Cents Per Kwh */
+            export_rates_cents_per_kwh?: number[] | null;
         };
         /** RatesUpdate */
         RatesUpdate: {
             /** Hourly Rates Cents Per Kwh */
             hourly_rates_cents_per_kwh?: number[] | null;
+            /** Pricing Source */
+            pricing_source?: string | null;
+            /** Dynamic Zone */
+            dynamic_zone?: string | null;
+            /** Pricing Adder Cents Per Kwh */
+            pricing_adder_cents_per_kwh?: number | null;
+            /** Pricing Location */
+            pricing_location?: number | null;
+            /** Tariff Ruleset Id */
+            tariff_ruleset_id?: number | null;
+            /** Rate Rin */
+            rate_rin?: string | null;
+            /** Adder Grid Ruleset Id */
+            adder_grid_ruleset_id?: number | null;
+            /** Delivery Tod Cents */
+            delivery_tod_cents?: unknown;
+            /** Export Rates Cents Per Kwh */
+            export_rates_cents_per_kwh?: unknown;
         };
         /** ReadingsResponse */
         ReadingsResponse: {
@@ -625,6 +2087,20 @@ export interface components {
             fan_mode?: string | null;
             /** Power Watts */
             power_watts?: number | null;
+            /** Appliance Id */
+            appliance_id?: string | null;
+            /** Commanded Hvac Mode */
+            commanded_hvac_mode?: string | null;
+            /** Commanded Fan Mode */
+            commanded_fan_mode?: string | null;
+            /** Commanded Setpoint */
+            commanded_setpoint?: number | null;
+            /** Hvac Action */
+            hvac_action?: string | null;
+            /** Indoor Source */
+            indoor_source?: ("sensor" | "entity") | null;
+            /** Override Active */
+            override_active?: boolean | null;
         };
         /** SignupRequest */
         SignupRequest: {
@@ -638,6 +2114,8 @@ export interface components {
             home_size_sqft?: number | null;
             /** Pricing Location */
             pricing_location?: number | null;
+            /** Newsletter Opt In */
+            newsletter_opt_in?: boolean | null;
         };
         /** UpdateProfileRequest */
         UpdateProfileRequest: {
@@ -652,6 +2130,16 @@ export interface components {
             /** Weather Entity Id */
             weather_entity_id?: string | null;
         };
+        /**
+         * UrdbImportRequest
+         * @description Scope for the URDB import — at least one of state/utility required.
+         */
+        UrdbImportRequest: {
+            /** State */
+            state?: string | null;
+            /** Utility */
+            utility?: string | null;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -660,6 +2148,10 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+            /** Input */
+            input?: unknown;
+            /** Context */
+            ctx?: Record<string, never>;
         };
         /** WeatherForecast */
         WeatherForecast: {
@@ -669,6 +2161,14 @@ export interface components {
             hourly_humidity?: number[] | null;
             /** Hourly Wind Mph */
             hourly_wind_mph?: number[] | null;
+            /** Forecast Date */
+            forecast_date?: string | null;
+            /** Hourly Cloud Coverage Pct */
+            hourly_cloud_coverage_pct?: number[] | null;
+            /** Hourly Precipitation Mm */
+            hourly_precipitation_mm?: number[] | null;
+            /** Hourly Solar Irradiance W */
+            hourly_solar_irradiance_w?: number[] | null;
         };
         /** WeatherPush */
         WeatherPush: {
@@ -681,6 +2181,11 @@ export interface components {
             /** Pushed At */
             pushed_at: string;
         };
+        /** _ApplianceIdBody */
+        _ApplianceIdBody: {
+            /** Appliance Id */
+            appliance_id?: string | null;
+        };
         /** ReadingsBatch */
         app__routes__appliances__ReadingsBatch: {
             /** Readings */
@@ -690,6 +2195,7 @@ export interface components {
         app__routes__readings__ReadingsBatch: {
             /** Readings */
             readings: components["schemas"]["SensorReading"][];
+            client?: components["schemas"]["ClientInfo"] | null;
         };
     };
     responses: never;
@@ -736,6 +2242,214 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    trigger_weekly_admin_trigger_weekly_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    trigger_initial_fit_admin_trigger_initial_fit_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    trigger_dynamic_prefetch_admin_trigger_dynamic_prefetch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    trigger_comed_settled_admin_trigger_comed_settled_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    trigger_urdb_import_admin_trigger_urdb_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["UrdbImportRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    toggle_tariff_verified_admin_tariffs__ruleset_id__verify_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ruleset_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    trigger_fit_for_user_admin_trigger_fit__target_user_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                target_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    trigger_fleet_metrics_backfill_admin_trigger_fleet_metrics_backfill_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetMetricsBackfillRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -980,7 +2694,10 @@ export interface operations {
     };
     get_schedule_api_v1_schedule_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description UUID of the HVAC appliance whose schedule to return. Optional when the user has exactly one HVAC (the legacy single-HVAC client path); required as a 400 when the user has 2+ HVACs. */
+                appliance_id?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -994,6 +2711,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScheduleResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -1014,6 +2740,122 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_schedules_updated_at_api_v1_schedules_updated_at_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_integration_sensor_health_api_v1_integration_sensors_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_integration_health_api_v1_integration_health_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_integration_divergence_api_v1_integration_health_divergence_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_schedule_history_api_v1_schedules_history_get: {
+        parameters: {
+            query?: {
+                /** @description If omitted, returns history for every appliance the user owns. */
+                appliance_id?: string | null;
+                /** @description ISO date (YYYY-MM-DD). Default: end - 14 days. */
+                start?: string | null;
+                /** @description ISO date (YYYY-MM-DD). Default: today. */
+                end?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -1126,6 +2968,35 @@ export interface operations {
             };
         };
     };
+    delete_appliance_api_v1_appliances__appliance_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                appliance_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     post_appliance_readings_api_v1_appliances__appliance_id__readings_post: {
         parameters: {
             query?: never;
@@ -1161,6 +3032,37 @@ export interface operations {
             };
         };
     };
+    get_constraints_api_v1_appliances__appliance_id__constraints_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                appliance_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     set_constraints_api_v1_appliances__appliance_id__constraints_post: {
         parameters: {
             query?: never;
@@ -1172,7 +3074,9 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": Record<string, never>;
+                "application/json": {
+                    [key: string]: unknown;
+                };
             };
         };
         responses: {
@@ -1215,6 +3119,313 @@ export interface operations {
                 content: {
                     "application/json": unknown;
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_appliance_command_api_v1_appliances__appliance_id__command_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                appliance_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeviceCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_appliance_preferences_api_v1_appliances__appliance_id__preferences_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                appliance_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliancePreferencesResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_appliance_preferences_api_v1_appliances__appliance_id__preferences_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                appliance_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AppliancePreferencesUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliancePreferencesResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_enroll_token_api_v1_devices_enroll_token_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    claim_device_api_v1_devices_claim_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeviceClaim"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_device_config_api_v1_devices_config_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_device_price_schedule_api_v1_devices_price_schedule_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    poll_device_commands_api_v1_devices_commands_get: {
+        parameters: {
+            query?: {
+                wait?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_device_state_api_v1_devices_state_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeviceState"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_devices_api_v1_devices_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    unclaim_device_api_v1_devices__device_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                device_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -1364,6 +3575,46 @@ export interface operations {
             };
         };
     };
+    list_tariffs_api_v1_rates_tariffs_get: {
+        parameters: {
+            query?: {
+                /** @description Exact country code, case-insensitive (US, CA). */
+                country?: string | null;
+                /** @description Case-insensitive substring match on region. */
+                region?: string | null;
+                /** @description Exact utility name, case-insensitive (SCE, SMUD). */
+                utility?: string | null;
+                /** @description Free-text search — case-insensitive substring over utility, plan_name, and region. */
+                q?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     push_weather_api_v1_weather_post: {
         parameters: {
             query?: never;
@@ -1384,6 +3635,534 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WeatherPushResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_calibration_status_api_v1_calibration_status_get: {
+        parameters: {
+            query?: {
+                /** @description UUID of the HVAC appliance. Optional when the user has exactly one HVAC; required otherwise (400 if missing). */
+                appliance_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_calibration_api_v1_calibration_start_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["_ApplianceIdBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    skip_calibration_api_v1_calibration_skip_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["_ApplianceIdBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_interests_api_v1_newsletter_interests_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InterestsSubmission"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InterestsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_feedback_api_v1_feedback_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeedbackSubmission"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeedbackResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fleet_overview_admin_fleet_overview_get: {
+        parameters: {
+            query?: {
+                /** @description Rollup date (YYYY-MM-DD); defaults to the latest. */
+                date?: string | null;
+                /** @description Filter incidents by severity (info|amber|red). */
+                severity?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fleet_feedback_admin_fleet_feedback_get: {
+        parameters: {
+            query?: {
+                /** @description Filter by category (bug|idea|comment|other). */
+                category?: string | null;
+                /** @description Filter to one user. */
+                user_id?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fleet_devices_admin_fleet_devices_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    fleet_appliances_admin_fleet_appliances_get: {
+        parameters: {
+            query?: {
+                /** @description Column to sort by. */
+                sort?: string;
+                /** @description asc | desc. */
+                order?: string;
+                /** @description Filter to one user. */
+                user_id?: string | null;
+                /** @description Only red-status units. */
+                red_only?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fleet_appliance_detail_admin_fleet_appliances__appliance_id__get: {
+        parameters: {
+            query?: {
+                /** @description Chart-series day (YYYY-MM-DD); defaults to the latest metrics-daily date, else UTC yesterday. */
+                date?: string | null;
+                /** @description Days of metrics-daily history to return. */
+                window?: number;
+            };
+            header?: never;
+            path: {
+                appliance_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fleet_users_admin_fleet_users_get: {
+        parameters: {
+            query?: {
+                /** @description Filter to one user. */
+                user_id?: string | null;
+                /** @description Days of plan-accuracy trend to return. */
+                window?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    me_metrics_summary_api_v1_me_metrics_summary_get: {
+        parameters: {
+            query?: {
+                /** @description Trailing days to aggregate. Max 90; wider requests 400. */
+                window?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    me_metrics_daily_api_v1_me_metrics_daily_get: {
+        parameters: {
+            query?: {
+                /** @description ISO date (YYYY-MM-DD). Default: end - 30 days. */
+                start?: string | null;
+                /** @description ISO date (YYYY-MM-DD). Default: today (user-local). */
+                end?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    me_metrics_day_api_v1_me_metrics_day__date__get: {
+        parameters: {
+            query?: {
+                /** @description Target HVAC. Defaults to the caller's first active HVAC. */
+                appliance_id?: string | null;
+            };
+            header?: never;
+            path: {
+                /** @description Local calendar day (ISO YYYY-MM-DD). */
+                date: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    me_rankings_api_v1_me_rankings_get: {
+        parameters: {
+            query?: {
+                /** @description Trailing days the ranking window spans. Max 90; wider 400. */
+                window?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    partner_rates_partner_rates_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-partner-key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
