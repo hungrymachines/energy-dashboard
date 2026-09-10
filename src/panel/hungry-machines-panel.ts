@@ -35,6 +35,7 @@ import {
   type AppliancePreferences,
 } from '../api/appliance-preferences.js';
 import { expandHourlyTo48, hasCustomRates, hasHourlyComfortBands } from '../utils/hourly.js';
+import { formatSavingsEstimate, savingsEstimateTitle } from '../utils/savings.js';
 import {
   groupPricingZones,
   pricingZoneFullLabel,
@@ -3103,7 +3104,8 @@ export class HungryMachinesPanel extends LitElement {
     const type = appliance.appliance_type;
     const label = TYPE_LABELS[type] ?? type.slice(0, 3).toUpperCase();
     const schedule = appliance.schedule ?? {};
-    const savings = `${Math.round(appliance.savings_pct)}% savings today`;
+    const savings = formatSavingsEstimate(appliance.savings_pct);
+    const savingsTitle = savingsEstimateTitle(schedule);
 
     if (type === 'solar') {
       return this._renderSolarCard(appliance, label);
@@ -3212,7 +3214,7 @@ export class HungryMachinesPanel extends LitElement {
           ${this._renderDeviceOptimizationToggle(appliance)}
         </div>
         <div class="entity-binding" ?hidden=${!boundEntityId}>${boundEntityId ?? ''}</div>
-        <div class="savings">${savings}</div>
+        <div class="savings" title=${savingsTitle}>${savings}</div>
         <hm-optimization-chart
           .rates=${rates}
           .highLimits=${highLimits}

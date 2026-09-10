@@ -57,8 +57,8 @@ Closed-loop comfort failsafe: the per-slot apply is open-loop (it trusts
 the optimizer's overnight trajectory). `comfort_watchdog` runs every 5 min
 and, for any HVAC that has actually drifted out of its comfort band —
 including one that is already actively COOLing or HEATing and overshot
-the far edge — commands it back at the band edge with hysteresis — see
-`_comfort_band_override` and the pure state machine in `comfort.py`.
+the far edge — commands it toward the FAR band edge with hysteresis —
+see `_comfort_band_override` and the pure state machine in `comfort.py`.
 """
 from __future__ import annotations
 
@@ -694,10 +694,18 @@ def _comfort_band_override(
         mode outside {cool, heat, auto} breaches with no override — see
         `_log_comfort_silence`, the class of failure that would have
         caught the office incident.
-      * The override setpoint is the BAND EDGE, not the optimizer's
-        slot value — pull the house back into band (or stop actively
-        conditioning past it), then resume the plan at the next slot
-        boundary.
+      * The override setpoint is the FAR BAND EDGE, not the breached
+        one and not the optimizer's slot value: a high breach in
+        cool/auto commands COOL at `low_temps[slot]`, a low breach in
+        heat/auto commands HEAT at `high_temps[slot]`. A unit whose own
+        thermostat reads a different sensor than the room is already
+        parked at the breached edge, so re-commanding that setpoint
+        changes nothing — asking for the far edge is what makes it run.
+        `comfort.RELEASE_MARGIN_F` is what bounds how far it runs: the
+        guard releases once the room is back inside the BREACHED edge by
+        that margin, then the plan resumes at the next slot boundary. A
+        slot with no far edge falls back to the breached edge. OFF
+        overrides issue no setpoint at all.
     """
     now = now or dt_util.utcnow()
     latch_store = _domain_data(hass).setdefault(_COMFORT_LATCH_KEY, {})
@@ -722,28 +730,33 @@ def _comfort_band_override(
 
     state = hass.states.get(entity_id) if hass.states else None
     attrs = getattr(state, "attributes", None) or {} if state else {}
-    try:
-        indoor = float(attrs.get("current_temperature"))
-    except (TypeError, ValueError):
-        indoor = None
 
-    aux_entity_id: str | None = None
+    # the configured room sensor is AUTHORITATIVE, not a
+    # fallback. It is the temperature the backend fits, optimizes and
+    # publishes a band around, so the guard has to judge that same
+    # number — a guard watching the thermostat's own reading while the
+    # plan was built from the room sensor holds a different room.
+    indoor: float | None = None
     aux_source_used = False
+    aux_entity_id = _aux_indoor_temp_entity_id(hass, entity_id)
+    if aux_entity_id:
+        aux_state = hass.states.get(aux_entity_id) if hass.states else None
+        raw = getattr(aux_state, "state", None) if aux_state else None
+        # Local import: readings.py imports get_last_commanded from
+        # this module at module load time, so a top-level import
+        # here would be circular.
+        from .readings import _coerce_float
+        indoor = _coerce_float(raw)
+        aux_source_used = indoor is not None
     if indoor is None:
-        # The climate entity can't self-report (Tuya/IR-blaster/Generic
-        # Thermostat wrappers, or a real read failure) — fall back to
-        # the appliance's configured indoor sensor, same coercion
-        # `readings.py` uses for the exact same class of unit.
-        aux_entity_id = _aux_indoor_temp_entity_id(hass, entity_id)
-        if aux_entity_id:
-            aux_state = hass.states.get(aux_entity_id) if hass.states else None
-            raw = getattr(aux_state, "state", None) if aux_state else None
-            # Local import: readings.py imports get_last_commanded from
-            # this module at module load time, so a top-level import
-            # here would be circular.
-            from .readings import _coerce_float
-            indoor = _coerce_float(raw)
-            aux_source_used = indoor is not None
+        # No room sensor configured, or it's missing/non-numeric — the
+        # climate entity's own reading is the second source. Tuya/
+        # IR-blaster/Generic Thermostat wrappers report None here, which
+        # is the case the room sensor exists to cover.
+        try:
+            indoor = float(attrs.get("current_temperature"))
+        except (TypeError, ValueError):
+            indoor = None
 
     if indoor is None:
         # Can't read the room from either source — release conservatively
@@ -752,9 +765,9 @@ def _comfort_band_override(
         # longer silent.
         _persist(None)
         reason = (
-            f"slot={slot} has no usable indoor temperature (climate "
-            "entity's current_temperature is missing/invalid, aux sensor "
-            f"{aux_entity_id} is also unavailable/non-numeric)"
+            f"slot={slot} has no usable indoor temperature (aux sensor "
+            f"{aux_entity_id} is unavailable/non-numeric and the climate "
+            "entity's current_temperature is missing/invalid too)"
             if aux_entity_id
             else
             f"slot={slot} has no usable indoor temperature (climate "
@@ -783,25 +796,30 @@ def _comfort_band_override(
     was_active = bool(prev_latch and prev_latch.get("active"))
     now_active = bool(new_latch and new_latch.get("active"))
     if now_active and not was_active:
-        edge = override[1] if override else 0.0
+        commanded_edge = override[1] if override else 0.0
         direction = new_latch.get("direction") if new_latch else None
         edge_label = "high" if direction in ("cool", "off_overheat") else "low"
+        # The breached edge and the commanded one differ now that the
+        # guard commands the FAR edge — log both, or the line lies.
+        breached_edge = high if edge_label == "high" else low
+        if breached_edge is None:
+            breached_edge = commanded_edge
         _LOGGER.warning(
             "Hungry Machines comfort override slot=%d: %s indoor %.1f°F "
             "breached the %s band %.1f°F (schedule commanded %s) — "
             "commanding %s at %.1f°F (holds ≥%ds, releases at %.1f°F "
-            "inside)",
+            "inside the breached edge)",
             slot, entity_id, indoor,
-            edge_label, edge,
+            edge_label, breached_edge,
             mode_canonical or "no explicit mode",
-            override[0] if override else "?", edge,
+            override[0] if override else "?", commanded_edge,
             comfort.MIN_ON_SECONDS, comfort.RELEASE_MARGIN_F,
         )
         if aux_source_used:
             _LOGGER.warning(
                 "Hungry Machines comfort override slot=%d: %s indoor "
-                "reading came from the aux sensor %s — the climate "
-                "entity's current_temperature was unavailable",
+                "reading came from the aux sensor %s — the configured "
+                "room sensor is the authoritative indoor source",
                 slot, entity_id, aux_entity_id,
             )
         _log_comfort_silence(hass, entity_id, None)

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { HmDiagnosticsPanel } from '../src/ui/diagnostics-panel.js';
 import { setApiBase, setTokens } from '../src/api/client.js';
 
@@ -51,10 +51,54 @@ function _stubFetch(divergence: unknown, sensors: { sensors: unknown[] } = { sen
   );
 }
 
+function _stubFetchWithHealth(health: unknown) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: string | URL | Request) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (url.endsWith('/health')) {
+        return jsonResponse(health);
+      }
+      if (url.includes('/integration/sensors')) {
+        return jsonResponse({ sensors: [] });
+      }
+      return jsonResponse({
+        lookback_hours: 6,
+        sample_count: 0,
+        commanded_coverage_pct: 0,
+        power_coverage_pct: 0,
+        entity_coverage_pct: 0,
+        commanded_vs_entity_mode_agreement_pct: null,
+        commanded_vs_power_mode_agreement_pct: null,
+        entity_vs_power_mode_agreement_pct: null,
+        setpoint_offset_avg_f: null,
+        setpoint_offset_max_f: null,
+        fan_match_pct: null,
+        power_obeyed_pct: null,
+        verdict: 'no_data',
+        human_readable: 'No readings received.',
+      });
+    }),
+  );
+}
+
 describe('hm-diagnostics-panel', () => {
   beforeEach(() => {
     setApiBase('https://api.example.test');
     setTokens({ access: 'ACCESS', refresh: 'REFRESH' });
+  });
+
+  afterEach(() => {
+    // The version test plants the bundle's script tag; clear it here so
+    // a failing assertion can't leak a version into the next test.
+    document
+      .querySelectorAll('script[src*="hungry-machines.js"]')
+      .forEach((n) => n.remove());
   });
 
   it('renders the healthy banner when all signals agree', async () => {
@@ -311,6 +355,37 @@ describe('hm-diagnostics-panel', () => {
     const broken = el._sensors!.find((s) => s.verdict === 'missing_or_broken');
     expect(broken).toBeDefined();
     expect(broken!.entity_id).toBe('sensor.does_not_exist');
+  });
+
+  it('renders the integration version and the API build', async () => {
+    // The integration version rides in on the script tag HA writes for
+    // the bundle (`?v=` cache-buster) — plant one the way HA would.
+    const tag = document.createElement('script');
+    tag.setAttribute('src', '/hungry_machines/hungry-machines.js?v=3.6.0');
+    document.head.appendChild(tag);
+    _stubFetchWithHealth({ status: 'ok', version: '2.4.1', api_build: 'a1b2c3d' });
+
+    const el = mountPanel();
+    await flush(el);
+
+    const versions = el.shadowRoot!.querySelector('.versions');
+    expect(versions).not.toBeNull();
+    expect(versions!.textContent).toContain('Integration v3.6.0');
+    expect(versions!.textContent).toContain('API build a1b2c3d');
+  });
+
+  it('renders an em dash for each version it cannot determine', async () => {
+    // No script tag planted, and a /health response from an older API
+    // that predates the api_build field.
+    _stubFetchWithHealth({ status: 'ok', version: '2.4.1' });
+
+    const el = mountPanel();
+    await flush(el);
+
+    const lines = Array.from(
+      el.shadowRoot!.querySelectorAll('.versions .version-line'),
+    ).map((n) => n.textContent!.replace(/\s+/g, ' ').trim());
+    expect(lines).toEqual(['Integration —', 'API build —']);
   });
 
   it('shows a graceful fallback when the fetch fails', async () => {

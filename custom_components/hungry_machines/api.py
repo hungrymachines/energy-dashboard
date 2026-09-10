@@ -22,6 +22,7 @@ from homeassistant.helpers import aiohttp_client
 
 from . import auth
 from .const import API_BASE_URL
+from .version import build_client_info
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -124,11 +125,20 @@ async def post_home_readings(
     Used for HVAC thermal-model data. The API accepts up to 100 readings
     per call (per app/routes/readings.py:46), so an hourly batch of 12 is
     well within bounds.
+
+    The batch carries a `client` object identifying this build (HACS vs
+    fleet node, integration version, node bundle, HA version). The
+    backend stamps it onto the user row and raises a fleet event when it
+    moves; it is display-only and never changes how a reading is stored.
     """
     if not readings:
         return False
     body = await _authenticated_request(
-        hass, entry, "POST", "/api/v1/readings", json={"readings": readings}
+        hass,
+        entry,
+        "POST",
+        "/api/v1/readings",
+        json={"readings": readings, "client": build_client_info()},
     )
     return body is not None
 

@@ -77,6 +77,14 @@ def _install_stubs() -> None:
     _ensure_module("homeassistant.components")
     _ensure_module("homeassistant.helpers")
 
+    # `homeassistant.const.__version__` — the running HA version. The
+    # integration reports it in the `client` object on every readings
+    # push (version.build_client_info), so the stub needs a plausible
+    # value rather than just existing.
+    const_mod = _ensure_module("homeassistant.const")
+    if not hasattr(const_mod, "__version__"):
+        const_mod.__version__ = "2025.7.0"
+
     core = _ensure_module("homeassistant.core")
     if not hasattr(core, "HomeAssistant"):
 

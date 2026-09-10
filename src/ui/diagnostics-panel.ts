@@ -4,6 +4,7 @@ import type {
   DivergenceReport,
   ConfiguredSensor,
 } from '../api/diagnostics.js';
+import { getIntegrationVersion } from '../utils/version.js';
 
 /**
  * `<hm-diagnostics-panel>` — three-signal divergence renderer.
@@ -188,11 +189,23 @@ export class HmDiagnosticsPanel extends LitElement {
     .sensor-details[open] > .sensor-grid {
       margin-top: 8px;
     }
+    .diag-body {
+      display: contents;
+    }
+    .versions {
+      margin-top: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 16px;
+      font-size: 12px;
+      color: var(--hm-muted, #64748B);
+    }
   `;
 
   static override properties = {
     _report: { state: true },
     _sensors: { state: true },
+    _apiBuild: { state: true },
     _loading: { state: true },
     _error: { state: true },
     refreshKey: { type: Number, attribute: 'refresh-key', reflect: true },
@@ -200,6 +213,7 @@ export class HmDiagnosticsPanel extends LitElement {
 
   _report: DivergenceReport | null = null;
   _sensors: ConfiguredSensor[] | null = null;
+  _apiBuild: string | null = null;
   _loading = false;
   _error: string | null = null;
   refreshKey = 0;
@@ -221,11 +235,12 @@ export class HmDiagnosticsPanel extends LitElement {
   private async _load(): Promise<void> {
     this._loading = true;
     this._error = null;
-    // Fetch divergence + sensor health in parallel — they're
-    // independent endpoints and the panel renders both.
-    const [report, sensors] = await Promise.allSettled([
+    // Fetch divergence + sensor health + the API build in parallel —
+    // they're independent endpoints and the panel renders all three.
+    const [report, sensors, health] = await Promise.allSettled([
       diagnostics.getDivergenceReport(),
       diagnostics.getSensorHealth(),
+      diagnostics.getApiHealth(),
     ]);
     if (report.status === 'fulfilled') {
       this._report = report.value;
@@ -243,10 +258,37 @@ export class HmDiagnosticsPanel extends LitElement {
       // the section.
       this._sensors = null;
     }
+    // Same rule for the build stamp: a missing one renders as '—',
+    // it never turns into an error banner.
+    this._apiBuild =
+      health.status === 'fulfilled' && typeof health.value?.api_build === 'string'
+        ? health.value.api_build
+        : null;
     this._loading = false;
   }
 
   override render() {
+    // The version footer sits below whatever the body renders, in every
+    // state — a user who can't load diagnostics at all is exactly the
+    // user being asked "which version are you on?".
+    //
+    // The body is wrapped in a real element rather than interpolated
+    // straight into the fragment root: happy-dom drops a marker comment
+    // that leads the template, which shifts every following part by one
+    // (the body's HTML lands in the Integration slot, the version in the
+    // API-build slot). Same family as the `${cond ? html : null}` edge
+    // case noted in `_renderBody`. One wrapper div costs nothing and
+    // keeps the parts aligned.
+    return html`
+      <div class="diag-body">${this._renderBody()}</div>
+      <div class="versions">
+        <span class="version-line">Integration ${_fmtVersion(getIntegrationVersion())}</span>
+        <span class="version-line">API build ${this._apiBuild || '—'}</span>
+      </div>
+    `;
+  }
+
+  private _renderBody() {
     if (this._loading && !this._report && !this._sensors) {
       return html`<div class="banner muted"><span class="msg">Checking integration health…</span></div>`;
     }
@@ -372,6 +414,12 @@ export class HmDiagnosticsPanel extends LitElement {
     `;
   }
 
+}
+
+/** `3.6.0` -> `v3.6.0`; unknown -> the em dash the panel uses for "no value". */
+function _fmtVersion(v: string | null): string {
+  if (!v) return '—';
+  return v.startsWith('v') ? v : `v${v}`;
 }
 
 function _sensorTone(v: ConfiguredSensor['verdict']): 'healthy' | 'intermittent' | 'bad' {

@@ -18,8 +18,9 @@ v2.0+: drives a closed control loop across every registered appliance.
   `scheduler.comfort_watchdog` closes the loop the open-loop schedule
   can't: when a scheduled-OFF HVAC has drifted out of its comfort band
   (thermal model underestimated the heat/cool rate), it commands the unit
-  back on at the band edge, with hysteresis to avoid short-cycling the
-  compressor.
+  back on at the FAR band edge, with hysteresis to avoid short-cycling
+  the compressor (the release margin, not the setpoint, is what stops
+  the run).
 * **Schedule freshness poll** (rides both cadences above, no extra
   timer) — `scheduler.check_schedule_freshness` runs right before each
   comfort-watchdog tick and each slot apply, making one cheap `GET
@@ -39,7 +40,6 @@ v2.0+: drives a closed control loop across every registered appliance.
 """
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 
@@ -56,6 +56,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_time_change
 
 from . import readings, weather
+from .version import MANIFEST_VERSION
 from .const import (
     DOMAIN,
     PANEL_ICON,
@@ -75,29 +76,6 @@ from .scheduler import (
 _LOGGER = logging.getLogger(__name__)
 
 _FRONTEND_REGISTERED = "_frontend_registered"
-
-
-def _read_manifest_version() -> str:
-    """Read the integration version from manifest.json.
-
-    Called once at module import time (synchronous, before HA's event
-    loop starts) and cached in MANIFEST_VERSION below. The previous
-    inline call from _ensure_frontend_registered triggered HA's
-    blocking-IO-on-event-loop warning per
-    https://developers.home-assistant.io/docs/asyncio_blocking_operations/
-    """
-    try:
-        with (Path(__file__).parent / "manifest.json").open() as f:
-            return str(json.load(f).get("version") or "0")
-    except (OSError, ValueError):
-        return "0"
-
-
-# Read once at import. HA imports custom_components synchronously during
-# integration loading (before the event loop fully spins up), so doing
-# the file IO here is safe — and avoids the blocking-call warning when
-# we use the value below to build the cache-busting JS URL.
-MANIFEST_VERSION = _read_manifest_version()
 
 
 async def _ensure_frontend_registered(hass: HomeAssistant) -> bool:
@@ -224,7 +202,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # slot boundaries (immature thermal model, hotter-than-forecast day).
     # This checks the live indoor temperature every 5 min and, for a
     # scheduled-OFF HVAC that has left its comfort band, commands the unit
-    # back on at the band edge — with hysteresis so it doesn't short-cycle
+    # back on at the far band edge — with hysteresis so it doesn't short-cycle
     # (see scheduler.comfort_watchdog / comfort.decide). Offset to :45s so
     # it never races the 5-min readings capture.
     #
