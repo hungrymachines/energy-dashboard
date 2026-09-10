@@ -240,6 +240,80 @@ describe('hungry-machines-panel dashboard (US-FE-07)', () => {
     expect(content.textContent).toContain('Not Connected');
   });
 
+  // US-CTL-012: savings_pct is the model's baseline minus the plan at the
+  // plan's own price curve, so the card labels it an estimate rather than
+  // letting it read as a metered bill difference.
+  it("prefixes each appliance's savings line with 'est.' and titles it as an estimate", async () => {
+    installFetchStub({
+      '/api/v1/schedules': SCHEDULES_RESPONSE,
+      '/api/v1/rates': RATES_RESPONSE,
+    });
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+
+    const el = mountPanel();
+    el._view = 'dashboard';
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const lines = Array.from(
+      root.querySelectorAll('.cards > .card[data-appliance-type] .savings'),
+    );
+    expect(lines.length).toBe(2);
+    // Rounding is unchanged: 18.5 -> 19, 32.1 -> 32.
+    expect(lines.map((n) => n.textContent?.trim())).toEqual([
+      'est. 19% savings today',
+      'est. 32% savings today',
+    ]);
+    for (const line of lines) {
+      expect(line.getAttribute('title')).toBe(
+        "Estimated from the model's baseline at the plan's price curve",
+      );
+    }
+  });
+
+  it("names the plan's average price in the title when the schedule carries pricing_cents_48", async () => {
+    // 24 slots at 10 c/kWh + 24 at 20 -> mean 15.0.
+    const priced = {
+      date: '2025-11-18',
+      appliances: [
+        {
+          ...HVAC_SCHEDULE,
+          schedule: {
+            ...HVAC_SCHEDULE.schedule,
+            pricing_cents_48: Array.from({ length: 48 }, (_, i) => (i < 24 ? 10 : 20)),
+          },
+        },
+      ],
+    };
+    installFetchStub({
+      '/api/v1/schedules': priced,
+      '/api/v1/rates': RATES_RESPONSE,
+    });
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+
+    const el = mountPanel();
+    el._view = 'dashboard';
+    await flush(el);
+
+    const line = el.shadowRoot!.querySelector(
+      '.cards > .card[data-appliance-type="hvac"] .savings',
+    )!;
+    expect(line.textContent?.trim()).toBe('est. 19% savings today');
+    expect(line.getAttribute('title')).toBe(
+      "Estimated from the model's baseline at the plan's price curve (avg 15.0 \u00a2/kWh)",
+    );
+  });
+
   it('refreshes the price-bar curve when returning to the dashboard (daily rollover / changed rates)', async () => {
     const NEW_RATES = Array.from({ length: 48 }, () => 99);
     let ratesCalls = 0;

@@ -207,6 +207,64 @@ describe('hm-savings-card', () => {
     expect(el.getCardSize()).toBe(2);
   });
 
+  // US-CTL-012: the headline number is the model's baseline minus the plan
+  // at the plan's price curve, so both modes label it an estimate.
+  it("prefixes the whole-home headline with 'est.' and titles it as an estimate", async () => {
+    installFetchStub();
+    const el = mountCard();
+    el.setConfig({ type: 'custom:hm-savings-card' });
+    await flush(el);
+
+    const savings = el.shadowRoot!.querySelector('.savings')!;
+    // (18 + 32) / 2 = 25 — unchanged.
+    expect(savings.textContent?.trim()).toBe('est. 25% savings today');
+    expect(savings.getAttribute('title')).toBe(
+      "Estimated from the model's baseline at the plan's price curve",
+    );
+  });
+
+  it("prefixes the scoped headline with 'est.' and names the plan's average price", async () => {
+    installFetchStub({
+      date: '2025-11-18',
+      appliances: [
+        {
+          ...HVAC_APPLIANCE,
+          appliance_id: 'hvac-bedroom',
+          name: 'Bedroom',
+          savings_pct: 34,
+          schedule: {
+            ...HVAC_APPLIANCE.schedule,
+            // 24 slots at 10 c/kWh + 24 at 20 -> mean 15.0.
+            pricing_cents_48: Array.from({ length: 48 }, (_, i) => (i < 24 ? 10 : 20)),
+          },
+        },
+      ],
+    });
+    const el = mountCard();
+    el.setConfig({
+      type: 'custom:hm-savings-card',
+      appliance_id: 'hvac-bedroom',
+    });
+    await flush(el);
+
+    const savings = el.shadowRoot!.querySelector('.savings')!;
+    expect(savings.textContent?.trim()).toBe('est. 34% savings today');
+    expect(savings.getAttribute('title')).toBe(
+      "Estimated from the model's baseline at the plan's price curve (avg 15.0 \u00a2/kWh)",
+    );
+  });
+
+  it('leaves the em dash bare — no estimate title when there is no number', async () => {
+    installFetchStub({ date: '2025-11-18', appliances: [] });
+    const el = mountCard();
+    el.setConfig({ type: 'custom:hm-savings-card' });
+    await flush(el);
+
+    const savings = el.shadowRoot!.querySelector('.savings')!;
+    expect(savings.textContent?.trim()).toBe('\u2014');
+    expect(savings.getAttribute('title')).toBe('');
+  });
+
   it('US-MHVAC-018: scoped by appliance_id renders that one appliance\'s savings (not the average)', async () => {
     installFetchStub({
       date: '2025-11-18',

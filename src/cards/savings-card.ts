@@ -6,6 +6,11 @@ import {
   type InlineIntegrationHealth,
   type SchedulesResponse,
 } from '../api/schedules.js';
+import {
+  SAVINGS_ESTIMATE_TITLE,
+  formatSavingsEstimate,
+  savingsEstimateTitle,
+} from '../utils/savings.js';
 
 export interface HmSavingsCardConfig {
   type?: string;
@@ -271,16 +276,16 @@ export class HmSavingsCard extends LitElement {
 
   private _renderScoped(entry: ApplianceScheduleEntry): TemplateResult {
     const savings = entry.savings_pct;
-    const savingsText =
-      typeof savings === 'number' && Number.isFinite(savings)
-        ? `${Math.round(savings)}% savings today`
-        : '—';
+    const hasSavings = typeof savings === 'number' && Number.isFinite(savings);
+    const savingsText = hasSavings ? formatSavingsEstimate(savings) : '—';
+    // Scoped to one appliance, so the plan's own price curve is in hand.
+    const savingsTitle = hasSavings ? savingsEstimateTitle(entry.schedule) : '';
     const powerText = this._formatPower();
     const health = entry.integration_health;
     const healthHidden = !health || health.status === 'healthy';
     return html`
       <div class="scope-name">${entry.name}</div>
-      <div class="savings">${savingsText}</div>
+      <div class="savings" title=${savingsTitle}>${savingsText}</div>
       <div
         class="power-row"
         ?hidden=${powerText === null}
@@ -336,11 +341,13 @@ export class HmSavingsCard extends LitElement {
     }
 
     const avg = this._averageSavings();
-    const savingsText = avg === null ? '—' : `${Math.round(avg)}% savings today`;
+    const savingsText = avg === null ? '—' : formatSavingsEstimate(avg);
+    // Whole-home average spans several plans — no single price curve to name.
+    const savingsTitle = avg === null ? '' : SAVINGS_ESTIMATE_TITLE;
     const powerText = this._formatPower();
 
     return html`
-      <div class="savings">${savingsText}</div>
+      <div class="savings" title=${savingsTitle}>${savingsText}</div>
       <div class="savings-sub">Average across your appliances</div>
       <div
         class="power-row"

@@ -31,6 +31,8 @@ All three share one sign-in. Sign in once via the panel and the cards activate e
 3. Each night, Hungry Machines resolves a 24-hour weather forecast and your rates, then runs an optimization per appliance that picks operating intervals to minimize cost while staying inside your comfort and charge constraints.
 4. Your Home Assistant pulls the resulting schedule and, on every 30-minute boundary, applies it to each appliance. For HVAC that means setpoint, mode, and fan; for EV/battery/water heater it switches the device on or off. The panel and cards in this package show what's running, what's coming next, and how much you save.
 
+Savings figures are estimates until a metered baseline exists: each one is the cost the model predicts a naive thermostat would have run up, minus the plan Hungry Machines chose, both priced on the curve that plan was built against.
+
 The optimization itself (per-HVAC thermal models, HVAC scheduling, EV/battery load-shifting, water-heater control, solar coupling) lives in the backend. You can visit the [online game](https://hungrymachines.io/feed-your-hungry-machines/) to experience how it works. This package is the user-facing window into it.
 
 ## Requirements
