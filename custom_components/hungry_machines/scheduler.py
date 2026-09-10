@@ -59,6 +59,26 @@ and, for any HVAC that has actually drifted out of its comfort band —
 including one that is already actively COOLing or HEATing and overshot
 the far edge — commands it toward the FAR band edge with hysteresis —
 see `_comfort_band_override` and the pure state machine in `comfort.py`.
+
+Room-target tracking (US-CTL-041): the guard only acts at the band edges,
+which leaves the whole interior of the band open-loop. The nightly blob
+carries `room_target_temps[48]` beside `setpoint_temps[48]` — the target
+is what the optimizer wants the user's ASSIGNED SENSOR to read, the
+setpoint is the command it believes produces that reading, and the two
+differ by the fitted sensor gap. When the gap is wrong the room settles
+somewhere other than the plan, so the same 5-minute watchdog tick runs a
+tracking step per entity (`_track_room_target`):
+
+    room > target + 0.5°F  →  command max(low_temps[slot],  setpoint − 1)
+    room < target − 0.5°F  →  command min(high_temps[slot], setpoint + 1)
+    otherwise              →  no service call
+
+The unit setpoint is an internal detail of that loop: the :00/:30 apply
+still seeds each slot with `setpoint_temps[slot]`, and the tracking step
+walks it from there. It never leaves `[low_temps, high_temps]`, never
+runs while the guard's latch is engaged (the guard owns the entity while
+it is the safety net), and never fires within `comfort.MIN_ON_SECONDS`
+of its own last command.
 """
 from __future__ import annotations
 
@@ -96,6 +116,21 @@ CALIBRATION_OVERSHOOT_F = 2.0
 # so a stuck condition (e.g. a permanently unreadable sensor) logs once
 # instead of every 5-minute tick. See `_log_comfort_silence`.
 _SILENT_SKIP_KEY = "comfort_silent_skip_reason"
+
+# Room-target tracking step (US-CTL-041). Act once the assigned sensor is
+# this far off the slot's `room_target_temps` value, and correct by this
+# much per step. Half a degree is below what a user notices and above
+# typical sensor noise; a one-degree step is the smallest most climate
+# entities accept, so the loop converges without overshooting. The step
+# is rate-limited by `comfort.MIN_ON_SECONDS` per entity, so with a
+# 5-minute watchdog tick it fires at most every other tick.
+ROOM_TRACK_DEADBAND_F = 0.5
+ROOM_TRACK_STEP_F = 1.0
+
+# Per-entity timestamp of the tracking step's own last command, so the
+# step honours its minimum interval. Separate from the guard's latch:
+# the guard may command as often as it likes, the tracker may not.
+_ROOM_TRACK_LAST_KEY = "room_track_last"
 
 
 def _domain_data(hass: HomeAssistant) -> dict[str, Any]:
@@ -639,6 +674,203 @@ def _aux_indoor_temp_entity_id(hass: HomeAssistant, entity_id: str) -> str | Non
     return None
 
 
+def _resolve_indoor_temp(
+    hass: HomeAssistant, entity_id: str,
+) -> tuple[float | None, str | None, bool]:
+    """Read the room temperature the plan was written against.
+
+    US-CTL-004 precedence: the appliance's configured room sensor is
+    AUTHORITATIVE, the climate entity's own `current_temperature` is the
+    second source. That order matters because the backend fits, optimizes
+    and publishes a band around the room sensor's number — anything on
+    this side judging the thermostat's own reading instead is holding a
+    different room.
+
+    Returns `(indoor, aux_entity_id, aux_source_used)`. `indoor` is None
+    when neither source produces a usable float; `aux_entity_id` is the
+    configured sensor (None when the appliance has none) and
+    `aux_source_used` says whether the returned value came from it.
+    """
+    indoor: float | None = None
+    aux_source_used = False
+    aux_entity_id = _aux_indoor_temp_entity_id(hass, entity_id)
+    if aux_entity_id:
+        aux_state = hass.states.get(aux_entity_id) if hass.states else None
+        raw = getattr(aux_state, "state", None) if aux_state else None
+        # Local import: readings.py imports get_last_commanded from
+        # this module at module load time, so a top-level import
+        # here would be circular.
+        from .readings import _coerce_float
+        indoor = _coerce_float(raw)
+        aux_source_used = indoor is not None
+    if indoor is None:
+        # No room sensor configured, or it's missing/non-numeric — the
+        # climate entity's own reading is the second source. Tuya/
+        # IR-blaster/Generic Thermostat wrappers report None here, which
+        # is the case the room sensor exists to cover.
+        state = hass.states.get(entity_id) if hass.states else None
+        attrs = getattr(state, "attributes", None) or {} if state else {}
+        try:
+            indoor = float(attrs.get("current_temperature"))
+        except (TypeError, ValueError):
+            indoor = None
+    return indoor, aux_entity_id, aux_source_used
+
+
+def get_room_target(hass: HomeAssistant, entity_id: str) -> float | None:
+    """The current slot's plan ROOM target for the HVAC driven by
+    `entity_id`, or None when the cache carries no `room_target_temps`.
+
+    `room_target_temps` is the temperature the optimizer wants the
+    ASSIGNED SENSOR to read; `setpoint_temps` is the command it believes
+    produces it. `readings.py` attaches this beside the unit's own
+    `target_temp` so the backend can grade the pair. Returns None for
+    legacy schedules written before US-CTL-040.
+    """
+    cache = _domain_data(hass).get("schedule")
+    if not isinstance(cache, dict):
+        return None
+    for aid, info in cache.items():
+        if aid in ("fetched_at", "optimization_enabled") or not isinstance(info, dict):
+            continue
+        if info.get("entity_id") != entity_id:
+            continue
+        schedule = info.get("schedule")
+        if not isinstance(schedule, dict):
+            return None
+        return _band_edge(schedule, "room_target_temps", _current_slot())
+    return None
+
+
+def _resolve_unit_setpoint(
+    hass: HomeAssistant, entity_id: str, schedule: dict, slot: int,
+) -> float | None:
+    """The setpoint the unit is currently being held at — the value the
+    tracking step steps away from.
+
+    What WE last commanded wins over what the entity reports: a
+    cloud-bridged unit (Tuya, several mini-splits) reflects a
+    `set_temperature` seconds-to-minutes late, and an integrator that
+    reads back a stale value re-issues the same step forever. The
+    entity's `temperature` attribute is the fallback for an entity the
+    scheduler has never driven (fresh HA start), and the slot's planned
+    setpoint the fallback after that.
+    """
+    commanded = get_last_commanded(hass, entity_id)
+    if isinstance(commanded, dict) and commanded.get("setpoint") is not None:
+        try:
+            return float(commanded["setpoint"])
+        except (TypeError, ValueError):
+            pass
+    state = hass.states.get(entity_id) if hass.states else None
+    attrs = getattr(state, "attributes", None) or {} if state else {}
+    try:
+        return float(attrs.get("temperature"))
+    except (TypeError, ValueError):
+        pass
+    return _resolve_setpoint(schedule, slot)
+
+
+def _track_room_target(
+    hass: HomeAssistant,
+    entity_id: str,
+    schedule: dict,
+    slot: int,
+    now: datetime | None = None,
+) -> float | None:
+    """One step of the room-target tracking loop, or None for no call.
+
+    The unit setpoint is an internal detail; the slot's
+    `room_target_temps[slot]` is the number the user's assigned sensor
+    is supposed to read. The two differ by the fitted sensor gap, and
+    when that gap is wrong — a window unit whose thermistor sits three
+    degrees off the room, a mini-split reading its own return air — the
+    open-loop setpoint lands the room somewhere other than the plan.
+    This closes the difference a degree at a time:
+
+      * room warmer than target by more than `ROOM_TRACK_DEADBAND_F`
+        → command `max(low_temps[slot], unit_setpoint - ROOM_TRACK_STEP_F)`
+      * room cooler than target by the same margin
+        → command `min(high_temps[slot], unit_setpoint + ROOM_TRACK_STEP_F)`
+      * inside the deadband → no service call at all
+
+    Heat is the mirror image and lands on the same arithmetic: a lower
+    setpoint asks for less heat, a higher one for more, so "room above
+    target → step down" holds in both modes.
+
+    The result never leaves `[low_temps[slot], high_temps[slot]]`; at an
+    edge the step saturates there and re-asserts it, which is what drives
+    a unit that quietly drops commands.
+
+    Deliberately silent when:
+      * the slot carries no room target (legacy schedule, or a plant-model
+        blob written before US-CTL-040),
+      * the comfort guard's latch is active — the guard is the safety net
+        and owns the entity while engaged; walking its far-edge command
+        back one degree at a time is exactly what must not happen,
+      * the day's mode isn't cool/heat/auto, or this slot commands OFF
+        (nothing to track toward; an idle unit drifting is the guard's job),
+      * the tracking step itself commanded within `comfort.MIN_ON_SECONDS`
+        — the same short-cycle floor the guard honours,
+      * neither indoor source reads (the guard already logs that case).
+    """
+    now = now or dt_util.utcnow()
+
+    target = _band_edge(schedule, "room_target_temps", slot)
+    if target is None:
+        return None
+
+    latch = (_domain_data(hass).get(_COMFORT_LATCH_KEY) or {}).get(entity_id)
+    if isinstance(latch, dict) and latch.get("active"):
+        return None
+
+    sched_mode = str(schedule.get("mode") or "").strip().lower()
+    if sched_mode not in ("cool", "heat", "auto"):
+        return None
+
+    mode_canonical = _resolve_canonical(schedule, "hvac_mode_schedule", slot)
+    if mode_canonical is not None and mode_canonical.strip().upper() == "OFF":
+        return None
+
+    last = (_domain_data(hass).get(_ROOM_TRACK_LAST_KEY) or {}).get(entity_id)
+    if isinstance(last, datetime):
+        if (now - last).total_seconds() < comfort.MIN_ON_SECONDS:
+            return None
+
+    indoor, _aux_entity_id, _aux_used = _resolve_indoor_temp(hass, entity_id)
+    if indoor is None:
+        return None
+
+    if indoor > target + ROOM_TRACK_DEADBAND_F:
+        step = -ROOM_TRACK_STEP_F
+    elif indoor < target - ROOM_TRACK_DEADBAND_F:
+        step = ROOM_TRACK_STEP_F
+    else:
+        return None
+
+    unit_setpoint = _resolve_unit_setpoint(hass, entity_id, schedule, slot)
+    if unit_setpoint is None:
+        return None
+
+    commanded = unit_setpoint + step
+    high = _band_edge(schedule, "high_temps", slot)
+    low = _band_edge(schedule, "low_temps", slot)
+    if low is not None and high is not None and low <= high:
+        commanded = max(low, min(commanded, high))
+    elif low is not None:
+        commanded = max(low, commanded)
+    elif high is not None:
+        commanded = min(high, commanded)
+
+    _domain_data(hass).setdefault(_ROOM_TRACK_LAST_KEY, {})[entity_id] = now
+    _LOGGER.info(
+        "Hungry Machines room-target step slot=%d: %s room %.1f°F vs target "
+        "%.1f°F — moving the setpoint %.1f°F → %.1f°F (band [%s, %s]°F)",
+        slot, entity_id, indoor, target, unit_setpoint, commanded, low, high,
+    )
+    return commanded
+
+
 def _comfort_band_override(
     hass: HomeAssistant,
     entity_id: str,
@@ -728,35 +960,16 @@ def _comfort_band_override(
         ):
             overshoot_f = CALIBRATION_OVERSHOOT_F
 
-    state = hass.states.get(entity_id) if hass.states else None
-    attrs = getattr(state, "attributes", None) or {} if state else {}
-
     # US-CTL-004: the configured room sensor is AUTHORITATIVE, not a
     # fallback. It is the temperature the backend fits, optimizes and
     # publishes a band around, so the guard has to judge that same
     # number — a guard watching the thermostat's own reading while the
-    # plan was built from the room sensor holds a different room.
-    indoor: float | None = None
-    aux_source_used = False
-    aux_entity_id = _aux_indoor_temp_entity_id(hass, entity_id)
-    if aux_entity_id:
-        aux_state = hass.states.get(aux_entity_id) if hass.states else None
-        raw = getattr(aux_state, "state", None) if aux_state else None
-        # Local import: readings.py imports get_last_commanded from
-        # this module at module load time, so a top-level import
-        # here would be circular.
-        from .readings import _coerce_float
-        indoor = _coerce_float(raw)
-        aux_source_used = indoor is not None
-    if indoor is None:
-        # No room sensor configured, or it's missing/non-numeric — the
-        # climate entity's own reading is the second source. Tuya/
-        # IR-blaster/Generic Thermostat wrappers report None here, which
-        # is the case the room sensor exists to cover.
-        try:
-            indoor = float(attrs.get("current_temperature"))
-        except (TypeError, ValueError):
-            indoor = None
+    # plan was built from the room sensor holds a different room. The
+    # tracking step (`_track_room_target`) reads through the same helper,
+    # so guard and tracker can never disagree about which room they hold.
+    indoor, aux_entity_id, aux_source_used = _resolve_indoor_temp(
+        hass, entity_id,
+    )
 
     if indoor is None:
         # Can't read the room from either source — release conservatively
@@ -950,6 +1163,19 @@ async def comfort_watchdog(hass: HomeAssistant, entry: ConfigEntry) -> None:
             await _apply_hvac(
                 hass, entity_id, schedule, slot, appliance_name=name,
             )
+            continue
+
+        # US-CTL-041: no guard latch, so run the room-target tracking
+        # step. The guard is the safety net at the band edges; this holds
+        # the assigned sensor at the plan's target in between, by moving
+        # the unit setpoint a degree at a time. It returns None (no
+        # service call) far more often than not — see `_track_room_target`.
+        tracked = _track_room_target(hass, entity_id, schedule, slot)
+        if tracked is not None:
+            await _apply_hvac(
+                hass, entity_id, schedule, slot,
+                appliance_name=name, setpoint_override=tracked,
+            )
 
 
 async def _apply_hvac(
@@ -958,8 +1184,18 @@ async def _apply_hvac(
     schedule: dict,
     slot: int,
     appliance_name: str | None = None,
+    setpoint_override: float | None = None,
 ) -> None:
+    """Drive one HVAC entity for `slot`.
+
+    `setpoint_override` replaces `setpoint_temps[slot]` for this call —
+    the room-target tracking step passes its stepped value here. It does
+    NOT bypass the comfort guard: an active guard latch still wins below,
+    the same as it does over the plan's own setpoint.
+    """
     setpoint = _resolve_setpoint(schedule, slot)
+    if setpoint_override is not None:
+        setpoint = setpoint_override
     mode_canonical = _resolve_canonical(schedule, "hvac_mode_schedule", slot)
     fan_canonical = _resolve_canonical(schedule, "fan_mode_schedule", slot)
 

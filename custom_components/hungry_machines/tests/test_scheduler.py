@@ -2676,3 +2676,250 @@ async def test_apply_hvac_skips_fan_when_entity_has_no_matching_tier() -> None:
     assert services == ["set_temperature"], (
         f"expected only set_temperature, got {services}"
     )
+
+
+# --- US-CTL-041: room-target tracking step --------------------------------
+# The guard holds the band EDGES; the tracking step holds the assigned
+# sensor at the slot's `room_target_temps` value in between, by moving
+# the unit setpoint one degree at a time. Cache below: cool day, band
+# [70, 74], plan setpoint 72.0, room target 73.0.
+
+
+def _track_cache(
+    room_target: float = 73.0,
+    sched_mode: str = "cool",
+    setpoint: float = 72.0,
+    hvac_mode_schedule: list[str] | None = None,
+    indoor_temp_entity_id: str | None = None,
+) -> dict:
+    cache = _hvac_cache(
+        setpoint=setpoint,
+        hvac_mode_schedule=hvac_mode_schedule,
+        indoor_temp_entity_id=indoor_temp_entity_id,
+    )
+    schedule = cache["schedule"]["hvac-1"]["schedule"]
+    schedule["mode"] = sched_mode
+    schedule["room_target_temps"] = [room_target] * 48
+    return cache
+
+
+def _track_state(room_temp: float, unit_setpoint: float = 72.0) -> MagicMock:
+    state = _climate_state("cool", supports_range=False,
+                           hvac_modes=["off", "cool"])
+    state.attributes["current_temperature"] = room_temp
+    state.attributes["temperature"] = unit_setpoint
+    return state
+
+
+@pytest.mark.asyncio
+async def test_tracking_step_steps_setpoint_down_when_room_above_target() -> None:
+    """Room 74.0°F against a 73.0°F target — past the 0.5°F deadband —
+    steps the 72.0°F unit setpoint DOWN one degree to 71.0°F. The plan's
+    own setpoint is untouched; only what we command this tick moves."""
+    hass = _hass(_track_state(74.0))
+    entry = _entry()
+    hass.data[DOMAIN] = _track_cache()
+
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.comfort_watchdog(hass, entry)
+
+    temp_calls = [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_temperature"
+    ]
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 71.0
+    # The stepped value is the commanded truth for the reconciler.
+    assert scheduler.get_last_commanded(
+        hass, "climate.living_room",
+    )["setpoint"] == 71.0
+
+
+@pytest.mark.asyncio
+async def test_tracking_step_steps_setpoint_up_when_room_below_target() -> None:
+    """Room 71.5°F against a 73.0°F target steps the setpoint UP to
+    73.0°F (72.0 + 1), still inside the [70, 74] band."""
+    hass = _hass(_track_state(71.5))
+    entry = _entry()
+    hass.data[DOMAIN] = _track_cache()
+
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.comfort_watchdog(hass, entry)
+
+    temp_calls = [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_temperature"
+    ]
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 73.0
+
+
+@pytest.mark.asyncio
+async def test_tracking_step_clamps_at_the_band_floor() -> None:
+    """Unit already at the 70.0°F band floor and the room still above
+    target: the step saturates at the floor rather than commanding 69.0°F.
+    It re-asserts 70.0 (a unit that dropped the last command gets it
+    again) but never leaves the comfort band."""
+    hass = _hass(_track_state(78.0, unit_setpoint=70.0))
+    entry = _entry()
+    hass.data[DOMAIN] = _track_cache()
+    # What we last commanded is what the step walks from.
+    scheduler._record_last_commanded(
+        hass, "climate.living_room",
+        hvac_mode="COOL", fan_mode=None, setpoint=70.0,
+    )
+
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.comfort_watchdog(hass, entry)
+
+    temp_calls = [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_temperature"
+    ]
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 70.0
+
+
+@pytest.mark.asyncio
+async def test_tracking_step_holds_inside_the_deadband() -> None:
+    """Room 73.4°F vs a 73.0°F target is inside the 0.5°F deadband — no
+    service call at all. The watchdog must not re-command every 5 min
+    for a fraction of a degree."""
+    hass = _hass(_track_state(73.4))
+    entry = _entry()
+    hass.data[DOMAIN] = _track_cache()
+
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.comfort_watchdog(hass, entry)
+
+    assert not hass.services.async_call.await_args_list
+
+
+@pytest.mark.asyncio
+async def test_tracking_step_yields_to_an_active_guard_latch() -> None:
+    """Room 80°F: the guard latches and commands the FAR band edge
+    (70.0°F). The tracking step must not run at all — a one-degree walk
+    back from the safety net's command is the failure mode."""
+    hass = _hass(_track_state(80.0))
+    entry = _entry()
+    hass.data[DOMAIN] = _track_cache()
+
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.comfort_watchdog(hass, entry)
+
+    temp_calls = [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_temperature"
+    ]
+    # The guard's far edge, not 72.0 − 1.
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 70.0
+    assert hass.data[DOMAIN]["comfort_latch"]["climate.living_room"]["active"]
+    # And the tracker never stamped a command of its own.
+    assert not hass.data[DOMAIN].get("room_track_last")
+
+
+@pytest.mark.asyncio
+async def test_tracking_step_respects_its_own_min_interval() -> None:
+    """The step commanded 4 minutes ago, so this tick is silent even
+    though the room is still off target. MIN_ON_SECONDS is a
+    short-cycle floor on the tracker as much as on the guard."""
+    hass = _hass(_track_state(74.0))
+    entry = _entry()
+    hass.data[DOMAIN] = _track_cache()
+    hass.data[DOMAIN]["room_track_last"] = {
+        "climate.living_room": datetime.now(timezone.utc) - timedelta(minutes=4),
+    }
+
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.comfort_watchdog(hass, entry)
+
+    assert not hass.services.async_call.await_args_list
+
+    # Past the interval, the same conditions do command.
+    hass.data[DOMAIN]["room_track_last"] = {
+        "climate.living_room": datetime.now(timezone.utc) - timedelta(minutes=11),
+    }
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.comfort_watchdog(hass, entry)
+
+    temp_calls = [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_temperature"
+    ]
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 71.0
+
+
+@pytest.mark.asyncio
+async def test_tracking_step_silent_without_room_targets() -> None:
+    """A legacy schedule (no `room_target_temps`) tracks nothing — the
+    pre-US-CTL-041 watchdog behaviour, unchanged."""
+    hass = _hass(_track_state(74.0))
+    entry = _entry()
+    cache = _track_cache()
+    del cache["schedule"]["hvac-1"]["schedule"]["room_target_temps"]
+    hass.data[DOMAIN] = cache
+
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.comfort_watchdog(hass, entry)
+
+    assert not hass.services.async_call.await_args_list
+
+
+@pytest.mark.asyncio
+async def test_tracking_step_skips_an_off_slot() -> None:
+    """A slot the plan commands OFF has nothing to track toward; an idle
+    unit drifting is the guard's job, not the tracker's."""
+    hass = _hass(_track_state(74.0))
+    entry = _entry()
+    hass.data[DOMAIN] = _track_cache(hvac_mode_schedule=["OFF"] * 48)
+
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.comfort_watchdog(hass, entry)
+
+    assert not hass.services.async_call.await_args_list
+
+
+@pytest.mark.asyncio
+async def test_tracking_step_reads_the_assigned_room_sensor_first() -> None:
+    """US-CTL-004 precedence: with a room sensor configured, the tracker
+    judges THAT number, not the thermostat's own reading. Thermostat
+    says 73.0 (on target, would be silent); the room sensor says 73.8,
+    off target but still inside the band, so the tracker — not the
+    guard — steps the setpoint down."""
+    climate = _track_state(73.0)
+    sensor = MagicMock()
+    sensor.state = "73.8"
+    hass = _hass()
+    hass.states.get = MagicMock(side_effect=lambda eid: {
+        "climate.living_room": climate,
+        "sensor.desk_temp": sensor,
+    }.get(eid))
+    entry = _entry()
+    hass.data[DOMAIN] = _track_cache(
+        indoor_temp_entity_id="sensor.desk_temp",
+    )
+
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.comfort_watchdog(hass, entry)
+
+    temp_calls = [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_temperature"
+    ]
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 71.0
+
+
+@pytest.mark.asyncio
+async def test_slot_apply_still_seeds_the_plan_setpoint() -> None:
+    """The :00/:30 apply is untouched by the tracking loop: it seeds the
+    slot with `setpoint_temps[slot]` even when the room is off target,
+    and the tracker walks from there on the next watchdog tick."""
+    hass = _hass(_track_state(74.0))
+    entry = _entry()
+    hass.data[DOMAIN] = _track_cache()
+
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    temp_calls = [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_temperature"
+    ]
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 72.0

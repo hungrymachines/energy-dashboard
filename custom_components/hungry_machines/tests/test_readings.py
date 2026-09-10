@@ -1323,3 +1323,76 @@ async def test_capture_hvac_omits_hvac_action_when_not_exposed() -> None:
 
     posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
     assert "hvac_action" not in posted
+
+
+@pytest.mark.asyncio
+async def test_hvac_reading_carries_room_target_beside_target_temp() -> None:
+    """US-CTL-041: the reading carries both numbers — `target_temp` is
+    what the thermostat is set to, `room_target` is what the plan wants
+    the assigned sensor to read. The backend needs the pair to tell a
+    tracking error from a plan change."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.test"},
+    }
+    state = _state("cool", {"current_temperature": 74.0, "temperature": 71.0})
+    hass = _hass({"climate.test": state})
+    hass.data[DOMAIN] = {
+        "schedule": {
+            "fetched_at": "2026-09-10T06:00:00+00:00",
+            "hvac-1": {
+                "appliance_type": "hvac",
+                "entity_id": "climate.test",
+                "schedule": {"room_target_temps": [73.5] * 48},
+            },
+        }
+    }
+    entry = _entry()
+    with patch.object(scheduler, "_current_slot", return_value=28), patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["target_temp"] == 71.0
+    assert posted["room_target"] == 73.5
+
+
+@pytest.mark.asyncio
+async def test_hvac_reading_omits_room_target_for_a_legacy_schedule() -> None:
+    """No cached schedule at all, and a cached one written before
+    US-CTL-040 added `room_target_temps`: the key is left off entirely
+    rather than sent as null."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.test"},
+    }
+    state = _state("cool", {"current_temperature": 74.0, "temperature": 71.0})
+
+    hass = _hass({"climate.test": state})
+    entry = _entry()
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+    assert "room_target" not in hass.data[DOMAIN]["readings_buffer"]["home"][0]
+
+    hass2 = _hass({"climate.test": state})
+    hass2.data[DOMAIN] = {
+        "schedule": {
+            "fetched_at": "2026-09-10T06:00:00+00:00",
+            "hvac-1": {
+                "appliance_type": "hvac",
+                "entity_id": "climate.test",
+                "schedule": {"setpoint_temps": [71.0] * 48},
+            },
+        }
+    }
+    entry2 = _entry()
+    with patch.object(scheduler, "_current_slot", return_value=28), patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass2, entry2)
+    assert "room_target" not in hass2.data[DOMAIN]["readings_buffer"]["home"][0]

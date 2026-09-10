@@ -34,7 +34,7 @@ from homeassistant.core import HomeAssistant
 
 from . import api
 from .const import DOMAIN
-from .scheduler import _COMFORT_LATCH_KEY, get_last_commanded
+from .scheduler import _COMFORT_LATCH_KEY, get_last_commanded, get_room_target
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +470,15 @@ def _build_hvac_home_reading(
     target_temp = state.attributes.get("temperature")
     if target_temp is not None:
         reading["target_temp"] = target_temp
+    # The slot's ROOM target beside the unit's own setpoint (US-CTL-041).
+    # `target_temp` is what the thermostat is set to; `room_target` is
+    # what the plan wants the assigned sensor to read. The scheduler's
+    # tracking step steers the first to produce the second, and the
+    # backend needs both to tell a tracking error from a plan change.
+    # Omitted for schedules written before US-CTL-040 added the array.
+    room_target = get_room_target(hass, state.entity_id)
+    if room_target is not None:
+        reading["room_target"] = room_target
     indoor_humidity = _read_indoor_humidity(
         hass, state, indoor_humidity_entity_id,
     )
