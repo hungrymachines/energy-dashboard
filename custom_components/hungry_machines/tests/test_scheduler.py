@@ -2923,3 +2923,114 @@ async def test_slot_apply_still_seeds_the_plan_setpoint() -> None:
         if c.args[1] == "set_temperature"
     ]
     assert temp_calls and temp_calls[0].args[2]["temperature"] == 72.0
+
+
+# --- US-CTL-048: phase-3 cross-story seam ---------------------------------
+# The tests above hand `_track_room_target` a cache built by hand. This one
+# starts one step earlier, at the wire: an `/api/v1/schedules` body shaped
+# exactly like the one the API's own cross-story check reads back
+# (hungry-machines-api tests/test_phase3_cross_story.py, check (a)) goes
+# through `fetch_today_schedule` and out the other side as a stepped
+# `set_temperature`. Nothing between the two halves is mocked, so a
+# projection that quietly drops `room_target_temps` — the API's, or the
+# integration's own cache builder — turns this red rather than turning the
+# tracking loop into a silent no-op in the field.
+
+
+def _api_schedules_body_with_room_targets(
+    room_target: float = 73.0, setpoint: float = 72.0,
+) -> dict:
+    """One HVAC entry, the shape `GET /api/v1/schedules` really serves."""
+    return {
+        "date": "2026-09-10",
+        "appliances": [
+            {
+                "appliance_id": "hvac-1",
+                "appliance_type": "hvac",
+                "name": "Main",
+                "schedule": {
+                    "intervals": list(range(48)),
+                    "high_temps": [74.0] * 48,
+                    "low_temps": [70.0] * 48,
+                    "setpoint_temps": [setpoint] * 48,
+                    "room_target_temps": [room_target] * 48,
+                    "mode": "cool",
+                },
+                "savings_pct": 12.0,
+                "source": "optimization",
+                "entities": {
+                    "entity_id": "climate.living_room",
+                    "indoor_temp_entity_id": None,
+                },
+                "optimization_enabled": True,
+            },
+        ],
+        "optimization_enabled": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_cross_story_api_room_target_reaches_the_tracking_loop() -> None:
+    """Wire → cache → watchdog → a one-degree step on the real unit.
+
+    Room 74.0 °F against the plan's 73.0 °F target, unit sitting at the
+    plan's 72.0 °F setpoint: past the 0.5 °F deadband, so the loop
+    commands 71.0 °F. The plan's own `setpoint_temps` is untouched — the
+    step is what we command this tick, not a rewrite of the schedule.
+    """
+    hass = _hass(_track_state(74.0))
+    entry = _entry()
+
+    with patch.object(
+        scheduler.api, "get_schedules",
+        AsyncMock(return_value=_api_schedules_body_with_room_targets()),
+    ), patch.object(
+        scheduler.api, "get_schedules_updated_at", AsyncMock(return_value=None)
+    ):
+        cache = await scheduler.fetch_today_schedule(hass, entry)
+
+    # The cache kept the key the tracking loop reads.
+    assert cache is not None
+    cached = cache["hvac-1"]["schedule"]
+    assert cached["room_target_temps"] == [73.0] * 48
+    assert cached["setpoint_temps"] == [72.0] * 48
+
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.comfort_watchdog(hass, entry)
+
+    temp_calls = [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_temperature"
+    ]
+    assert temp_calls, "the tracking loop commanded nothing"
+    assert temp_calls[0].args[2]["temperature"] == 71.0
+    assert temp_calls[0].args[2]["entity_id"] == "climate.living_room"
+    # The plan is unchanged; only the commanded value moved.
+    assert cached["setpoint_temps"][28] == 72.0
+
+
+@pytest.mark.asyncio
+async def test_cross_story_a_legacy_api_body_tracks_nothing() -> None:
+    """The same path against an API that predates US-CTL-040: no
+    `room_target_temps` on the wire, so the watchdog stays silent rather
+    than inventing a target out of the setpoint."""
+    body = _api_schedules_body_with_room_targets()
+    del body["appliances"][0]["schedule"]["room_target_temps"]
+
+    hass = _hass(_track_state(74.0))
+    entry = _entry()
+
+    with patch.object(
+        scheduler.api, "get_schedules", AsyncMock(return_value=body),
+    ), patch.object(
+        scheduler.api, "get_schedules_updated_at", AsyncMock(return_value=None)
+    ):
+        await scheduler.fetch_today_schedule(hass, entry)
+
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.comfort_watchdog(hass, entry)
+
+    assert not [
+        c for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_temperature"
+    ]

@@ -2072,7 +2072,7 @@
           "calibration"
         ],
         "summary": "Get Calibration Status",
-        "description": "Return calibration state for an appliance.\n\nResponse always has:\n  * `appliance_id` \u2014 echoes the (resolved) id\n  * `is_complete` \u2014 true iff there's a `completed` or `skipped` row\n  * `is_in_progress` \u2014 true iff there's an `in_progress` row\n  * `latest_run` \u2014 projected latest row (may be null)\n  * `history` \u2014 all past rows newest-first\n  * `can_skip` \u2014 true if there's anything to skip (no terminal row)",
+        "description": "Return calibration state for an appliance.\n\nResponse always has:\n  * `appliance_id` \u2014 echoes the (resolved) id\n  * `is_complete` \u2014 true iff there's a `completed` or `skipped` row\n  * `is_in_progress` \u2014 true iff there's an `in_progress` row\n  * `latest_run` \u2014 projected latest row (may be null)\n  * `history` \u2014 all past rows newest-first\n  * `can_skip` \u2014 true if there's anything to skip (no terminal row)\n\nEvery projected run also carries `partial`: true when the run\ncompleted from a subset of its measurement phases (the phases that\ncame back empty, and why, are in `derived_rates.failed_phases`).\n\nEvery projected run carries its `kind` (`fan_excitation` or\n`setpoint_step`) so the panel can name which excitation a row was.",
         "operationId": "get_calibration_status_api_v1_calibration_status_get",
         "security": [
           {
@@ -2172,7 +2172,7 @@
           "calibration"
         ],
         "summary": "Skip Calibration",
-        "description": "Mark calibration skipped for this appliance.\n\nPermanent \u2014 future nightlies will see a `skipped` terminal-status\nrow and won't try calibration again. Reverting requires hitting\n`/calibration/start` to insert a fresh `in_progress` row.",
+        "description": "Mark the FAN-EXCITATION calibration skipped for this appliance.\n\nPermanent for that run \u2014 future nightlies see a `skipped`\nterminal-status row and won't try the 6-hour COOL/OFF excitation\nagain. Reverting requires hitting `/calibration/start` to insert a\nfresh `in_progress` row.\n\nIt does not skip the setpoint-step run, which is a different\nexcitation: three in-band holds a week later, no OFF phases and no\nfan commands. Skipping the disruptive one shouldn't forfeit the\ngentle one that any unit can run.",
         "operationId": "skip_calibration_api_v1_calibration_skip_post",
         "requestBody": {
           "content": {
@@ -4810,6 +4810,17 @@
               }
             ],
             "title": "Override Active"
+          },
+          "room_target": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Room Target"
           }
         },
         "type": "object",

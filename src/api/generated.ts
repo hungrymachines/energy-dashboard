@@ -1173,6 +1173,13 @@ export interface paths {
          *       * `latest_run` — projected latest row (may be null)
          *       * `history` — all past rows newest-first
          *       * `can_skip` — true if there's anything to skip (no terminal row)
+         *
+         *     Every projected run also carries `partial`: true when the run
+         *     completed from a subset of its measurement phases (the phases that
+         *     came back empty, and why, are in `derived_rates.failed_phases`).
+         *
+         *     Every projected run carries its `kind` (`fan_excitation` or
+         *     `setpoint_step`) so the panel can name which excitation a row was.
          */
         get: operations["get_calibration_status_api_v1_calibration_status_get"];
         put?: never;
@@ -1222,11 +1229,17 @@ export interface paths {
         put?: never;
         /**
          * Skip Calibration
-         * @description Mark calibration skipped for this appliance.
+         * @description Mark the FAN-EXCITATION calibration skipped for this appliance.
          *
-         *     Permanent — future nightlies will see a `skipped` terminal-status
-         *     row and won't try calibration again. Reverting requires hitting
-         *     `/calibration/start` to insert a fresh `in_progress` row.
+         *     Permanent for that run — future nightlies see a `skipped`
+         *     terminal-status row and won't try the 6-hour COOL/OFF excitation
+         *     again. Reverting requires hitting `/calibration/start` to insert a
+         *     fresh `in_progress` row.
+         *
+         *     It does not skip the setpoint-step run, which is a different
+         *     excitation: three in-band holds a week later, no OFF phases and no
+         *     fan commands. Skipping the disruptive one shouldn't forfeit the
+         *     gentle one that any unit can run.
          */
         post: operations["skip_calibration_api_v1_calibration_skip_post"];
         delete?: never;
@@ -2101,6 +2114,8 @@ export interface components {
             indoor_source?: ("sensor" | "entity") | null;
             /** Override Active */
             override_active?: boolean | null;
+            /** Room Target */
+            room_target?: number | null;
         };
         /** SignupRequest */
         SignupRequest: {
