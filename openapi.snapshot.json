@@ -89,7 +89,7 @@
     "/admin/trigger/dynamic_prefetch": {
       "post": {
         "summary": "Trigger Dynamic Prefetch",
-        "description": "Force the day-ahead dynamic-pricing prefetch (US-MRH-001).\n\nWarms the ``pjm_day_ahead_prices`` cache for every active dynamic zone\nwithout waiting for the 01:45 UTC cron. Runs the same provider-dispatch\njob the scheduler fires; returns the counts dict for observability.",
+        "description": "Force the day-ahead dynamic-pricing prefetch (US-MRH-001).\n\nWarms the ``pjm_day_ahead_prices`` cache for every active dynamic zone\nwithout waiting for the 22:00 UTC cron. Runs the same provider-dispatch\njob the scheduler fires; returns the counts dict for observability.",
         "operationId": "trigger_dynamic_prefetch_admin_trigger_dynamic_prefetch_post",
         "responses": {
           "200": {
@@ -225,7 +225,7 @@
     "/admin/trigger/fit/{target_user_id}": {
       "post": {
         "summary": "Trigger Fit For User",
-        "description": "Force a thermal-model fit for one specific user. Used to bootstrap\nor refresh a single user's model out-of-band (e.g. after fixing bad\ndata or onboarding a pilot user).",
+        "description": "Force a thermal-model fit for one specific user. Used to bootstrap\nor refresh a single user's model out-of-band (e.g. after fixing bad\ndata or onboarding a pilot user).\n\nRuns the fit AFTER the response is sent, on the threadpool: a champion\nfit takes ~150 s per appliance since the September 2026 fold change\n(US-CTL-026), which is longer than any reverse proxy will hold a\nrequest open and long enough to stall the event loop \u2014 and every\nother request with it \u2014 when called inline. The outcome lands in\n`fit_events` (one row per appliance: `fitted`, `insufficient_data`,\n`floor_refused`, `error`) and on the fleet dashboard's model history.\n`outcome` is kept in the body, as `null`, so callers reading the old\nshape do not break.",
         "operationId": "trigger_fit_for_user_admin_trigger_fit__target_user_id__post",
         "security": [
           {
@@ -244,7 +244,7 @@
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -776,7 +776,7 @@
           "schedules"
         ],
         "summary": "Get Integration Divergence",
-        "description": "Three-signal divergence report over the last 24 hours.\n\nSurfaces how often each of the three signal sources (commanded,\npower, entity-reported) was available and how often pairs agreed.\nUsed by the panel diagnostics view to render the\n\"Thermostat reports unreliable state\" banner without making the\nuser squint at raw readings.\n\nVerdict values:\n  * `healthy`                       \u2014 all three signals agree\n  * `entity_unreliable`             \u2014 entity lies; commanded +\n                                      power are still trustworthy\n  * `thermostat_ignoring_commands`  \u2014 AC physically not obeying\n  * `commanded_missing`             \u2014 pre-Phase-2 HACS client\n  * `no_data` / `unknown`           \u2014 no readings / DB error",
+        "description": "Three-signal divergence report over the last 24 hours.\n\nSurfaces how often each of the three signal sources (commanded,\npower, entity-reported) was available and how often pairs agreed.\nUsed by the panel diagnostics view to render the\n\"Thermostat reports unreliable state\" banner without making the\nuser squint at raw readings.\n\nVerdict values:\n  * `healthy`                       \u2014 all three signals agree\n  * `entity_unreliable`             \u2014 entity lies; commanded +\n                                      power are still trustworthy\n  * `thermostat_ignoring_commands`  \u2014 the unit isn't holding the\n                                      setpoint it was sent\n  * `commanded_missing`             \u2014 pre-Phase-2 HACS client\n  * `no_data` / `unknown`           \u2014 no readings / DB error",
         "operationId": "get_integration_divergence_api_v1_integration_health_divergence_get",
         "responses": {
           "200": {

@@ -96,7 +96,7 @@ export interface paths {
          * @description Force the day-ahead dynamic-pricing prefetch (US-MRH-001).
          *
          *     Warms the ``pjm_day_ahead_prices`` cache for every active dynamic zone
-         *     without waiting for the 01:45 UTC cron. Runs the same provider-dispatch
+         *     without waiting for the 22:00 UTC cron. Runs the same provider-dispatch
          *     job the scheduler fires; returns the counts dict for observability.
          */
         post: operations["trigger_dynamic_prefetch_admin_trigger_dynamic_prefetch_post"];
@@ -195,6 +195,16 @@ export interface paths {
          * @description Force a thermal-model fit for one specific user. Used to bootstrap
          *     or refresh a single user's model out-of-band (e.g. after fixing bad
          *     data or onboarding a pilot user).
+         *
+         *     Runs the fit AFTER the response is sent, on the threadpool: a champion
+         *     fit takes ~150 s per appliance since the September 2026 fold change
+         *     (US-CTL-026), which is longer than any reverse proxy will hold a
+         *     request open and long enough to stall the event loop — and every
+         *     other request with it — when called inline. The outcome lands in
+         *     `fit_events` (one row per appliance: `fitted`, `insufficient_data`,
+         *     `floor_refused`, `error`) and on the fleet dashboard's model history.
+         *     `outcome` is kept in the body, as `null`, so callers reading the old
+         *     shape do not break.
          */
         post: operations["trigger_fit_for_user_admin_trigger_fit__target_user_id__post"];
         delete?: never;
@@ -524,7 +534,8 @@ export interface paths {
          *       * `healthy`                       — all three signals agree
          *       * `entity_unreliable`             — entity lies; commanded +
          *                                           power are still trustworthy
-         *       * `thermostat_ignoring_commands`  — AC physically not obeying
+         *       * `thermostat_ignoring_commands`  — the unit isn't holding the
+         *                                           setpoint it was sent
          *       * `commanded_missing`             — pre-Phase-2 HACS client
          *       * `no_data` / `unknown`           — no readings / DB error
          */
@@ -2417,7 +2428,7 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Successful Response */
-            200: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

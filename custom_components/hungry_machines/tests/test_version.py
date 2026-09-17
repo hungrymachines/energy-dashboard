@@ -68,6 +68,24 @@ def test_manifest_version_matches_manifest_json():
     assert version.MANIFEST_VERSION == manifest["version"]
 
 
+def test_manifest_version_matches_package_json():
+    """package.json and manifest.json bump in lockstep (US-REC-033).
+
+    A half-done bump fails silently otherwise: HA and the bundle's `?v=`
+    cache-buster read manifest.json, npm reads package.json, and nothing else
+    compares them. Skipped outside the source checkout, where package.json is
+    not shipped.
+    """
+    import json
+    from pathlib import Path
+
+    package_json = Path(version.__file__).resolve().parents[2] / "package.json"
+    if not package_json.is_file():
+        pytest.skip("package.json not present outside the source checkout")
+
+    assert json.loads(package_json.read_text())["version"] == version.MANIFEST_VERSION
+
+
 @pytest.mark.asyncio
 async def test_post_home_readings_sends_the_client_object(monkeypatch):
     monkeypatch.delenv(version.NODE_BUNDLE_ENV, raising=False)
