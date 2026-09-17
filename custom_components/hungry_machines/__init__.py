@@ -128,7 +128,9 @@ async def _check_freshness_before(hass: HomeAssistant, entry: ConfigEntry) -> No
         await check_schedule_freshness(hass, entry)
     except Exception as err:  # noqa: BLE001
         _LOGGER.warning(
-            "Hungry Machines: schedule freshness check failed: %s", err
+            "Hungry Machines: schedule freshness check failed (%s): %s",
+            type(err).__name__,
+            err,
         )
 
 

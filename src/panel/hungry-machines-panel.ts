@@ -2970,24 +2970,27 @@ export class HungryMachinesPanel extends LitElement {
       const run = status.latest_run;
       const rates = run.derived_rates;
       if (!rates) return null;
-      const low = rates.cooling_effect_cool_low;
-      const high = rates.cooling_effect_cool_high;
-      if (low === null || high === null) return null;
       // Hide if the user dismissed this run, or it finished long enough
       // ago that the confirmation is no longer interesting.
       if (run.id !== null && this._dismissedCalibrations.has(run.id)) return null;
       if (_calibrationExpired(run.completed_at)) return null;
-      // °F/slot → °F/hr for display.
-      const lowHr = (low * 2).toFixed(1);
-      const highHr = (high * 2).toFixed(1);
+      const low = rates.cooling_effect_cool_low;
+      const high = rates.cooling_effect_cool_high;
+      // A setpoint_step run's derived_rates carries no cooling slopes
+      // (see CalibrationDerivedRates) — fall back to the phase count
+      // rather than let an undefined rate render as "NaN".
+      const isSetpointStep =
+        run.kind === 'setpoint_step' ||
+        !Number.isFinite(low as number) ||
+        !Number.isFinite(high as number);
+      const summary = isSetpointStep
+        ? `Setpoint test: ${rates.phases_observed ?? 3} holds observed; the model learns from them directly.`
+        : `Measured cooling: ${((low as number) * 2).toFixed(1)} °F/hr on Low fan, ${((high as number) * 2).toFixed(1)} °F/hr on High fan.`;
       return html`
         <div class="banner calibration complete" role="status">
           <div class="banner-text">
             <strong>${name} calibration done</strong>
-            <span>
-              Measured cooling: ${lowHr} °F/hr on Low fan,
-              ${highHr} °F/hr on High fan.
-            </span>
+            <span>${summary}</span>
           </div>
           ${run.id !== null
             ? html`<button
