@@ -926,17 +926,22 @@ def _comfort_band_override(
         mode outside {cool, heat, auto} breaches with no override — see
         `_log_comfort_silence`, the class of failure that would have
         caught the office incident.
-      * The override setpoint is the FAR BAND EDGE, not the breached
-        one and not the optimizer's slot value: a high breach in
-        cool/auto commands COOL at `low_temps[slot]`, a low breach in
-        heat/auto commands HEAT at `high_temps[slot]`. A unit whose own
-        thermostat reads a different sensor than the room is already
-        parked at the breached edge, so re-commanding that setpoint
-        changes nothing — asking for the far edge is what makes it run.
+      * The override setpoint STEPS toward the far band edge
+        (`comfort.GUARD_STEP_F` per hold), not the breached one, the far
+        edge outright, or the optimizer's slot value: a high breach in
+        cool/auto commands COOL at `high_temps[slot] - GUARD_STEP_F`
+        (clamped at `low_temps[slot]`), a low breach in heat/auto
+        commands HEAT at `low_temps[slot] + GUARD_STEP_F` (clamped at
+        `high_temps[slot]`). A unit whose own thermostat reads a
+        different sensor than the room is already parked at the
+        breached edge, so re-commanding that setpoint changes nothing —
+        but jumping straight to the far edge overshoots by that same
+        sensor gap, so the guard steps instead, escalating by another
+        `GUARD_STEP_F` if still breached after `comfort.MIN_ON_SECONDS`.
         `comfort.RELEASE_MARGIN_F` is what bounds how far it runs: the
         guard releases once the room is back inside the BREACHED edge by
         that margin, then the plan resumes at the next slot boundary. A
-        slot with no far edge falls back to the breached edge. OFF
+        slot with no far edge to clamp against steps unclamped. OFF
         overrides issue no setpoint at all.
     """
     now = now or dt_util.utcnow()
@@ -1013,7 +1018,7 @@ def _comfort_band_override(
         direction = new_latch.get("direction") if new_latch else None
         edge_label = "high" if direction in ("cool", "off_overheat") else "low"
         # The breached edge and the commanded one differ now that the
-        # guard commands the FAR edge — log both, or the line lies.
+        # guard steps toward the far edge — log both, or the line lies.
         breached_edge = high if edge_label == "high" else low
         if breached_edge is None:
             breached_edge = commanded_edge

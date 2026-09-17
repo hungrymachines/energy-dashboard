@@ -1638,8 +1638,8 @@ def _override_cache(
 @pytest.mark.asyncio
 async def test_comfort_override_cools_when_off_slot_and_indoor_above_band() -> None:
     """Scheduled OFF + indoor 80°F against a 74°F high band → the
-    failsafe commands COOL at the FAR (70°F) band edge instead of
-    applying OFF."""
+    failsafe commands COOL, stepped down from the breached 74°F edge by
+    GUARD_STEP_F, instead of applying OFF."""
     state = _climate_state("off", supports_range=False,
                            hvac_modes=["off", "cool"])
     state.attributes["current_temperature"] = 80.0
@@ -1654,15 +1654,16 @@ async def test_comfort_override_cools_when_off_slot_and_indoor_above_band() -> N
     mode_calls = [c for c in calls if c.args[1] == "set_hvac_mode"]
     temp_calls = [c for c in calls if c.args[1] == "set_temperature"]
     assert mode_calls and mode_calls[0].args[2]["hvac_mode"] == "cool"
-    # US-CTL-005: the setpoint is the FAR band edge (70.0) — not the
-    # breached 74.0 a drifting unit is already parked at, and not the
-    # optimizer's 72.0 value.
-    assert temp_calls and temp_calls[0].args[2]["temperature"] == 70.0
+    # US-REC-032: the setpoint steps down from the breached 74.0 edge by
+    # GUARD_STEP_F (2.0) -> 72.0 — not a jump to the far 70.0 edge, and
+    # not the optimizer's 72.0 value (same number here by coincidence of
+    # this band's width, not because the guard reads the plan setpoint).
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 72.0
 
     # The override is the commanded truth for reconciler + verify.
     cached = scheduler.get_last_commanded(hass, "climate.living_room")
     assert cached["hvac_mode"] == "COOL"
-    assert cached["setpoint"] == 70.0
+    assert cached["setpoint"] == 72.0
 
 
 @pytest.mark.asyncio
@@ -1690,8 +1691,9 @@ async def test_comfort_override_stays_off_when_indoor_in_band() -> None:
 @pytest.mark.asyncio
 async def test_comfort_override_fires_the_moment_past_the_band_edge() -> None:
     """Comfort-first trigger: indoor 74.5°F just past a 74°F high band —
-    no grace margin — commands COOL at the far edge. (The release deadband +
-    min-on-time, not a trigger margin, are what prevent short-cycling.)"""
+    no grace margin — commands COOL stepped down from the edge. (The
+    release deadband + min-on-time, not a trigger margin, are what
+    prevent short-cycling.)"""
     state = _climate_state("off", supports_range=False,
                            hvac_modes=["off", "cool"])
     state.attributes["current_temperature"] = 74.5
@@ -1709,7 +1711,7 @@ async def test_comfort_override_fires_the_moment_past_the_band_edge() -> None:
     assert mode_calls and mode_calls[0].args[2]["hvac_mode"] == "cool"
     cached = scheduler.get_last_commanded(hass, "climate.living_room")
     assert cached["hvac_mode"] == "COOL"
-    assert cached["setpoint"] == 70.0
+    assert cached["setpoint"] == 72.0
 
 
 @pytest.mark.asyncio
@@ -1790,8 +1792,8 @@ async def test_comfort_override_fires_outside_calibration_window() -> None:
 
 @pytest.mark.asyncio
 async def test_comfort_override_heats_when_below_band_in_heat_mode() -> None:
-    """Heat-mode schedule + indoor below the low band → HEAT at the
-    FAR (high) band edge."""
+    """Heat-mode schedule + indoor below the low band → HEAT, stepped up
+    from the breached low edge by GUARD_STEP_F."""
     state = _climate_state("off", supports_range=False,
                            hvac_modes=["off", "heat"])
     state.attributes["current_temperature"] = 65.0
@@ -1806,7 +1808,7 @@ async def test_comfort_override_heats_when_below_band_in_heat_mode() -> None:
     mode_calls = [c for c in calls if c.args[1] == "set_hvac_mode"]
     temp_calls = [c for c in calls if c.args[1] == "set_temperature"]
     assert mode_calls and mode_calls[0].args[2]["hvac_mode"] == "heat"
-    assert temp_calls and temp_calls[0].args[2]["temperature"] == 74.0
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 72.0
 
 
 @pytest.mark.asyncio
@@ -1910,7 +1912,7 @@ async def test_comfort_override_engages_on_temperature_only_schedule() -> None:
 
     calls = hass.services.async_call.await_args_list
     temp_calls = [c for c in calls if c.args[1] == "set_temperature"]
-    assert temp_calls and temp_calls[0].args[2]["temperature"] == 70.0
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 72.0
 
 
 @pytest.mark.asyncio
@@ -1957,8 +1959,8 @@ def _old_since(minutes: int = 20):
 @pytest.mark.asyncio
 async def test_watchdog_cools_off_slot_that_drifted_out_of_band() -> None:
     """The core fix: a scheduled-OFF HVAC sitting above its high band is
-    commanded back on at the far band edge on a watchdog tick — no need to
-    wait for the next slot boundary."""
+    commanded back on, stepped down from the breached edge, on a watchdog
+    tick — no need to wait for the next slot boundary."""
     state = _climate_state("off", supports_range=False,
                            hvac_modes=["off", "cool"])
     state.attributes["current_temperature"] = 80.0
@@ -1973,7 +1975,7 @@ async def test_watchdog_cools_off_slot_that_drifted_out_of_band() -> None:
     mode_calls = [c for c in calls if c.args[1] == "set_hvac_mode"]
     temp_calls = [c for c in calls if c.args[1] == "set_temperature"]
     assert mode_calls and mode_calls[0].args[2]["hvac_mode"] == "cool"
-    assert temp_calls and temp_calls[0].args[2]["temperature"] == 70.0
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 72.0
     # Latch is engaged so subsequent ticks / the slot apply agree.
     latch = hass.data[DOMAIN]["comfort_latch"]["climate.living_room"]
     assert latch["active"] is True and latch["direction"] == "cool"
@@ -1999,8 +2001,9 @@ async def test_watchdog_noop_when_in_band_and_not_latched() -> None:
 @pytest.mark.asyncio
 async def test_watchdog_holds_override_before_min_on_even_if_recovered() -> None:
     """Latched for only 5 min: even though the room is back at the edge,
-    the watchdog keeps conditioning (short-cycle guard) rather than
-    releasing to the scheduled OFF."""
+    the watchdog keeps conditioning at the (recomputed, since this latch
+    has no `command_f` on it) stepped setpoint rather than releasing to
+    the scheduled OFF."""
     state = _climate_state("cool", supports_range=False,
                            hvac_modes=["off", "cool"])
     state.attributes["current_temperature"] = 74.0  # back at the edge
@@ -2017,7 +2020,7 @@ async def test_watchdog_holds_override_before_min_on_even_if_recovered() -> None
         await scheduler.comfort_watchdog(hass, entry)
 
     calls = hass.services.async_call.await_args_list
-    # Held: still driving the far-edge setpoint, and NOT released to OFF.
+    # Held: still driving the stepped setpoint, and NOT released to OFF.
     # (The unit already reports 'cool', so set_hvac_mode is idempotently
     # skipped — the tell is the retained latch + no OFF command.)
     off_calls = [
@@ -2026,7 +2029,7 @@ async def test_watchdog_holds_override_before_min_on_even_if_recovered() -> None
     ]
     temp_calls = [c for c in calls if c.args[1] == "set_temperature"]
     assert not off_calls
-    assert temp_calls and temp_calls[0].args[2]["temperature"] == 70.0
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 72.0
     assert hass.data[DOMAIN]["comfort_latch"].get("climate.living_room")
 
 
@@ -2082,10 +2085,10 @@ async def test_watchdog_respects_master_pause() -> None:
 @pytest.mark.asyncio
 async def test_watchdog_corrects_active_cooling_slot_that_overshot_high_edge() -> None:
     """An already-active COOL slot is NOT exempt: if indoor is still out
-    of band, the watchdog re-drives the setpoint to the far band edge instead
-    of leaving the schedule's (looser) value in place. This is the office
-    incident (2026-08-27) — a COOL slot the unit ignored, with the old
-    watchdog hard-ineligible on any non-OFF slot."""
+    of band, the watchdog re-drives the setpoint down from the breached
+    edge instead of leaving the schedule's (looser) value in place. This
+    is the office incident (2026-08-27) — a COOL slot the unit ignored,
+    with the old watchdog hard-ineligible on any non-OFF slot."""
     state = _climate_state("cool", supports_range=False,
                            hvac_modes=["off", "cool"])
     state.attributes["current_temperature"] = 80.0
@@ -2100,7 +2103,7 @@ async def test_watchdog_corrects_active_cooling_slot_that_overshot_high_edge() -
         c for c in hass.services.async_call.await_args_list
         if c.args[1] == "set_temperature"
     ]
-    assert temp_calls and temp_calls[0].args[2]["temperature"] == 70.0
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 72.0
     latch = hass.data[DOMAIN]["comfort_latch"]["climate.living_room"]
     assert latch["active"] is True and latch["direction"] == "cool"
 
@@ -2160,10 +2163,10 @@ async def test_comfort_override_uses_aux_sensor_when_climate_current_temperature
     mode_calls = [c for c in calls if c.args[1] == "set_hvac_mode"]
     temp_calls = [c for c in calls if c.args[1] == "set_temperature"]
     assert mode_calls and mode_calls[0].args[2]["hvac_mode"] == "cool"
-    assert temp_calls and temp_calls[0].args[2]["temperature"] == 70.0
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 74.0
     cached = scheduler.get_last_commanded(hass, "climate.living_room")
     assert cached["hvac_mode"] == "COOL"
-    assert cached["setpoint"] == 70.0
+    assert cached["setpoint"] == 74.0
 
 
 @pytest.mark.asyncio
@@ -2251,7 +2254,7 @@ async def test_comfort_guard_reads_aux_sensor_before_climate_entity() -> None:
     mode_calls = [c for c in calls if c.args[1] == "set_hvac_mode"]
     temp_calls = [c for c in calls if c.args[1] == "set_temperature"]
     assert mode_calls and mode_calls[0].args[2]["hvac_mode"] == "cool"
-    assert temp_calls and temp_calls[0].args[2]["temperature"] == 70.0
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 74.0
     latch = hass.data[DOMAIN]["comfort_latch"]["climate.living_room"]
     assert latch["active"] is True
 
@@ -2282,7 +2285,7 @@ async def test_comfort_guard_uses_climate_entity_when_aux_unusable() -> None:
         c for c in hass.services.async_call.await_args_list
         if c.args[1] == "set_temperature"
     ]
-    assert temp_calls and temp_calls[0].args[2]["temperature"] == 70.0
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 74.0
 
 
 @pytest.mark.asyncio
@@ -2754,10 +2757,11 @@ async def test_tracking_step_steps_setpoint_up_when_room_below_target() -> None:
 
 @pytest.mark.asyncio
 async def test_tracking_step_clamps_at_the_band_floor() -> None:
-    """Unit already at the 70.0°F band floor and the room still above
-    target: the step saturates at the floor rather than commanding 69.0°F.
-    It re-asserts 70.0 (a unit that dropped the last command gets it
-    again) but never leaves the comfort band."""
+    """Room 78°F is itself a comfort-guard breach (band [70, 74]) — the
+    guard's fresh trigger wins over the tracker entirely, same as
+    `test_tracking_step_yields_to_an_active_guard_latch` below, commanding
+    a step down from the 74°F edge rather than walking the tracker's own
+    one-degree stride from the 70.0°F last-commanded setpoint."""
     hass = _hass(_track_state(78.0, unit_setpoint=70.0))
     entry = _entry()
     hass.data[DOMAIN] = _track_cache()
@@ -2774,7 +2778,7 @@ async def test_tracking_step_clamps_at_the_band_floor() -> None:
         c for c in hass.services.async_call.await_args_list
         if c.args[1] == "set_temperature"
     ]
-    assert temp_calls and temp_calls[0].args[2]["temperature"] == 70.0
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 72.0
 
 
 @pytest.mark.asyncio
@@ -2794,9 +2798,10 @@ async def test_tracking_step_holds_inside_the_deadband() -> None:
 
 @pytest.mark.asyncio
 async def test_tracking_step_yields_to_an_active_guard_latch() -> None:
-    """Room 80°F: the guard latches and commands the FAR band edge
-    (70.0°F). The tracking step must not run at all — a one-degree walk
-    back from the safety net's command is the failure mode."""
+    """Room 80°F: the guard latches and commands a step down from the
+    band's 74.0°F edge (72.0°F). The tracking step must not run at all —
+    a one-degree walk back from the safety net's command is the failure
+    mode."""
     hass = _hass(_track_state(80.0))
     entry = _entry()
     hass.data[DOMAIN] = _track_cache()
@@ -2808,8 +2813,10 @@ async def test_tracking_step_yields_to_an_active_guard_latch() -> None:
         c for c in hass.services.async_call.await_args_list
         if c.args[1] == "set_temperature"
     ]
-    # The guard's far edge, not 72.0 − 1.
-    assert temp_calls and temp_calls[0].args[2]["temperature"] == 70.0
+    # The guard's stepped edge (74 - GUARD_STEP_F), not 72.0 − 1 from the
+    # tracker — coincidentally the same 72.0 number, for an unrelated
+    # reason (this band's width, not the plan's setpoint).
+    assert temp_calls and temp_calls[0].args[2]["temperature"] == 72.0
     assert hass.data[DOMAIN]["comfort_latch"]["climate.living_room"]["active"]
     # And the tracker never stamped a command of its own.
     assert not hass.data[DOMAIN].get("room_track_last")
