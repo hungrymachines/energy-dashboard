@@ -16,13 +16,19 @@ export type CalibrationStatus =
   | 'skipped';
 
 export interface CalibrationDerivedRates {
-  cooling_effect_cool_low: number | null;
-  cooling_effect_cool_high: number | null;
-  coupling_rate: number | null;
-  sample_count: number;
+  cooling_effect_cool_low?: number | null;
+  cooling_effect_cool_high?: number | null;
+  coupling_rate?: number | null;
+  sample_count?: number;
   indoor_range_f?: [number, number] | null;
   outdoor_range_f?: [number, number] | null;
   notes?: string[];
+  // A setpoint_step run's derived_rates carries only these two fields —
+  // no cooling slopes were measured, so the display fields above are
+  // absent (not null) on that shape. See hungry-machines-api
+  // services/calibration.py DerivedRates.to_dict().
+  kind?: string;
+  phases_observed?: number;
 }
 
 export interface CalibrationPhase {
@@ -36,6 +42,7 @@ export interface CalibrationPhase {
 export interface CalibrationRun {
   id: number | null;
   status: CalibrationStatus;
+  kind?: 'fan_excitation' | 'setpoint_step';
   schedule_date: string | null;
   started_at: string | null;
   completed_at: string | null;

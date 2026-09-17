@@ -3,7 +3,7 @@ import { HungryMachinesPanel } from '../src/panel/hungry-machines-panel.js';
 import { HmLoginForm } from '../src/ui/login-form.js';
 import { authStore, type AuthState } from '../src/store.js';
 import { setApiBase, setTokens } from '../src/api/client.js';
-import type { CalibrationStatusResponse } from '../src/api/calibration.js';
+import type { CalibrationRun, CalibrationStatusResponse } from '../src/api/calibration.js';
 import type { Appliance } from '../src/api/appliances.js';
 
 if (!customElements.get('hm-login-form')) {
@@ -59,6 +59,14 @@ function completedStatus(
       phases: [],
     },
   } as unknown as CalibrationStatusResponse;
+}
+
+function setpointStepStatus(runId: number | null, completedAt: string | null): CalibrationStatusResponse {
+  const status = completedStatus(runId, completedAt);
+  const run = status.latest_run as CalibrationRun;
+  run.kind = 'setpoint_step';
+  run.derived_rates = { kind: 'setpoint_step', phases_observed: 3 };
+  return status;
 }
 
 function recentIso(): string {
@@ -133,6 +141,15 @@ describe('calibration completed banner — dismiss + TTL', () => {
     expect(text).toContain('Office AC calibration done');
     expect(text).toContain('0.6 °F/hr on Low fan');
     expect(text).toContain('3.3 °F/hr on High fan');
+    expect(el.shadowRoot?.querySelector('.banner-dismiss')).toBeTruthy();
+  });
+
+  it('renders the setpoint-step sentence with no NaN when the run measured no slopes', async () => {
+    const el = await mountWithStatus(setpointStepStatus(9, recentIso()));
+    const text = bannerText(el);
+    expect(text).toContain('Office AC calibration done');
+    expect(text).toContain('Setpoint test: 3 holds observed');
+    expect(text).not.toContain('NaN');
     expect(el.shadowRoot?.querySelector('.banner-dismiss')).toBeTruthy();
   });
 
