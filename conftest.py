@@ -30,6 +30,38 @@ def _install_stubs() -> None:
 
         aiohttp_mod.ClientError = ClientError
 
+    if not hasattr(aiohttp_mod, "ClientConnectionError"):
+
+        class ClientConnectionError(aiohttp_mod.ClientError):
+            """Stub of aiohttp.ClientConnectionError."""
+
+        aiohttp_mod.ClientConnectionError = ClientConnectionError
+
+    if not hasattr(aiohttp_mod, "ContentTypeError"):
+
+        class ContentTypeError(aiohttp_mod.ClientError):
+            """Stub of aiohttp.ContentTypeError."""
+
+        aiohttp_mod.ContentTypeError = ContentTypeError
+
+    if not hasattr(aiohttp_mod, "ClientTimeout"):
+
+        class ClientTimeout:
+            """Stub of aiohttp.ClientTimeout — a plain `total` holder.
+
+            `api.py` (US-REC-031) constructs one at module import time
+            (`aiohttp.ClientTimeout(total=20)`) to cap `session.request`,
+            so this stub must exist before that import, same as
+            `ClientError` above.
+            """
+
+            def __init__(self, total: float | None = None, **kw: Any) -> None:
+                self.total = total
+                for key, value in kw.items():
+                    setattr(self, key, value)
+
+        aiohttp_mod.ClientTimeout = ClientTimeout
+
     # --- voluptuous ----------------------------------------------------------
     vol_mod = _ensure_module("voluptuous")
     if not hasattr(vol_mod, "Schema"):

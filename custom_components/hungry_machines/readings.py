@@ -9,6 +9,10 @@ v2.1+: split into two timers to reduce API call volume by ~12×.
           'home':       [reading, ...],          # → POST /api/v1/readings
           '<appliance_id>': [reading, ...],      # → POST /api/v1/appliances/{id}/readings
       }
+  The appliance list itself is cached (`hass.data[DOMAIN]['appliances_cache']`,
+  refreshed at most every 30 min) so a slow or failing `GET /api/v1/appliances`
+  delays the refresh instead of blanking out a tick's readings — see
+  `_resolve_appliances`.
 * `flush_readings` (top of every hour, ~minute=2) drains the buffer with
   one POST per non-empty key. On success the corresponding sublist is
   cleared; on failure (4xx, network, etc.) the buffer is retained so the
@@ -34,7 +38,12 @@ from homeassistant.core import HomeAssistant
 
 from . import api
 from .const import DOMAIN
-from .scheduler import _COMFORT_LATCH_KEY, get_last_commanded, get_room_target
+from .scheduler import (
+    _cache_age_seconds,
+    _COMFORT_LATCH_KEY,
+    get_last_commanded,
+    get_room_target,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +239,62 @@ def _resolve_hvac_state(state: Any) -> str:
     return "OFF"
 _HOME_BUCKET = "home"
 _BUFFER_KEY = "readings_buffer"
+
+# ---------------------------------------------------------------------------
+# Appliance-list cache — survives a slow/failing API call
+# ---------------------------------------------------------------------------
+#
+# `capture_readings` used to call `api.get_appliances` fresh on every 5-min
+# tick: a timeout or a transient 5xx meant that tick captured nothing, even
+# though the appliance list (which entity maps to which HA device) rarely
+# changes. Caching it in `hass.data[DOMAIN][_APPLIANCES_CACHE_KEY]` means a
+# slow API delays the refresh instead of blanking out readings for minutes
+# at a time. Shape mirrors scheduler.py's schedule cache: `{"fetched_at":
+# iso8601 str, "appliances": [...]}`; `_cache_age_seconds` (imported from
+# scheduler.py) is reused rather than duplicated.
+
+_APPLIANCES_CACHE_KEY = "appliances_cache"
+_APPLIANCES_CACHE_MAX_AGE_SECONDS = 30 * 60
+
+
+async def _resolve_appliances(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> list[dict] | None:
+    """Return the user's appliance list, refreshing from the API at most
+    every 30 minutes (and whenever there's no cache yet).
+
+    A refresh that fails (timeout, network error, 5xx — `api.get_appliances`
+    returns None for all of them) falls back to a warm cache instead of
+    capturing nothing this tick. Only returns None when there's no cache to
+    fall back to.
+    """
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    cache = domain_data.get(_APPLIANCES_CACHE_KEY)
+    needs_refresh = True
+    if isinstance(cache, dict) and isinstance(cache.get("appliances"), list):
+        age = _cache_age_seconds(cache)
+        needs_refresh = age is None or age > _APPLIANCES_CACHE_MAX_AGE_SECONDS
+
+    if not needs_refresh:
+        return cache["appliances"]
+
+    appliances = await api.get_appliances(hass, entry)
+    if appliances is not None:
+        domain_data[_APPLIANCES_CACHE_KEY] = {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "appliances": appliances,
+        }
+        return appliances
+
+    if isinstance(cache, dict) and isinstance(cache.get("appliances"), list):
+        _LOGGER.info(
+            "Hungry Machines: appliance-list refresh failed; capturing from "
+            "the cached list fetched at %s",
+            cache.get("fetched_at"),
+        )
+        return cache["appliances"]
+
+    return None
 
 
 def _coerce_float(value: Any) -> float | None:
@@ -680,7 +745,7 @@ async def capture_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
     Returns the number of readings captured this tick. Does NOT post —
     `flush_readings` is responsible for the network call.
     """
-    appliances = await api.get_appliances(hass, entry)
+    appliances = await _resolve_appliances(hass, entry)
     if appliances is None:
         return 0
     if not appliances:

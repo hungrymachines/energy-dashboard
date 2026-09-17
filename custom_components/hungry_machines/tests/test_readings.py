@@ -8,6 +8,7 @@ The v2.1 split:
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -933,6 +934,94 @@ async def test_capture_solar_invalid_sensor_state_captures_nothing() -> None:
 
     assert n == 0
     assert readings.buffered_count(hass) == 0
+
+
+# --- appliances_cache (US-REC-031) -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_capture_uses_cached_appliances_when_scheduled_refresh_fails() -> None:
+    """A cache older than 30 min is due for a refresh; when that refresh
+    fails (timeout / network error → api.get_appliances returns None), the
+    tick still captures using the stale-but-known appliance list instead
+    of silently capturing nothing."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    state = _state(
+        "cool", {"current_temperature": 72.5, "temperature": 72.0},
+    )
+    hass = _hass({"climate.living_room": state})
+    entry = _entry()
+    stale_fetch = datetime.now(timezone.utc) - timedelta(minutes=31)
+    hass.data[DOMAIN] = {
+        "appliances_cache": {
+            "fetched_at": stale_fetch.isoformat(),
+            "appliances": [appliance],
+        }
+    }
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=None)
+    ) as mock_get:
+        n = await readings.capture_readings(hass, entry)
+
+    mock_get.assert_awaited_once()
+    assert n == 1
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["appliance_id"] == "a-1"
+    assert posted["indoor_temp"] == 72.5
+    # A failed refresh must not clobber the still-warm cache.
+    assert hass.data[DOMAIN]["appliances_cache"]["appliances"] == [appliance]
+
+
+@pytest.mark.asyncio
+async def test_capture_fresh_cache_skips_the_api_call() -> None:
+    """A cache under 30 min old is reused as-is — no refresh call at all."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    state = _state(
+        "cool", {"current_temperature": 72.5, "temperature": 72.0},
+    )
+    hass = _hass({"climate.living_room": state})
+    entry = _entry()
+    fresh_fetch = datetime.now(timezone.utc) - timedelta(minutes=5)
+    hass.data[DOMAIN] = {
+        "appliances_cache": {
+            "fetched_at": fresh_fetch.isoformat(),
+            "appliances": [appliance],
+        }
+    }
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=None)
+    ) as mock_get:
+        n = await readings.capture_readings(hass, entry)
+
+    mock_get.assert_not_awaited()
+    assert n == 1
+
+
+@pytest.mark.asyncio
+async def test_capture_cold_cache_and_failed_refresh_captures_zero() -> None:
+    """No prior cache at all, and the very first fetch fails: nothing to
+    capture from, and the tick must not raise."""
+    hass = _hass({})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=None)
+    ):
+        n = await readings.capture_readings(hass, entry)
+
+    assert n == 0
+    assert readings.buffered_count(hass) == 0
+    assert DOMAIN not in hass.data or "appliances_cache" not in hass.data[DOMAIN]
 
 
 # --- flush_readings -------------------------------------------------------

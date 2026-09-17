@@ -5,13 +5,19 @@ readings.py, and weather.py all need. Each function:
 
 * Looks up a fresh access token via `auth.current_token`. On miss, returns
   None and triggers reauth (the integration's standard recovery path).
-* Makes the request via `aiohttp_client.async_get_clientsession`.
+* Makes the request via `aiohttp_client.async_get_clientsession`, capped at
+  a 20s total timeout so a wedged API can't hang the integration forever.
 * Treats 401 as another reauth trigger; logs other 4xx/5xx as warnings.
+* A network error or timeout (`aiohttp.ClientError` / `asyncio.TimeoutError`)
+  is logged as a warning naming the exception type and returns None — the
+  same "no data this tick, try again next time" signal as any other
+  failure, never a raised exception into the caller's timer callback.
 
 Returns either the parsed JSON body (success) or None (any failure).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -25,6 +31,12 @@ from .const import API_BASE_URL
 from .version import build_client_info
 
 _LOGGER = logging.getLogger(__name__)
+
+# A slow or wedged API must delay a reading capture / schedule apply, not
+# hang the integration's event loop forever — 20s is well past the API's
+# own p99 for these endpoints and short enough that a stuck request never
+# blocks the next 5-min timer tick.
+_REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=20)
 
 
 async def _authenticated_request(
@@ -49,7 +61,9 @@ async def _authenticated_request(
     headers = {"Authorization": f"Bearer {token}"}
 
     try:
-        async with session.request(method, url, headers=headers, json=json) as resp:
+        async with session.request(
+            method, url, headers=headers, json=json, timeout=_REQUEST_TIMEOUT
+        ) as resp:
             if resp.status == 401:
                 _LOGGER.warning(
                     "Hungry Machines %s %s rejected token; triggering reauth",
@@ -77,9 +91,13 @@ async def _authenticated_request(
                 # without payload — the readings/weather POSTs only care
                 # about the status code, not the body shape.
                 return {}
-    except aiohttp.ClientError as err:
+    except (aiohttp.ClientError, asyncio.TimeoutError) as err:
         _LOGGER.warning(
-            "Hungry Machines %s %s network error: %s", method, path, err
+            "Hungry Machines %s %s network error (%s): %s",
+            method,
+            path,
+            type(err).__name__,
+            err,
         )
         return None
 

@@ -14,6 +14,7 @@ rather than inspecting `async_track_time_change`'s call args.
 """
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -231,3 +232,39 @@ async def test_apply_slot_still_runs_when_freshness_check_raises() -> None:
         await callback(None)  # must not raise
 
     mock_apply.assert_awaited_once_with(hass, entry)
+
+
+@pytest.mark.asyncio
+async def test_freshness_check_timeout_warns_and_never_raises(caplog) -> None:
+    """US-REC-031: a slow API call inside `check_schedule_freshness`
+    (`asyncio.TimeoutError`, e.g. from `api._authenticated_request`'s new
+    20s cap) must surface as a logged warning naming the exception type,
+    not an unhandled exception out of the timer callback — HA schedules
+    these callbacks as tasks, and an uncaught exception there becomes an
+    'asyncio task exception was never retrieved' log entry instead of the
+    comfort duty it was supposed to gate running at all."""
+    hass = _hass()
+    entry = _entry()
+
+    with patch.object(
+        hungry_machines, "_ensure_frontend_registered", AsyncMock(return_value=True)
+    ), patch.object(
+        hungry_machines, "fetch_today_schedule", AsyncMock(return_value=None)
+    ), patch.object(
+        hungry_machines,
+        "check_schedule_freshness",
+        AsyncMock(side_effect=asyncio.TimeoutError()),
+    ), patch.object(
+        hungry_machines, "comfort_watchdog", AsyncMock()
+    ) as mock_watchdog, patch.object(
+        hungry_machines, "async_track_time_change"
+    ) as mock_track, caplog.at_level(
+        "WARNING", logger=hungry_machines._LOGGER.name
+    ):
+        await hungry_machines.async_setup_entry(hass, entry)
+        callback = _registered_callback(mock_track, "_comfort_watchdog")
+        await callback(None)  # must not raise
+
+    mock_watchdog.assert_awaited_once_with(hass, entry)
+    warned = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any("TimeoutError" in r.getMessage() for r in warned)
