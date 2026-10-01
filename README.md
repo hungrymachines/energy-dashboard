@@ -1,6 +1,6 @@
 # Hungry Machines — Home Assistant Integration
 
-Hungry Machines optimizes when your home runs its biggest energy users — HVAC, EV charger, home battery, water heater — to shift load into the cheapest hours of your time-of-use rate plan, while keeping the comfort and charge constraints you set.
+Outsmart your electric bill - Hungry Machines Energy provides an energy management system that shifts HVAC, EV charging, home batteries, and other electric loads to cheaper hours for homes and buildings with time-of-use or dynamic electricity rates. It keeps the comfort and charge constraints you set.
 
 This package adds the Hungry Machines control surface to Home Assistant: a sidebar panel for managing schedules and constraints, plus two Lovelace cards for at-a-glance status. Sign in with the same account you create at [hungrymachines.io](https://hungrymachines.io), and your dashboard shows the schedules generated each night.
 
