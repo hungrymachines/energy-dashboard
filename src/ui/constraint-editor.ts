@@ -1,6 +1,9 @@
 import { LitElement, html, css } from 'lit';
 import { setConstraints } from '../api/appliances.js';
-import { update as updateAppliancePreferences } from '../api/appliance-preferences.js';
+import {
+  update as updateAppliancePreferences,
+  defaultBands as fetchDefaultBands,
+} from '../api/appliance-preferences.js';
 import type { ApplianceType } from '../api/appliances.js';
 import {
   deriveHourlyComfortBand,
@@ -150,26 +153,6 @@ export class HmConstraintEditor extends LitElement {
       padding-top: 10px;
       margin-top: 4px;
     }
-    button.hourly-toggle {
-      width: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: transparent;
-      border: none;
-      padding: 4px 0;
-      font: inherit;
-      font-weight: 600;
-      color: var(--hm-text, #0F172A);
-      cursor: pointer;
-    }
-    button.hourly-toggle .chevron {
-      display: inline-block;
-      transition: transform 0.15s ease;
-    }
-    button.hourly-toggle.open .chevron {
-      transform: rotate(90deg);
-    }
     .hourly-content {
       margin-top: 8px;
     }
@@ -226,15 +209,28 @@ export class HmConstraintEditor extends LitElement {
       padding: 4px 6px;
       font-size: 13px;
     }
-    table.hourly-table.disabled {
-      opacity: 0.45;
-    }
     table.hourly-table input.invalid {
       border-color: var(--hm-error, #DC2626);
     }
     .hourly-row-error {
       color: var(--hm-error, #DC2626);
       font-size: 12px;
+    }
+    button.reset-defaults {
+      background: transparent;
+      border: 1px solid var(--hm-primary, #1E3A8A);
+      color: var(--hm-primary, #1E3A8A);
+      font-weight: 600;
+      margin-top: 4px;
+    }
+    button.reset-defaults[disabled] {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .reset-note {
+      font-size: 12px;
+      color: var(--hm-muted, #64748B);
+      margin-top: 4px;
     }
   `;
 
@@ -247,10 +243,11 @@ export class HmConstraintEditor extends LitElement {
     _errors: { state: true },
     _topError: { state: true },
     _saving: { state: true },
-    _hourlyOpen: { state: true },
     _hourlyEnabled: { state: true },
     _hourlyLow: { state: true },
     _hourlyHigh: { state: true },
+    _resetting: { state: true },
+    _resetError: { state: true },
   };
 
   applianceId = '';
@@ -261,10 +258,14 @@ export class HmConstraintEditor extends LitElement {
   _errors: ErrorMap = {};
   _topError: string | null = null;
   _saving = false;
-  _hourlyOpen = false;
+  // Always true for hvac (US-SDC-032: the hourly table is the primary
+  // control, not an opt-in override) — kept as a field rather than
+  // inlined so `_validate`/`_buildPayload` read one source of truth.
   _hourlyEnabled = false;
   _hourlyLow: string[] = [];
   _hourlyHigh: string[] = [];
+  _resetting = false;
+  _resetError: string | null = null;
 
   private _lastKey = '';
 
@@ -312,6 +313,11 @@ export class HmConstraintEditor extends LitElement {
   }
 
   private _seedHourlyBands(): void {
+    // The hourly table is the primary control for every appliance type
+    // that renders it (hvac only, see render()) — always populated,
+    // never gated behind an opt-in toggle.
+    this._hourlyEnabled = true;
+    this._resetError = null;
     const c = this.currentConstraints ?? {};
     const high = (c as Record<string, unknown>)['hourly_high_temps_f'];
     const low = (c as Record<string, unknown>)['hourly_low_temps_f'];
@@ -322,18 +328,15 @@ export class HmConstraintEditor extends LitElement {
       hourly_low_temps_f: isFiniteNumberArray(low) ? low : undefined,
     };
     if (hasHourlyComfortBands(prefsLike)) {
-      // Custom-hourly style: the editable table renders unconditionally,
-      // so `_hourlyOpen` (the simple-style preview collapsible) is moot.
-      this._hourlyEnabled = true;
-      this._hourlyOpen = false;
       this._hourlyHigh = (prefsLike.hourly_high_temps_f as number[]).map((n) => String(n));
       this._hourlyLow = (prefsLike.hourly_low_temps_f as number[]).map((n) => String(n));
     } else {
-      this._hourlyEnabled = false;
-      this._hourlyOpen = false;
-      // Show the derived band the optimizer will fall back to instead of
-      // a flat 76/68 placeholder — keeps the disabled table consistent
-      // with what's actually being persisted.
+      // No stored hourly override: seed from the local mirror of the
+      // shaped default (`deriveHourlyComfortBand`) so a first-time
+      // editor shows what the optimizer would actually use rather than
+      // a flat placeholder. "Reset to defaults" re-derives this from the
+      // live endpoint; this synchronous seed avoids a network round
+      // trip just to open the editor.
       this._loadDerivedHourlyBands();
     }
   }
@@ -635,13 +638,10 @@ export class HmConstraintEditor extends LitElement {
         if (timeAway !== '') payload['time_away'] = timeAway;
         const timeHome = v['time_home'] ?? '';
         if (timeHome !== '') payload['time_home'] = timeHome;
-        if (this._hourlyEnabled) {
-          payload['hourly_low_temps_f'] = this._hourlyLow.map((s) => Number(s));
-          payload['hourly_high_temps_f'] = this._hourlyHigh.map((s) => Number(s));
-        } else {
-          payload['hourly_low_temps_f'] = null;
-          payload['hourly_high_temps_f'] = null;
-        }
+        // Hourly limits are always the saved comfort band (US-SDC-032) —
+        // the table is the primary control, not an opt-in override.
+        payload['hourly_low_temps_f'] = this._hourlyLow.map((s) => Number(s));
+        payload['hourly_high_temps_f'] = this._hourlyHigh.map((s) => Number(s));
         return payload;
       }
     }
@@ -682,6 +682,46 @@ export class HmConstraintEditor extends LitElement {
     }
   }
 
+  /**
+   * Re-fetch the shaped default band from the live
+   * `/preferences/default-bands` endpoint, using whatever the user has
+   * typed into base temperature / savings level / time away / time home
+   * so far (not necessarily the saved row), and fill the hourly table
+   * with it. Falls back to the local mirror (`deriveHourlyComfortBand`
+   * via `_loadDerivedHourlyBands`) and says so inline when the request
+   * fails — the table is never left empty.
+   */
+  private async _onResetDefaults(): Promise<void> {
+    this._dirty = true;
+    this._resetting = true;
+    this._resetError = null;
+    const v = this._values;
+    const baseNum = toNumber(v['base_temperature']);
+    const savingsNum = toNumber(v['savings_level']);
+    const modeStr = v['optimization_mode'] ?? 'auto';
+    const mode =
+      modeStr === 'cool' || modeStr === 'heat' || modeStr === 'auto' ? modeStr : undefined;
+    const timeAway = v['time_away'] || undefined;
+    const timeHome = v['time_home'] || undefined;
+    try {
+      const result = await fetchDefaultBands(this.applianceId, {
+        base_temperature: baseNum ?? undefined,
+        savings_level: savingsNum ?? undefined,
+        time_away: timeAway,
+        time_home: timeHome,
+        optimization_mode: mode,
+      });
+      this._hourlyHigh = result.hourly_high_temps_f.map((n) => String(n));
+      this._hourlyLow = result.hourly_low_temps_f.map((n) => String(n));
+    } catch {
+      this._loadDerivedHourlyBands();
+      this._resetError = 'Could not reach the server — showing the built-in defaults.';
+    } finally {
+      this._resetting = false;
+      this._errors = this._validate(this._values);
+    }
+  }
+
   private _onCancel(): void {
     this.open = false;
     this.dispatchEvent(
@@ -713,24 +753,8 @@ export class HmConstraintEditor extends LitElement {
       this._hourlyHigh = next;
       this._errors = this._validate(this._values);
     };
-    const toggleHourlyOpen = () => {
-      this._hourlyOpen = !this._hourlyOpen;
-    };
-    const onComfortStyle = (e: Event) => {
-      const custom = (e.target as HTMLInputElement).value === 'custom';
-      if (custom === this._hourlyEnabled) return;
-      this._dirty = true;
-      this._hourlyEnabled = custom;
-      // When the user switches back to the simple style, refresh the
-      // hourly table to mirror the band the optimizer will actually use
-      // (derived from base_temperature + savings_level + time_away/home).
-      // Without this the table sits with stale custom values and looks
-      // inconsistent with what's about to be saved. Switching TO custom
-      // keeps the displayed band as the editing starting point.
-      if (!custom) {
-        this._loadDerivedHourlyBands();
-      }
-      this._errors = this._validate(this._values);
+    const onResetDefaults = () => {
+      void this._onResetDefaults();
     };
     const fmtHour = (i: number) =>
       `${String(i).padStart(2, '0')}:00`;
@@ -993,78 +1017,88 @@ export class HmConstraintEditor extends LitElement {
             : null}
           ${type === 'hvac'
             ? html`
-                <label>
-                  <span class="label-text">Base temperature (°F)</span>
-                  <input
-                    name="base_temperature"
-                    type="number"
-                    step="0.5"
-                    .value=${v['base_temperature'] ?? ''}
-                    @input=${onNum('base_temperature')}
-                  />
-                  ${errs['base_temperature']
-                    ? html`<div class="field-error">${errs['base_temperature']}</div>`
-                    : null}
-                </label>
-                <fieldset class="opt-toggles comfort-style">
-                  <legend>Comfort schedule style</legend>
+                <fieldset class="opt-toggles defaults-group">
+                  <legend>Defaults</legend>
                   <p class="opt-toggles-help">
-                    Pick ONE way to describe your comfort limits — the
-                    other style's settings are ignored while it's not
-                    selected.
+                    These feed the hourly table below — edit them and
+                    click "Reset to defaults" to refill it, or edit the
+                    table directly.
                   </p>
-                  <label class="opt-toggle">
+                  <label>
+                    <span class="label-text">Base temperature (°F)</span>
                     <input
-                      name="comfort_style"
-                      type="radio"
-                      value="simple"
-                      .checked=${!this._hourlyEnabled}
-                      @change=${onComfortStyle}
+                      name="base_temperature"
+                      type="number"
+                      step="0.5"
+                      .value=${v['base_temperature'] ?? ''}
+                      @input=${onNum('base_temperature')}
                     />
-                    <span>
-                      <strong>Simple schedule</strong> — one target
-                      temperature plus your home/away times; away hours
-                      widen the limits by your savings level.
-                    </span>
+                    ${errs['base_temperature']
+                      ? html`<div class="field-error">${errs['base_temperature']}</div>`
+                      : null}
                   </label>
-                  <label class="opt-toggle">
+                  <label>
+                    <span class="label-text">Savings level (1–3)</span>
+                    <div class="slider-row">
+                      <input
+                        name="savings_level"
+                        type="range"
+                        min="1"
+                        max="3"
+                        step="1"
+                        .value=${v['savings_level'] ?? '3'}
+                        @input=${onNum('savings_level')}
+                      />
+                      <span class="slider-value">${v['savings_level'] ?? '3'}</span>
+                    </div>
+                    ${errs['savings_level']
+                      ? html`<div class="field-error">${errs['savings_level']}</div>`
+                      : null}
+                  </label>
+                  <label>
+                    <span class="label-text">Time away (HH:MM)</span>
                     <input
-                      name="comfort_style"
-                      type="radio"
-                      value="custom"
-                      .checked=${this._hourlyEnabled}
-                      @change=${onComfortStyle}
+                      name="time_away"
+                      type="text"
+                      inputmode="numeric"
+                      placeholder="08:00"
+                      pattern="\\d{2}:\\d{2}"
+                      .value=${v['time_away'] ?? ''}
+                      @input=${onNum('time_away')}
                     />
-                    <span>
-                      <strong>Custom hourly limits</strong> — set your own
-                      low/high temperature for each hour of the day.
-                    </span>
+                    <small class="label-text">Time you typically leave home (HH:MM, leave blank to keep current)</small>
+                    ${errs['time_away']
+                      ? html`<div class="field-error">${errs['time_away']}</div>`
+                      : null}
                   </label>
+                  <label>
+                    <span class="label-text">Time home (HH:MM)</span>
+                    <input
+                      name="time_home"
+                      type="text"
+                      inputmode="numeric"
+                      placeholder="17:00"
+                      pattern="\\d{2}:\\d{2}"
+                      .value=${v['time_home'] ?? ''}
+                      @input=${onNum('time_home')}
+                    />
+                    <small class="label-text">Time you typically return home (HH:MM, leave blank to keep current)</small>
+                    ${errs['time_home']
+                      ? html`<div class="field-error">${errs['time_home']}</div>`
+                      : null}
+                  </label>
+                  <button
+                    class="reset-defaults"
+                    type="button"
+                    ?disabled=${this._resetting}
+                    @click=${onResetDefaults}
+                  >
+                    ${this._resetting ? 'Resetting…' : 'Reset to defaults'}
+                  </button>
+                  ${this._resetError
+                    ? html`<p class="reset-note">${this._resetError}</p>`
+                    : null}
                 </fieldset>
-                <div class="savings-field">
-                  ${this._hourlyEnabled
-                    ? null
-                    : html`
-                        <label>
-                          <span class="label-text">Savings level (1–3)</span>
-                          <div class="slider-row">
-                            <input
-                              name="savings_level"
-                              type="range"
-                              min="1"
-                              max="3"
-                              step="1"
-                              .value=${v['savings_level'] ?? '3'}
-                              @input=${onNum('savings_level')}
-                            />
-                            <span class="slider-value">${v['savings_level'] ?? '3'}</span>
-                          </div>
-                          ${errs['savings_level']
-                            ? html`<div class="field-error">${errs['savings_level']}</div>`
-                            : null}
-                        </label>
-                      `}
-                </div>
                 <label>
                   <span class="label-text">HVAC mode</span>
                   <select
@@ -1149,129 +1183,60 @@ export class HmConstraintEditor extends LitElement {
                     </span>
                   </label>
                 </fieldset>
-                <div class="time-fields">
-                  ${this._hourlyEnabled
-                    ? null
-                    : html`
-                        <label>
-                          <span class="label-text">Time away (HH:MM)</span>
-                          <input
-                            name="time_away"
-                            type="text"
-                            inputmode="numeric"
-                            placeholder="08:00"
-                            pattern="\\d{2}:\\d{2}"
-                            .value=${v['time_away'] ?? ''}
-                            @input=${onNum('time_away')}
-                          />
-                          <small class="label-text">Time you typically leave home (HH:MM, leave blank to keep current)</small>
-                          ${errs['time_away']
-                            ? html`<div class="field-error">${errs['time_away']}</div>`
-                            : null}
-                        </label>
-                        <label>
-                          <span class="label-text">Time home (HH:MM)</span>
-                          <input
-                            name="time_home"
-                            type="text"
-                            inputmode="numeric"
-                            placeholder="17:00"
-                            pattern="\\d{2}:\\d{2}"
-                            .value=${v['time_home'] ?? ''}
-                            @input=${onNum('time_home')}
-                          />
-                          <small class="label-text">Time you typically return home (HH:MM, leave blank to keep current)</small>
-                          ${errs['time_home']
-                            ? html`<div class="field-error">${errs['time_home']}</div>`
-                            : null}
-                        </label>
-                      `}
-                </div>
                 <div class="hourly-bands">
-                  ${this._hourlyEnabled
-                    ? html`
-                        <span class="label-text">
-                          Hourly comfort limits (°F)
-                        </span>
-                      `
-                    : html`
-                        <button
-                          class="hourly-toggle ${this._hourlyOpen ? 'open' : ''}"
-                          type="button"
-                          aria-expanded=${this._hourlyOpen ? 'true' : 'false'}
-                          @click=${() => toggleHourlyOpen()}
-                        >
-                          <span>Preview hourly limits</span>
-                          <span class="chevron" aria-hidden="true">▶</span>
-                        </button>
-                      `}
-                  ${this._hourlyEnabled || this._hourlyOpen
-                    ? html`
-                        <div class="hourly-content">
-                          ${this._hourlyEnabled
-                            ? null
-                            : html`
-                                <p class="opt-toggles-help">
-                                  These are the limits your simple schedule
-                                  produces. Switch to “Custom hourly limits”
-                                  above to edit them per hour.
-                                </p>
-                              `}
-                          <table class="hourly-table ${this._hourlyEnabled ? '' : 'disabled'}">
-                            <thead>
-                              <tr>
-                                <th>Hour</th>
-                                <th>Low °F</th>
-                                <th>High °F</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              ${Array.from({ length: 24 }, (_, i) => {
-                                const lowErr = errs[`hourly_low_${i}`];
-                                const highErr = errs[`hourly_high_${i}`];
-                                const rowErr = errs[`hourly_row_${i}`];
-                                const errMsg = rowErr ?? lowErr ?? highErr ?? '';
-                                const hasErr = errMsg !== '';
-                                return html`
-                                  <tr data-row=${String(i)}>
-                                    <td>${fmtHour(i)}</td>
-                                    <td>
-                                      <input
-                                        name="hourly_low_${i}"
-                                        type="number"
-                                        step="0.5"
-                                        min="50"
-                                        max="90"
-                                        class=${lowErr || rowErr ? 'invalid' : ''}
-                                        ?disabled=${!this._hourlyEnabled}
-                                        .value=${this._hourlyLow[i] ?? ''}
-                                        @input=${onHourlyLow(i)}
-                                      />
-                                    </td>
-                                    <td>
-                                      <input
-                                        name="hourly_high_${i}"
-                                        type="number"
-                                        step="0.5"
-                                        min="50"
-                                        max="90"
-                                        class=${highErr || rowErr ? 'invalid' : ''}
-                                        ?disabled=${!this._hourlyEnabled}
-                                        .value=${this._hourlyHigh[i] ?? ''}
-                                        @input=${onHourlyHigh(i)}
-                                      />
-                                    </td>
-                                  </tr>
-                                  <tr data-row-error=${String(i)} ?hidden=${!hasErr}>
-                                    <td colspan="3" class="hourly-row-error">${errMsg}</td>
-                                  </tr>
-                                `;
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      `
-                    : null}
+                  <span class="label-text">Hourly comfort limits (°F)</span>
+                  <div class="hourly-content">
+                    <table class="hourly-table">
+                      <thead>
+                        <tr>
+                          <th>Hour</th>
+                          <th>Low °F</th>
+                          <th>High °F</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${Array.from({ length: 24 }, (_, i) => {
+                          const lowErr = errs[`hourly_low_${i}`];
+                          const highErr = errs[`hourly_high_${i}`];
+                          const rowErr = errs[`hourly_row_${i}`];
+                          const errMsg = rowErr ?? lowErr ?? highErr ?? '';
+                          const hasErr = errMsg !== '';
+                          return html`
+                            <tr data-row=${String(i)}>
+                              <td>${fmtHour(i)}</td>
+                              <td>
+                                <input
+                                  name="hourly_low_${i}"
+                                  type="number"
+                                  step="0.5"
+                                  min="50"
+                                  max="90"
+                                  class=${lowErr || rowErr ? 'invalid' : ''}
+                                  .value=${this._hourlyLow[i] ?? ''}
+                                  @input=${onHourlyLow(i)}
+                                />
+                              </td>
+                              <td>
+                                <input
+                                  name="hourly_high_${i}"
+                                  type="number"
+                                  step="0.5"
+                                  min="50"
+                                  max="90"
+                                  class=${highErr || rowErr ? 'invalid' : ''}
+                                  .value=${this._hourlyHigh[i] ?? ''}
+                                  @input=${onHourlyHigh(i)}
+                                />
+                              </td>
+                            </tr>
+                            <tr data-row-error=${String(i)} ?hidden=${!hasErr}>
+                              <td colspan="3" class="hourly-row-error">${errMsg}</td>
+                            </tr>
+                          `;
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               `
             : null}

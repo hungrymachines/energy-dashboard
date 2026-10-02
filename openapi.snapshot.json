@@ -614,6 +614,124 @@
         ]
       }
     },
+    "/api/v1/preferences/default-bands": {
+      "get": {
+        "tags": [
+          "preferences"
+        ],
+        "summary": "Get Default Bands",
+        "operationId": "get_default_bands_api_v1_preferences_default_bands_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "base_temperature",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Base Temperature"
+            }
+          },
+          {
+            "name": "savings_level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Savings Level"
+            }
+          },
+          {
+            "name": "time_away",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Away"
+            }
+          },
+          {
+            "name": "time_home",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Home"
+            }
+          },
+          {
+            "name": "optimization_mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Optimization Mode"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefaultBandsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/schedule": {
       "get": {
         "tags": [
@@ -1313,6 +1431,133 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/appliances/{appliance_id}/preferences/default-bands": {
+      "get": {
+        "tags": [
+          "appliance-preferences"
+        ],
+        "summary": "Get Appliance Default Bands",
+        "operationId": "get_appliance_default_bands_api_v1_appliances__appliance_id__preferences_default_bands_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appliance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Appliance Id"
+            }
+          },
+          {
+            "name": "base_temperature",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Base Temperature"
+            }
+          },
+          {
+            "name": "savings_level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Savings Level"
+            }
+          },
+          {
+            "name": "time_away",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Away"
+            }
+          },
+          {
+            "name": "time_home",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Home"
+            }
+          },
+          {
+            "name": "optimization_mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Optimization Mode"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefaultBandsResponse"
+                }
               }
             }
           },
@@ -3034,6 +3279,86 @@
           }
         }
       }
+    },
+    "/public/prices/{zone}/typical.json": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "summary": "Public Price Typical Json",
+        "operationId": "public_price_typical_json_public_prices__zone__typical_json_get",
+        "parameters": [
+          {
+            "name": "zone",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Zone"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/public/prices/{zone}/typical.svg": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "summary": "Public Price Typical Svg",
+        "operationId": "public_price_typical_svg_public_prices__zone__typical_svg_get",
+        "parameters": [
+          {
+            "name": "zone",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Zone"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3429,6 +3754,46 @@
           "cancel_url"
         ],
         "title": "CreateCheckoutRequest"
+      },
+      "DefaultBandsResponse": {
+        "properties": {
+          "hourly_high_temps_f": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Hourly High Temps F"
+          },
+          "hourly_low_temps_f": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Hourly Low Temps F"
+          },
+          "peak_hours": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Peak Hours"
+          },
+          "precool_hours": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Precool Hours"
+          }
+        },
+        "type": "object",
+        "required": [
+          "hourly_high_temps_f",
+          "hourly_low_temps_f",
+          "peak_hours",
+          "precool_hours"
+        ],
+        "title": "DefaultBandsResponse"
       },
       "DeliveryTariffOption": {
         "properties": {

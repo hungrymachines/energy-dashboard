@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { HmConstraintEditor } from '../src/ui/constraint-editor.js';
 import { clearTokens, setApiBase, setTokens } from '../src/api/client.js';
+import { deriveHourlyComfortBand } from '../src/utils/hourly.js';
 
 if (!customElements.get('hm-constraint-editor')) {
   customElements.define('hm-constraint-editor', HmConstraintEditor);
@@ -170,6 +171,18 @@ describe('hm-constraint-editor', () => {
     expect(url).not.toContain('/api/v1/preferences');
     expect(init?.method).toBe('PUT');
     const body = JSON.parse(String(init?.body));
+    // Hourly arrays were seeded at mount from the ORIGINAL currentConstraints
+    // (base=72, savings=3, no time_away/home → defaults 08:00/17:00, mode
+    // 'auto') — editing savings_level/optimization_mode afterward doesn't
+    // live-recompute the table (US-SDC-032: only "Reset to defaults" or a
+    // direct cell edit changes it), so the shipped arrays reflect the seed.
+    const seeded = deriveHourlyComfortBand({
+      base_temperature: 72,
+      savings_level: 3,
+      time_away: '08:00',
+      time_home: '17:00',
+      mode: 'auto',
+    });
     expect(body).toEqual({
       base_temperature: 72,
       savings_level: 2,
@@ -183,8 +196,8 @@ describe('hm-constraint-editor', () => {
       // (US-MHVAC-017) so the editor doesn't accidentally pause a
       // unit on first open.
       optimization_enabled: true,
-      hourly_low_temps_f: null,
-      hourly_high_temps_f: null,
+      hourly_low_temps_f: seeded.low,
+      hourly_high_temps_f: seeded.high,
     });
   });
 
@@ -287,6 +300,16 @@ describe('hm-constraint-editor', () => {
     expect(url).toContain('/api/v1/appliances/hvac-1/preferences');
     expect(init?.method).toBe('PUT');
     const body = JSON.parse(String(init?.body));
+    // Hourly arrays were seeded at mount (base=72, savings=2, mode=cool,
+    // no stored time_away/home → defaults 08:00/17:00) — editing
+    // time_away afterward doesn't live-recompute the table.
+    const seeded = deriveHourlyComfortBand({
+      base_temperature: 72,
+      savings_level: 2,
+      time_away: '08:00',
+      time_home: '17:00',
+      mode: 'cool',
+    });
     expect(body).toEqual({
       base_temperature: 72,
       savings_level: 2,
@@ -295,8 +318,8 @@ describe('hm-constraint-editor', () => {
       optimize_hvac_mode: false,
       optimization_enabled: true,
       time_away: '06:30',
-      hourly_low_temps_f: null,
-      hourly_high_temps_f: null,
+      hourly_low_temps_f: seeded.low,
+      hourly_high_temps_f: seeded.high,
     });
     expect('time_home' in body).toBe(false);
   });
@@ -401,7 +424,7 @@ describe('hm-constraint-editor', () => {
     expect(calls.length).toBe(0);
   });
 
-  it('hides time_away/time_home inputs when hourly bands are enabled (US-FE-HVAC-EDITOR-PREFS-01 d)', async () => {
+  it('always shows base_temperature/savings_level/time_away/time_home under Defaults, alongside the hourly table (US-SDC-032)', async () => {
     captureFetch(jsonResponse({}));
     const el = mountEditor({
       applianceId: 'hvac-1',
@@ -412,27 +435,22 @@ describe('hm-constraint-editor', () => {
         optimization_mode: 'cool',
         time_away: '08:00',
         time_home: '17:00',
+        hourly_low_temps_f: Array.from({ length: 24 }, () => 65),
+        hourly_high_temps_f: Array.from({ length: 24 }, () => 78),
       },
       open: true,
     });
     await flush(el);
 
     const root = el.shadowRoot!;
+    // No style toggle exists any more — the Defaults fields and the
+    // hourly table are both always present, together, regardless of
+    // whether a stored hourly override exists.
+    expect(root.querySelector('input[name="comfort_style"]')).toBeNull();
     expect(root.querySelector('input[name="time_away"]')).not.toBeNull();
     expect(root.querySelector('input[name="time_home"]')).not.toBeNull();
-
-    // Switch the comfort schedule style to custom hourly limits.
-    const customRadio = root.querySelector<HTMLInputElement>(
-      'input[name="comfort_style"][value="custom"]',
-    )!;
-    customRadio.checked = true;
-    customRadio.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush(el);
-
-    expect(root.querySelector('input[name="time_away"]')).toBeNull();
-    expect(root.querySelector('input[name="time_home"]')).toBeNull();
-    // The savings slider only drives the simple style — hidden too.
-    expect(root.querySelector('input[name="savings_level"]')).toBeNull();
+    expect(root.querySelector('input[name="savings_level"]')).not.toBeNull();
+    expect(root.querySelectorAll('tr[data-row]').length).toBe(24);
   });
 
   it('renders a per-appliance pause toggle that defaults ON and submits false when unchecked (US-MHVAC-017)', async () => {

@@ -47,3 +47,39 @@ export function update(body: UpdatePreferencesBody): Promise<Preferences> {
     body: JSON.stringify(body),
   });
 }
+
+export interface DefaultBandsParams {
+  base_temperature?: number;
+  savings_level?: number;
+  time_away?: string;
+  time_home?: string;
+  optimization_mode?: string;
+}
+
+export interface DefaultBandsResponse {
+  hourly_high_temps_f: number[];
+  hourly_low_temps_f: number[];
+  peak_hours: [number, number];
+  precool_hours: [number, number];
+}
+
+function buildDefaultBandsQuery(params: DefaultBandsParams): string {
+  const q = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== '') {
+      q.set(key, String(value));
+    }
+  }
+  const qs = q.toString();
+  return qs ? `?${qs}` : '';
+}
+
+/** Preview the shaped default hourly band (`comfort.default_hourly_bands`,
+ * US-SDC-030) without writing anything — every param optional, falling back
+ * to this user's stored preferences. Powers "Reset to defaults" in the
+ * constraint editor (US-SDC-032). */
+export function defaultBands(params: DefaultBandsParams = {}): Promise<DefaultBandsResponse> {
+  return apiFetch<DefaultBandsResponse>(
+    `/api/v1/preferences/default-bands${buildDefaultBandsQuery(params)}`,
+  );
+}

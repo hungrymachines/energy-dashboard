@@ -372,6 +372,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/preferences/default-bands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Default Bands */
+        get: operations["get_default_bands_api_v1_preferences_default_bands_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/schedule": {
         parameters: {
             query?: never;
@@ -767,6 +784,23 @@ export interface paths {
          *       * 409 — the appliance has no bound device to receive the command.
          */
         post: operations["post_appliance_command_api_v1_appliances__appliance_id__command_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/appliances/{appliance_id}/preferences/default-bands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Appliance Default Bands */
+        get: operations["get_appliance_default_bands_api_v1_appliances__appliance_id__preferences_default_bands_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1546,6 +1580,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/public/prices/{zone}/typical.json": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Public Price Typical Json */
+        get: operations["public_price_typical_json_public_prices__zone__typical_json_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/public/prices/{zone}/typical.svg": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Public Price Typical Svg */
+        get: operations["public_price_typical_svg_public_prices__zone__typical_svg_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1688,6 +1756,17 @@ export interface components {
             success_url: string;
             /** Cancel Url */
             cancel_url: string;
+        };
+        /** DefaultBandsResponse */
+        DefaultBandsResponse: {
+            /** Hourly High Temps F */
+            hourly_high_temps_f: number[];
+            /** Hourly Low Temps F */
+            hourly_low_temps_f: number[];
+            /** Peak Hours */
+            peak_hours: number[];
+            /** Precool Hours */
+            precool_hours: number[];
         };
         /** DeliveryTariffOption */
         DeliveryTariffOption: {
@@ -2718,6 +2797,41 @@ export interface operations {
             };
         };
     };
+    get_default_bands_api_v1_preferences_default_bands_get: {
+        parameters: {
+            query?: {
+                base_temperature?: number | null;
+                savings_level?: number | null;
+                time_away?: string | null;
+                time_home?: string | null;
+                optimization_mode?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DefaultBandsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_schedule_api_v1_schedule_get: {
         parameters: {
             query?: {
@@ -3179,6 +3293,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_appliance_default_bands_api_v1_appliances__appliance_id__preferences_default_bands_get: {
+        parameters: {
+            query?: {
+                base_temperature?: number | null;
+                savings_level?: number | null;
+                time_away?: string | null;
+                time_home?: string | null;
+                optimization_mode?: string | null;
+            };
+            header?: never;
+            path: {
+                appliance_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DefaultBandsResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4178,6 +4329,68 @@ export interface operations {
                 "x-partner-key"?: string | null;
             };
             path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    public_price_typical_json_public_prices__zone__typical_json_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                zone: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    public_price_typical_svg_public_prices__zone__typical_svg_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                zone: string;
+            };
             cookie?: never;
         };
         requestBody?: never;

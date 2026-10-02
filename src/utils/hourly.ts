@@ -39,10 +39,6 @@ export function hasCustomRates(rates: { source: 'custom' | 'zone' | 'dynamic' })
 }
 
 // Mirrors `app/services/comfort.py: SAVINGS_OFFSETS` on the backend.
-// When the user is NOT using hourly overrides, the optimizer derives
-// the comfort band from base_temperature + savings_level + time_away/home,
-// and the constraint editor shows those derived values in the disabled
-// hourly table. Keep this map in sync with the backend's.
 const SAVINGS_OFFSETS: Record<number, number> = { 1: 2.0, 2: 6.0, 3: 12.0 };
 
 // Tight tolerance (°F) when the user is at home — applied symmetrically
@@ -50,58 +46,90 @@ const SAVINGS_OFFSETS: Record<number, number> = { 1: 2.0, 2: 6.0, 3: 12.0 };
 // `app/services/comfort.py: HOME_BAND_OFFSET`.
 const HOME_BAND_OFFSET = 1.0;
 
+// Default hourly-band shape (US-SDC-030/032). Mirrors
+// `app/services/comfort.py: DEFAULT_PEAK_HOURS` / `DEFAULT_PRECOOL_HOURS` /
+// `PEAK_HOME_OFFSET_MAX` / `PRECOOL_FLOOR_OFFSET`. Hours are local
+// wall-clock, half-open [start, end).
+export const DEFAULT_PEAK_HOURS: readonly [number, number] = [13, 21];
+export const DEFAULT_PRECOOL_HOURS: readonly [number, number] = [9, 13];
+export const PEAK_HOME_OFFSET_MAX = 3.0;
+export const PRECOOL_FLOOR_OFFSET = 2.0;
+
 export type ComfortMode = 'cool' | 'heat' | 'auto';
 
-/** Parse "HH:MM" into a 0-23 hour index, clamped. Bad input → 0. */
-function timeStrToHour(time: string): number {
+/** Parse "HH:MM" into a half-hour interval index (0-47). Bad input → 0.
+ * Mirrors `app/services/comfort.py: _time_to_interval`. */
+function timeToInterval(time: string): number {
   if (typeof time !== 'string' || !time.includes(':')) return 0;
-  const [hStr] = time.split(':');
-  const h = Number(hStr);
-  if (!Number.isFinite(h)) return 0;
-  return Math.max(0, Math.min(23, Math.floor(h)));
+  const [hStr, mStr] = time.split(':');
+  const hours = Number(hStr);
+  const minutes = Number(mStr);
+  if (!Number.isFinite(hours)) return 0;
+  return hours * 2 + (Number.isFinite(minutes) && minutes >= 30 ? 1 : 0);
 }
 
-function isAwayHour(hour: number, awayHour: number, homeHour: number): boolean {
-  if (awayHour <= homeHour) return hour >= awayHour && hour < homeHour;
-  // Wrap past midnight (e.g. away 22:00, home 06:00).
-  return hour >= awayHour || hour < homeHour;
+/** Mirrors `app/services/comfort.py: _is_away`. */
+function isAwayInterval(interval: number, awayStart: number, homeStart: number): boolean {
+  if (awayStart <= homeStart) return interval >= awayStart && interval < homeStart;
+  return interval >= awayStart || interval < homeStart;
+}
+
+/** Round to the nearest 0.5. Mirrors `app/services/comfort.py: _round_half`. */
+function roundHalf(value: number): number {
+  return Math.round(value * 2) / 2;
 }
 
 /**
- * Derive a 24-hour comfort band from the legacy preference fields, in
- * the same shape the constraint editor's hourly table renders. Used to
- * populate the disabled table when the user has just unchecked
- * "Use my hourly bands" — gives them a preview of what the optimizer
- * will fall back to.
+ * Derive the 24-hour default comfort-band shape the optimizer would use
+ * for a given base temperature, savings level, home/away schedule, and
+ * mode when no hourly override is stored. Used to seed the constraint
+ * editor's hourly table and as the offline fallback for "Reset to
+ * defaults" when the live `/preferences/default-bands` endpoint fails.
  *
- * Mirrors `app/services/comfort.py: build_comfort_band`. Returns one
- * value per HOUR (24 elements), not per half-hour interval.
- *
- * Band shape is symmetric and mode-independent:
- *   home hours → base ± HOME_BAND_OFFSET (tight, user is present)
- *   away hours → base ± SAVINGS_OFFSETS[level] (wide, lets the
- *                 optimizer pre-cool OR pre-heat depending on prices)
+ * Ports `app/services/comfort.py: default_hourly_bands` verbatim — see
+ * that function's docstring for the shape rationale (peak hours widen
+ * the side facing the peak, pre-peak hours open the side that stores
+ * the pre-cool/pre-heat, away hours always win with the full savings
+ * width). Returns one value per HOUR (24 elements), each rounded to 0.5.
  */
 export function deriveHourlyComfortBand(opts: {
   base_temperature: number;
   savings_level: number;
   time_away: string;
   time_home: string;
-  // Kept for callsite compatibility — the mode no longer changes the
-  // band shape (the optimizer uses it separately to choose actions).
   mode: ComfortMode;
+  peak_hours?: readonly [number, number];
+  precool_hours?: readonly [number, number];
 }): { high: number[]; low: number[] } {
   const base = Number.isFinite(opts.base_temperature) ? opts.base_temperature : 72;
-  const awayOffset = SAVINGS_OFFSETS[opts.savings_level] ?? 2.0;
-  const awayHour = timeStrToHour(opts.time_away);
-  const homeHour = timeStrToHour(opts.time_home);
+  const away = SAVINGS_OFFSETS[opts.savings_level] ?? 2.0;
+  const awayStart = timeToInterval(opts.time_away);
+  const homeStart = timeToInterval(opts.time_home);
+  const peakHours = opts.peak_hours ?? DEFAULT_PEAK_HOURS;
+  const precoolHours = opts.precool_hours ?? DEFAULT_PRECOOL_HOURS;
+
+  const peakOffset = Math.min(away, PEAK_HOME_OFFSET_MAX);
+  const precoolOffset = PRECOOL_FLOOR_OFFSET;
 
   const high: number[] = new Array(24);
   const low: number[] = new Array(24);
   for (let h = 0; h < 24; h++) {
-    const offset = isAwayHour(h, awayHour, homeHour) ? awayOffset : HOME_BAND_OFFSET;
-    high[h] = base + offset;
-    low[h] = base - offset;
+    const inAway = isAwayInterval(2 * h, awayStart, homeStart);
+    const inPeak = h >= peakHours[0] && h < peakHours[1];
+    const inPrecool = h >= precoolHours[0] && h < precoolHours[1];
+
+    let highOffset: number;
+    let lowOffset: number;
+    if (opts.mode === 'heat') {
+      highOffset = inAway ? away : inPrecool ? precoolOffset : HOME_BAND_OFFSET;
+      lowOffset = inAway ? away : inPeak ? peakOffset : HOME_BAND_OFFSET;
+    } else {
+      highOffset = inAway ? away : inPeak ? peakOffset : HOME_BAND_OFFSET;
+      lowOffset = inAway ? away : inPrecool ? precoolOffset : HOME_BAND_OFFSET;
+    }
+
+    high[h] = roundHalf(base + highOffset);
+    low[h] = roundHalf(base - lowOffset);
   }
   return { high, low };
 }
