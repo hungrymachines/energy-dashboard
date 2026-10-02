@@ -892,6 +892,34 @@ async def test_capture_solar_zero_watts_is_idle() -> None:
 
 
 @pytest.mark.asyncio
+async def test_capture_solar_negative_watts_is_reverse_flow_production() -> None:
+    """A metering smart plug on a plug-in (balcony) inverter sees current
+    flowing backward through the outlet; some report that as a negative
+    number. Production has no sign, so the magnitude is recorded."""
+    appliance = {
+        "id": "solar-1",
+        "appliance_type": "solar",
+        "config": {
+            "system_size_kw": 0.8,
+            "production_sensor_entity_id": "sensor.balcony_plug_power",
+        },
+    }
+    sensor = _state("-615", {"unit_of_measurement": "W"})
+    hass = _hass({"sensor.balcony_plug_power": sensor})
+    entry = _entry()
+
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, entry)
+
+    reading = hass.data[DOMAIN]["readings_buffer"]["solar-1"][0]
+    assert reading["value"] == 615.0
+    assert reading["power_watts"] == 615.0
+    assert reading["state"] == "PRODUCING"
+
+
+@pytest.mark.asyncio
 async def test_capture_solar_without_production_sensor_captures_nothing() -> None:
     """Optional sensor left unset (US-SOL-003) → skipped silently, no log
     spam, and no per-appliance bucket created."""
