@@ -250,4 +250,59 @@ describe('deriveHourlyComfortBand', () => {
     // Hour 13, inside the module DEFAULT peak window, is now untouched.
     expect([low[13], high[13]]).toEqual([71.0, 73.0]);
   });
+
+  // --- Cross-package parity (US-SDC-034) -------------------------------
+  // The same case is pinned, under the same test names, in three suites:
+  //   hungry-machines-api/tests/test_comfort.py  (default_hourly_bands)
+  //   this file                                  (deriveHourlyComfortBand)
+  //   hm-client/tests/comfort.test.ts            (defaultHourlyBands)
+  // The literals below are the Python generator's own printed output, so
+  // a drift in any one of the three turns all three red together.
+  const PARITY_COOL_HIGH = [
+    73.0, 73.0, 73.0, 73.0, 73.0, 73.0, 73.0, 73.0,
+    78.0, 78.0, 78.0, 78.0, 78.0, 78.0, 78.0, 78.0,
+    78.0, 75.0, 75.0, 75.0, 75.0, 73.0, 73.0, 73.0,
+  ];
+  const PARITY_COOL_LOW = [
+    71.0, 71.0, 71.0, 71.0, 71.0, 71.0, 71.0, 71.0,
+    66.0, 66.0, 66.0, 66.0, 66.0, 66.0, 66.0, 66.0,
+    66.0, 71.0, 71.0, 71.0, 71.0, 71.0, 71.0, 71.0,
+  ];
+  const PARITY_HEAT_HIGH = [
+    73.0, 73.0, 73.0, 73.0, 73.0, 73.0, 73.0, 73.0,
+    78.0, 78.0, 78.0, 78.0, 78.0, 78.0, 78.0, 78.0,
+    78.0, 73.0, 73.0, 73.0, 73.0, 73.0, 73.0, 73.0,
+  ];
+  const PARITY_HEAT_LOW = [
+    71.0, 71.0, 71.0, 71.0, 71.0, 71.0, 71.0, 71.0,
+    66.0, 66.0, 66.0, 66.0, 66.0, 66.0, 66.0, 66.0,
+    66.0, 69.0, 69.0, 69.0, 69.0, 71.0, 71.0, 71.0,
+  ];
+
+  it('test_default_hourly_bands_cross_package_parity_cool', () => {
+    // base 72, level 2, away 08:00-17:00, cool -- the full 24-hour arrays.
+    const { high, low } = deriveHourlyComfortBand({
+      base_temperature: 72.0,
+      savings_level: 2,
+      time_away: '08:00',
+      time_home: '17:00',
+      mode: 'cool',
+    });
+    expect(high).toEqual(PARITY_COOL_HIGH);
+    expect(low).toEqual(PARITY_COOL_LOW);
+  });
+
+  it('test_default_hourly_bands_cross_package_parity_heat', () => {
+    // Same inputs, heat: the peak widening moves to the floor (69.0 at
+    // 17:00-20:00) and the ceiling stays at the home offset.
+    const { high, low } = deriveHourlyComfortBand({
+      base_temperature: 72.0,
+      savings_level: 2,
+      time_away: '08:00',
+      time_home: '17:00',
+      mode: 'heat',
+    });
+    expect(high).toEqual(PARITY_HEAT_HIGH);
+    expect(low).toEqual(PARITY_HEAT_LOW);
+  });
 });
