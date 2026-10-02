@@ -154,14 +154,14 @@ describe('hm-constraint-editor hourly bands (US-SDC-032: table is the primary co
     const high0 = root.querySelector<HTMLInputElement>('input[name="hourly_high_0"]')!;
     expect(low0.disabled).toBe(false);
     expect(high0.disabled).toBe(false);
-    // Hour 0 — home, outside peak/precool: tight ±1.0.
-    expect(low0.value).toBe('71');
+    // Hour 0 — overnight: base-2 .. base+1 (the 2026-10-02 default band).
+    expect(low0.value).toBe('70');
     expect(high0.value).toBe('73');
-    // Hour 12 — away (08:00-17:00): full ±12 (savings level 3).
+    // Hour 12 — inside the 08:00-21:59 wide window: base-5 .. base+6.
     const low12 = root.querySelector<HTMLInputElement>('input[name="hourly_low_12"]')!;
     const high12 = root.querySelector<HTMLInputElement>('input[name="hourly_high_12"]')!;
-    expect(low12.value).toBe('60');
-    expect(high12.value).toBe('84');
+    expect(low12.value).toBe('67');
+    expect(high12.value).toBe('78');
   });
 
   it('(b) editing a table row and clicking Save fires PUT with both hourly arrays, never null', async () => {
@@ -420,7 +420,7 @@ describe('hm-constraint-editor hourly bands (US-SDC-032: table is the primary co
     // shaped-default values the initial seed already used.
     const low0 = root.querySelector<HTMLInputElement>('input[name="hourly_low_0"]')!;
     const high0 = root.querySelector<HTMLInputElement>('input[name="hourly_high_0"]')!;
-    expect(low0.value).toBe('71');
+    expect(low0.value).toBe('70');
     expect(high0.value).toBe('73');
     expect(root.textContent).toContain('Could not reach the server');
 

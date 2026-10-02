@@ -146,10 +146,10 @@ describe('deriveHourlyComfortBand', () => {
     }
   });
 
-  it('test_default_hourly_bands_cool_shape_level1', () => {
-    // base 72, level 1, away 08:00-17:00, cool. Away always wins (full
-    // ±2.0 SAVINGS_OFFSETS width) even where it overlaps the peak window
-    // — peak/precool only shape HOME hours.
+  it('test_default_hourly_bands_is_the_owner_set_shape', () => {
+    // 2026-10-02: tight overnight, wide 08:00-21:59. Offsets from base are
+    // night base-2..base+1 and day base-5..base+6, so at base 72 that is
+    // 70-73 overnight and 67-78 from 08:00 through 21:59.
     const { high, low } = deriveHourlyComfortBand({
       base_temperature: 72.0,
       savings_level: 1,
@@ -157,130 +157,130 @@ describe('deriveHourlyComfortBand', () => {
       time_home: '17:00',
       mode: 'cool',
     });
-    // 02:00 — home, outside peak (13-21) and precool (9-13): HOME_BAND_OFFSET.
-    expect([low[2], high[2]]).toEqual([71.0, 73.0]);
-    // 10:00 — away (08:00-17:00) even though also inside the precool window.
-    expect([low[10], high[10]]).toEqual([70.0, 74.0]);
-    // 15:00 — away AND inside the peak window; still away takes precedence.
-    expect([low[15], high[15]]).toEqual([70.0, 74.0]);
-    // 18:00 — home (user's back) and inside the peak window: ceiling opens
-    // to min(away=2.0, PEAK_HOME_OFFSET_MAX=3.0) = 2.0, floor stays home.
-    expect([low[18], high[18]]).toEqual([71.0, 74.0]);
-    // 22:00 — home, outside peak/precool again.
-    expect([low[22], high[22]]).toEqual([71.0, 73.0]);
+    expect([low[0], high[0]]).toEqual([70.0, 73.0]);
+    expect([low[7], high[7]]).toEqual([70.0, 73.0]);
+    expect([low[8], high[8]]).toEqual([67.0, 78.0]);
+    expect([low[12], high[12]]).toEqual([67.0, 78.0]);
+    expect([low[17], high[17]]).toEqual([67.0, 78.0]);
+    expect([low[21], high[21]]).toEqual([67.0, 78.0]);
+    expect([low[22], high[22]]).toEqual([70.0, 73.0]);
+    expect([low[23], high[23]]).toEqual([70.0, 73.0]);
   });
 
-  it('test_default_hourly_bands_peak_ceiling_caps_at_peak_home_offset_max', () => {
-    const { high, low } = deriveHourlyComfortBand({
+  it('test_default_hourly_bands_ignores_level_away_and_home', () => {
+    // ONE band for everybody. This panel used to default to level 3 (60-84
+    // away at base 72) while hm-client used 2 and the API used 1.
+    const ref = deriveHourlyComfortBand({
       base_temperature: 72.0,
-      savings_level: 2,
+      savings_level: 1,
       time_away: '08:00',
       time_home: '17:00',
       mode: 'cool',
     });
-    // 18:00 is home + peak: ceiling capped at min(away=6.0, 3.0) = 3.0.
-    expect(high[18]).toBe(72.0 + PEAK_HOME_OFFSET_MAX);
-    expect(high[18]).toBe(75.0);
-    expect(low[18]).toBe(71.0); // floor untouched by peak (HOME_BAND_OFFSET)
-    // 15:00 is still an away hour under this same window, so it keeps the
-    // full, uncapped away width (±6.0).
-    expect([low[15], high[15]]).toEqual([66.0, 78.0]);
+    for (const level of [1, 2, 3]) {
+      for (const [away, home] of [
+        ['08:00', '17:00'],
+        ['06:30', '15:00'],
+        ['10:00', '21:00'],
+      ]) {
+        const { high, low } = deriveHourlyComfortBand({
+          base_temperature: 72.0,
+          savings_level: level,
+          time_away: away,
+          time_home: home,
+          mode: 'cool',
+        });
+        expect(high).toEqual(ref.high);
+        expect(low).toEqual(ref.low);
+      }
+    }
   });
 
-  it('test_default_hourly_bands_precool_floor_drops_in_home_hours', () => {
-    // Away window 14:00-20:00 leaves the 9-13 precool hours as HOME hours.
-    const { high, low } = deriveHourlyComfortBand({
-      base_temperature: 72.0,
-      savings_level: 1,
-      time_away: '14:00',
-      time_home: '20:00',
-      mode: 'cool',
-    });
-    // 10:00 — home, inside precool (9-13): floor drops to PRECOOL_FLOOR_OFFSET=2.0.
-    expect([low[10], high[10]]).toEqual([70.0, 73.0]);
-    // 13:00 — home (away starts at 14:00), inside peak (13-21) and just
-    // past precool: ceiling opens to min(away=2.0, 3.0)=2.0, floor is home.
-    expect([low[13], high[13]]).toEqual([71.0, 74.0]);
-    // 9:00 is also home+precool.
-    expect([low[9], high[9]]).toEqual([70.0, 73.0]);
-  });
-
-  it('test_default_hourly_bands_heat_mirrors_cool', () => {
+  it('test_default_hourly_bands_shifts_with_base_temperature', () => {
     const { high, low } = deriveHourlyComfortBand({
       base_temperature: 68.0,
       savings_level: 1,
-      time_away: '14:00',
-      time_home: '20:00',
+      time_away: '08:00',
+      time_home: '17:00',
+      mode: 'cool',
+    });
+    expect([low[0], high[0]]).toEqual([66.0, 69.0]);
+    expect([low[12], high[12]]).toEqual([63.0, 74.0]);
+  });
+
+  it('test_default_hourly_bands_peak_and_precool_args_are_inert', () => {
+    const ref = deriveHourlyComfortBand({
+      base_temperature: 72.0,
+      savings_level: 1,
+      time_away: '08:00',
+      time_home: '17:00',
+      mode: 'cool',
+    });
+    const { high, low } = deriveHourlyComfortBand({
+      base_temperature: 72.0,
+      savings_level: 1,
+      time_away: '08:00',
+      time_home: '17:00',
+      mode: 'cool',
+      peak_hours: [3, 6],
+      precool_hours: [1, 3],
+    });
+    expect(high).toEqual(ref.high);
+    expect(low).toEqual(ref.low);
+  });
+
+  it('test_default_hourly_bands_heat_mirrors_cool', () => {
+    // Heating saves by running COLDER by day: (-5, +6) becomes (-6, +5).
+    const { high, low } = deriveHourlyComfortBand({
+      base_temperature: 72.0,
+      savings_level: 1,
+      time_away: '08:00',
+      time_home: '17:00',
       mode: 'heat',
     });
-    // 10:00 — home, precool window: ceiling RISES (was the floor in cool).
-    expect([low[10], high[10]]).toEqual([67.0, 70.0]);
-    // 13:00 — home, peak window: floor DROPS (was the ceiling in cool).
-    expect([low[13], high[13]]).toEqual([66.0, 69.0]);
-    // Away hours are unaffected by mode — still the flat full-width band.
-    expect([low[18], high[18]]).toEqual([68.0 - 2.0, 68.0 + 2.0]);
+    expect([low[0], high[0]]).toEqual([71.0, 74.0]);
+    expect([low[12], high[12]]).toEqual([66.0, 77.0]);
+    expect(high[12] - low[12]).toBe(11.0);
   });
 
   it('test_default_hourly_bands_values_rounded_to_half', () => {
     const { high, low } = deriveHourlyComfortBand({
-      base_temperature: 70.3,
+      base_temperature: 72.3,
       savings_level: 1,
       time_away: '08:00',
       time_home: '17:00',
       mode: 'cool',
     });
     for (const v of [...high, ...low]) {
-      expect(v * 2).toBe(Math.round(v * 2));
+      expect(v * 2).toBe(Math.trunc(v * 2));
     }
   });
 
-  it('test_default_hourly_bands_custom_peak_and_precool_hours', () => {
-    // The peak/precool windows are parameters, not just module constants.
-    const { high, low } = deriveHourlyComfortBand({
-      base_temperature: 72.0,
-      savings_level: 2,
-      time_away: '14:00',
-      time_home: '20:00',
-      mode: 'cool',
-      peak_hours: [1, 2],
-      precool_hours: [3, 4],
-    });
-    expect([low[1], high[1]]).toEqual([71.0, 75.0]); // custom peak hour, capped at 3.0
-    expect([low[3], high[3]]).toEqual([70.0, 73.0]); // custom precool hour
-    // Hour 13, inside the module DEFAULT peak window, is now untouched.
-    expect([low[13], high[13]]).toEqual([71.0, 73.0]);
-  });
-
-  // --- Cross-package parity (US-SDC-034) -------------------------------
-  // The same case is pinned, under the same test names, in three suites:
-  //   hungry-machines-api/tests/test_comfort.py  (default_hourly_bands)
-  //   this file                                  (deriveHourlyComfortBand)
-  //   hm-client/tests/comfort.test.ts            (defaultHourlyBands)
-  // The literals below are the Python generator's own printed output, so
-  // a drift in any one of the three turns all three red together.
+  // --- Cross-package parity -------------------------------------------
+  // Pinned with the same names in hungry-machines-api/tests/test_comfort.py
+  // (the source of truth) and hm-client/tests/comfort.test.ts.
   const PARITY_COOL_HIGH = [
     73.0, 73.0, 73.0, 73.0, 73.0, 73.0, 73.0, 73.0,
     78.0, 78.0, 78.0, 78.0, 78.0, 78.0, 78.0, 78.0,
-    78.0, 75.0, 75.0, 75.0, 75.0, 73.0, 73.0, 73.0,
+    78.0, 78.0, 78.0, 78.0, 78.0, 78.0, 73.0, 73.0,
   ];
   const PARITY_COOL_LOW = [
-    71.0, 71.0, 71.0, 71.0, 71.0, 71.0, 71.0, 71.0,
-    66.0, 66.0, 66.0, 66.0, 66.0, 66.0, 66.0, 66.0,
-    66.0, 71.0, 71.0, 71.0, 71.0, 71.0, 71.0, 71.0,
+    70.0, 70.0, 70.0, 70.0, 70.0, 70.0, 70.0, 70.0,
+    67.0, 67.0, 67.0, 67.0, 67.0, 67.0, 67.0, 67.0,
+    67.0, 67.0, 67.0, 67.0, 67.0, 67.0, 70.0, 70.0,
   ];
   const PARITY_HEAT_HIGH = [
-    73.0, 73.0, 73.0, 73.0, 73.0, 73.0, 73.0, 73.0,
-    78.0, 78.0, 78.0, 78.0, 78.0, 78.0, 78.0, 78.0,
-    78.0, 73.0, 73.0, 73.0, 73.0, 73.0, 73.0, 73.0,
+    74.0, 74.0, 74.0, 74.0, 74.0, 74.0, 74.0, 74.0,
+    77.0, 77.0, 77.0, 77.0, 77.0, 77.0, 77.0, 77.0,
+    77.0, 77.0, 77.0, 77.0, 77.0, 77.0, 74.0, 74.0,
   ];
   const PARITY_HEAT_LOW = [
     71.0, 71.0, 71.0, 71.0, 71.0, 71.0, 71.0, 71.0,
     66.0, 66.0, 66.0, 66.0, 66.0, 66.0, 66.0, 66.0,
-    66.0, 69.0, 69.0, 69.0, 69.0, 71.0, 71.0, 71.0,
+    66.0, 66.0, 66.0, 66.0, 66.0, 66.0, 71.0, 71.0,
   ];
 
   it('test_default_hourly_bands_cross_package_parity_cool', () => {
-    // base 72, level 2, away 08:00-17:00, cool -- the full 24-hour arrays.
     const { high, low } = deriveHourlyComfortBand({
       base_temperature: 72.0,
       savings_level: 2,
@@ -293,8 +293,6 @@ describe('deriveHourlyComfortBand', () => {
   });
 
   it('test_default_hourly_bands_cross_package_parity_heat', () => {
-    // Same inputs, heat: the peak widening moves to the floor (69.0 at
-    // 17:00-20:00) and the ceiling stays at the home offset.
     const { high, low } = deriveHourlyComfortBand({
       base_temperature: 72.0,
       savings_level: 2,

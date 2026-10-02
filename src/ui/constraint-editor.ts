@@ -376,7 +376,9 @@ export class HmConstraintEditor extends LitElement {
         : 'auto';
     const { high, low } = deriveHourlyComfortBand({
       base_temperature: Number.isFinite(baseNum as number) ? (baseNum as number) : 72,
-      savings_level: Number.isFinite(savingsNum as number) ? (savingsNum as number) : 3,
+      // Inert since 2026-10-02 (one default band for every surface), but
+      // default to 1 to match the API's DEFAULTS and the DB column, not 3.
+      savings_level: Number.isFinite(savingsNum as number) ? (savingsNum as number) : 1,
       time_away: timeAway,
       time_home: timeHome,
       mode,
@@ -441,7 +443,7 @@ export class HmConstraintEditor extends LitElement {
         const optEnabled = optEnabledRaw === false ? '' : '1';
         return {
           base_temperature: base === null ? '72' : String(base),
-          savings_level: savings === null ? '3' : String(savings),
+          savings_level: savings === null ? '1' : String(savings),
           optimization_mode: (OPTIMIZATION_MODES as ReadonlyArray<string>).includes(mode)
             ? mode
             : 'auto',
@@ -1046,10 +1048,10 @@ export class HmConstraintEditor extends LitElement {
                         min="1"
                         max="3"
                         step="1"
-                        .value=${v['savings_level'] ?? '3'}
+                        .value=${v['savings_level'] ?? '1'}
                         @input=${onNum('savings_level')}
                       />
-                      <span class="slider-value">${v['savings_level'] ?? '3'}</span>
+                      <span class="slider-value">${v['savings_level'] ?? '1'}</span>
                     </div>
                     ${errs['savings_level']
                       ? html`<div class="field-error">${errs['savings_level']}</div>`

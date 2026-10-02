@@ -1,3 +1,14 @@
+// Owner-set default band, 2026-10-02. ONE shape for every surface (API, HACS
+// panel, hm-client) — mirrors `app/services/comfort.py`'s DEFAULT_DAY_HOURS /
+// DEFAULT_NIGHT_OFFSETS / DEFAULT_DAY_OFFSETS. Offsets from base_temperature:
+//   00:00-07:59  base-2 .. base+1   (70-73 at base 72)
+//   08:00-21:59  base-5 .. base+6   (67-78 at base 72)
+//   22:00-23:59  base-2 .. base+1
+// savings_level / time_away / time_home no longer vary the default.
+const DEFAULT_DAY_HOURS: readonly [number, number] = [8, 22];
+const DEFAULT_NIGHT_OFFSETS: readonly [number, number] = [-2.0, 1.0]; // low, high
+const DEFAULT_DAY_OFFSETS: readonly [number, number] = [-5.0, 6.0];
+
 export function expandHourlyTo48(arr: number[]): number[] {
   if (!Array.isArray(arr) || arr.length !== 24) {
     throw new RangeError(
@@ -86,11 +97,12 @@ function roundHalf(value: number): number {
  * editor's hourly table and as the offline fallback for "Reset to
  * defaults" when the live `/preferences/default-bands` endpoint fails.
  *
- * Ports `app/services/comfort.py: default_hourly_bands` verbatim — see
- * that function's docstring for the shape rationale (peak hours widen
- * the side facing the peak, pre-peak hours open the side that stores
- * the pre-cool/pre-heat, away hours always win with the full savings
- * width). Returns one value per HOUR (24 elements), each rounded to 0.5.
+ * Ports `app/services/comfort.py: default_hourly_bands` verbatim — the
+ * owner-set default band (see the constants above). `savings_level`,
+ * `time_away` and `time_home` are accepted for signature parity with the
+ * stored preferences but no longer change the result; only
+ * `base_temperature` and `mode` do. Returns one value per HOUR (24
+ * elements), each rounded to 0.5.
  */
 export function deriveHourlyComfortBand(opts: {
   base_temperature: number;
@@ -102,34 +114,18 @@ export function deriveHourlyComfortBand(opts: {
   precool_hours?: readonly [number, number];
 }): { high: number[]; low: number[] } {
   const base = Number.isFinite(opts.base_temperature) ? opts.base_temperature : 72;
-  const away = SAVINGS_OFFSETS[opts.savings_level] ?? 2.0;
-  const awayStart = timeToInterval(opts.time_away);
-  const homeStart = timeToInterval(opts.time_home);
-  const peakHours = opts.peak_hours ?? DEFAULT_PEAK_HOURS;
-  const precoolHours = opts.precool_hours ?? DEFAULT_PRECOOL_HOURS;
-
-  const peakOffset = Math.min(away, PEAK_HOME_OFFSET_MAX);
-  const precoolOffset = PRECOOL_FLOOR_OFFSET;
 
   const high: number[] = new Array(24);
   const low: number[] = new Array(24);
   for (let h = 0; h < 24; h++) {
-    const inAway = isAwayInterval(2 * h, awayStart, homeStart);
-    const inPeak = h >= peakHours[0] && h < peakHours[1];
-    const inPrecool = h >= precoolHours[0] && h < precoolHours[1];
-
-    let highOffset: number;
-    let lowOffset: number;
+    const inDay = h >= DEFAULT_DAY_HOURS[0] && h < DEFAULT_DAY_HOURS[1];
+    let [lowOffset, highOffset] = inDay ? DEFAULT_DAY_OFFSETS : DEFAULT_NIGHT_OFFSETS;
     if (opts.mode === 'heat') {
-      highOffset = inAway ? away : inPrecool ? precoolOffset : HOME_BAND_OFFSET;
-      lowOffset = inAway ? away : inPeak ? peakOffset : HOME_BAND_OFFSET;
-    } else {
-      highOffset = inAway ? away : inPeak ? peakOffset : HOME_BAND_OFFSET;
-      lowOffset = inAway ? away : inPrecool ? precoolOffset : HOME_BAND_OFFSET;
+      // Mirror of the cooling shape: heating saves by running COLDER by day.
+      [lowOffset, highOffset] = [-highOffset, -lowOffset];
     }
-
     high[h] = roundHalf(base + highOffset);
-    low[h] = roundHalf(base - lowOffset);
+    low[h] = roundHalf(base + lowOffset);
   }
   return { high, low };
 }
