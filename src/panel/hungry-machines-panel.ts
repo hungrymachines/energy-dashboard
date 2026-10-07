@@ -26,7 +26,12 @@ import type {
   CalibrationStatusResponse,
 } from '../api/calibration.js';
 import { patchMe } from '../api/auth.js';
-import { get as getPreferences, update as updatePreferences, type Preferences } from '../api/preferences.js';
+import {
+  get as getPreferences,
+  update as updatePreferences,
+  type Preferences,
+  type UpdatePreferencesBody,
+} from '../api/preferences.js';
 import * as feedbackApi from '../api/feedback.js';
 import type { FeedbackCategory } from '../api/feedback.js';
 import {
@@ -1134,7 +1139,9 @@ export class HungryMachinesPanel extends LitElement {
       display: block;
       margin-bottom: 4px;
     }
-    .settings-section select {
+    .settings-section select,
+    .settings-section input[type='number'],
+    .settings-section input[type='text'] {
       width: 100%;
       padding: 8px 10px;
       border: 1px solid var(--hm-muted, #64748B);
@@ -1144,7 +1151,8 @@ export class HungryMachinesPanel extends LitElement {
       color: var(--hm-text, #0F172A);
       box-sizing: border-box;
     }
-    .settings-section select:disabled {
+    .settings-section select:disabled,
+    .settings-section input:disabled {
       opacity: 0.55;
       cursor: not-allowed;
     }
@@ -1446,6 +1454,7 @@ export class HungryMachinesPanel extends LitElement {
     _optToggleBusy: { state: true },
     _deviceOptToggleBusy: { state: true },
     _spikeGuardToggleBusy: { state: true },
+    _powerLimitsBusy: { state: true },
     _feedbackCategory: { state: true },
     _feedbackMessage: { state: true },
     _feedbackSubmitting: { state: true },
@@ -1466,6 +1475,9 @@ export class HungryMachinesPanel extends LitElement {
   // appliance_id, so one card's toggle spinner doesn't block the others.
   _deviceOptToggleBusy: Record<string, boolean> = {};
   _spikeGuardToggleBusy = false;
+  // Per-field busy guard for the "Home power limits" settings section
+  // (US-WHC-009), keyed by UpdatePreferencesBody field name.
+  _powerLimitsBusy: Partial<Record<keyof UpdatePreferencesBody, boolean>> = {};
   _editorOpen = false;
   _editorApplianceId = '';
   _editorApplianceType: ApplianceType = 'hvac';
@@ -2820,6 +2832,42 @@ export class HungryMachinesPanel extends LitElement {
     }
   }
 
+  /** Home power limits (US-WHC-009): one home-level field per change, with
+   * the same optimistic-write/server-wins-on-failure shape as the spike
+   * guard toggle above. An empty input clears the limit (null) except the
+   * reserve, which has no "unlimited" state and defaults to 0. */
+  private async _onPowerLimitField<K extends keyof UpdatePreferencesBody>(
+    field: K,
+    rawValue: string,
+    kind: 'int' | 'float' | 'reserve' | 'time',
+  ): Promise<void> {
+    if (!this._preferences) return;
+    const prev = this._preferences;
+    const value = (
+      kind === 'time'
+        ? rawValue === ''
+          ? null
+          : rawValue
+        : kind === 'reserve'
+          ? rawValue === ''
+            ? 0
+            : Number(rawValue)
+          : rawValue === ''
+            ? null
+            : Number(rawValue)
+    ) as UpdatePreferencesBody[K];
+    this._preferences = { ...prev, [field]: value };
+    this._powerLimitsBusy = { ...this._powerLimitsBusy, [field]: true };
+    try {
+      this._preferences = await updatePreferences({ [field]: value } as UpdatePreferencesBody);
+      this._persistUserPrefs();
+    } catch {
+      this._preferences = prev;
+    } finally {
+      this._powerLimitsBusy = { ...this._powerLimitsBusy, [field]: false };
+    }
+  }
+
   /** Appliance types the user can pause independently — the ones the
    * apply loop actually controls. Solar (forecast-only) and dehumidifier
    * (data-collection-only) have nothing to pause. */
@@ -3462,6 +3510,126 @@ export class HungryMachinesPanel extends LitElement {
     }
   }
 
+  private _renderPowerLimits(): TemplateResult {
+    const prefs = this._preferences;
+    const busy = this._powerLimitsBusy;
+    return html`
+      <div class="settings-section" data-section="power-limits">
+        <h3>Home power limits</h3>
+        <p class="hint">
+          Leave blank for no limit. Your HVAC always runs as planned; the
+          limit applies to charging and water heating around it.
+        </p>
+        <label>
+          <span class="label-text">Appliances at once</span>
+          <input
+            name="max_concurrent_appliances"
+            type="number"
+            min="1"
+            step="1"
+            ?disabled=${!prefs || busy.max_concurrent_appliances}
+            .value=${prefs?.max_concurrent_appliances != null
+              ? String(prefs.max_concurrent_appliances)
+              : ''}
+            @change=${(e: Event) =>
+              void this._onPowerLimitField(
+                'max_concurrent_appliances',
+                (e.target as HTMLInputElement).value,
+                'int',
+              )}
+          />
+        </label>
+        <label>
+          <span class="label-text">Whole-home power cap (kW)</span>
+          <input
+            name="power_cap_kw"
+            type="number"
+            min="0"
+            step="0.1"
+            ?disabled=${!prefs || busy.power_cap_kw}
+            .value=${prefs?.power_cap_kw != null ? String(prefs.power_cap_kw) : ''}
+            @change=${(e: Event) =>
+              void this._onPowerLimitField(
+                'power_cap_kw',
+                (e.target as HTMLInputElement).value,
+                'float',
+              )}
+          />
+        </label>
+        <label>
+          <span class="label-text">Always-on reserve (kW)</span>
+          <input
+            name="base_load_reserve_kw"
+            type="number"
+            min="0"
+            step="0.1"
+            ?disabled=${!prefs || busy.base_load_reserve_kw}
+            .value=${String(prefs?.base_load_reserve_kw ?? 0)}
+            @change=${(e: Event) =>
+              void this._onPowerLimitField(
+                'base_load_reserve_kw',
+                (e.target as HTMLInputElement).value,
+                'reserve',
+              )}
+          />
+        </label>
+        <label>
+          <span class="label-text">Demand charge ($ per kW)</span>
+          <input
+            name="demand_charge_usd_per_kw"
+            type="number"
+            min="0"
+            step="0.01"
+            ?disabled=${!prefs || busy.demand_charge_usd_per_kw}
+            .value=${prefs?.demand_charge_usd_per_kw != null
+              ? String(prefs.demand_charge_usd_per_kw)
+              : ''}
+            @change=${(e: Event) =>
+              void this._onPowerLimitField(
+                'demand_charge_usd_per_kw',
+                (e.target as HTMLInputElement).value,
+                'float',
+              )}
+          />
+        </label>
+        <label>
+          <span class="label-text">Demand window start</span>
+          <input
+            name="demand_window_start"
+            type="text"
+            inputmode="numeric"
+            placeholder="17:00"
+            ?disabled=${!prefs || busy.demand_window_start}
+            .value=${prefs?.demand_window_start ?? ''}
+            @change=${(e: Event) =>
+              void this._onPowerLimitField(
+                'demand_window_start',
+                (e.target as HTMLInputElement).value,
+                'time',
+              )}
+          />
+        </label>
+        <label>
+          <span class="label-text">Demand window end</span>
+          <input
+            name="demand_window_end"
+            type="text"
+            inputmode="numeric"
+            placeholder="21:00"
+            ?disabled=${!prefs || busy.demand_window_end}
+            .value=${prefs?.demand_window_end ?? ''}
+            @change=${(e: Event) =>
+              void this._onPowerLimitField(
+                'demand_window_end',
+                (e.target as HTMLInputElement).value,
+                'time',
+              )}
+          />
+        </label>
+      </div>
+    `;
+  }
+
   private _renderSettings(): TemplateResult {
     const hass = this.hass as HassLike | undefined;
     const states = hass && typeof hass === 'object' ? hass.states : undefined;
@@ -3991,6 +4159,8 @@ export class HungryMachinesPanel extends LitElement {
             </span>
           </div>
         </div>
+
+        ${this._renderPowerLimits()}
 
         <div class="settings-section" data-section="feedback">
           <h3>Send feedback</h3>

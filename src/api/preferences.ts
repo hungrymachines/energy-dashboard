@@ -21,6 +21,18 @@ export interface Preferences {
   newsletter_opt_in: boolean;
   /** Dodge real-time price spikes automatically (dynamic ComEd users only). */
   spike_guard_enabled: boolean;
+  /** How many shiftable appliances may run at once. null = unlimited. */
+  max_concurrent_appliances: number | null;
+  /** Whole-home power cap in kW for charging + water heating. null = no cap. */
+  power_cap_kw: number | null;
+  /** Always-on load reserved out of the power cap, in kW. */
+  base_load_reserve_kw: number;
+  /** Demand charge in $ per kW of peak draw. null = no demand charge. */
+  demand_charge_usd_per_kw: number | null;
+  /** Demand window start, HH:MM. null with end null = all day. */
+  demand_window_start: string | null;
+  /** Demand window end, HH:MM. null with start null = all day. */
+  demand_window_end: string | null;
 }
 
 export interface UpdatePreferencesBody {
@@ -35,6 +47,12 @@ export interface UpdatePreferencesBody {
   optimize_hvac_mode?: boolean;
   optimization_enabled?: boolean;
   spike_guard_enabled?: boolean;
+  max_concurrent_appliances?: number | null;
+  power_cap_kw?: number | null;
+  base_load_reserve_kw?: number;
+  demand_charge_usd_per_kw?: number | null;
+  demand_window_start?: string | null;
+  demand_window_end?: string | null;
 }
 
 export function get(): Promise<Preferences> {

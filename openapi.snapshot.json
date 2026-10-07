@@ -4463,6 +4463,66 @@
             "type": "boolean",
             "title": "Spike Guard Enabled",
             "default": true
+          },
+          "max_concurrent_appliances": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent Appliances"
+          },
+          "power_cap_kw": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Power Cap Kw"
+          },
+          "base_load_reserve_kw": {
+            "type": "number",
+            "title": "Base Load Reserve Kw",
+            "default": 0.0
+          },
+          "demand_charge_usd_per_kw": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Charge Usd Per Kw"
+          },
+          "demand_window_start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Window Start"
+          },
+          "demand_window_end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Window End"
           }
         },
         "type": "object",
@@ -4614,6 +4674,72 @@
               }
             ],
             "title": "Spike Guard Enabled"
+          },
+          "max_concurrent_appliances": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent Appliances"
+          },
+          "power_cap_kw": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Power Cap Kw"
+          },
+          "base_load_reserve_kw": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Load Reserve Kw"
+          },
+          "demand_charge_usd_per_kw": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Charge Usd Per Kw"
+          },
+          "demand_window_start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Window Start"
+          },
+          "demand_window_end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Window End"
           }
         },
         "type": "object",

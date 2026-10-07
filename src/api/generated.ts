@@ -2018,6 +2018,21 @@ export interface components {
              * @default true
              */
             spike_guard_enabled: boolean;
+            /** Max Concurrent Appliances */
+            max_concurrent_appliances?: number | null;
+            /** Power Cap Kw */
+            power_cap_kw?: number | null;
+            /**
+             * Base Load Reserve Kw
+             * @default 0
+             */
+            base_load_reserve_kw: number;
+            /** Demand Charge Usd Per Kw */
+            demand_charge_usd_per_kw?: number | null;
+            /** Demand Window Start */
+            demand_window_start?: string | null;
+            /** Demand Window End */
+            demand_window_end?: string | null;
         };
         /** PreferencesUpdate */
         PreferencesUpdate: {
@@ -2045,6 +2060,18 @@ export interface components {
             newsletter_opt_in?: boolean | null;
             /** Spike Guard Enabled */
             spike_guard_enabled?: boolean | null;
+            /** Max Concurrent Appliances */
+            max_concurrent_appliances?: number | null;
+            /** Power Cap Kw */
+            power_cap_kw?: number | null;
+            /** Base Load Reserve Kw */
+            base_load_reserve_kw?: number | null;
+            /** Demand Charge Usd Per Kw */
+            demand_charge_usd_per_kw?: number | null;
+            /** Demand Window Start */
+            demand_window_start?: string | null;
+            /** Demand Window End */
+            demand_window_end?: string | null;
         };
         /** PricingZoneOption */
         PricingZoneOption: {
