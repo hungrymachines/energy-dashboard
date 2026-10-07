@@ -16,7 +16,7 @@ const TYPE_OPTIONS: Array<{ type: ApplianceType; label: string; description: str
   { type: 'ev_charger', label: 'EV charger', description: 'Electric vehicle charger' },
   { type: 'home_battery', label: 'Home battery', description: 'Battery storage system' },
   { type: 'water_heater', label: 'Water heater', description: 'Electric water heater' },
-  { type: 'solar', label: 'Solar PV', description: 'Rooftop solar generation' },
+  { type: 'solar', label: 'Solar PV', description: 'Rooftop, plug-in, or balcony solar' },
   { type: 'dehumidifier', label: 'Dehumidifier', description: 'Records room temp/humidity (data only)' },
   { type: 'robot', label: 'Home robot', description: 'Robot vacuum or mower — charges on its dock around your daily tasks window' },
 ];
@@ -1139,7 +1139,7 @@ export class HmApplianceForm extends LitElement {
               (id) => html`<option value=${id} ?selected=${id === v[SOLAR_PRODUCTION_FIELD.name]}>${id}</option>`,
             )}
           </select>
-          <small class="label-text">A power sensor for your inverter or plug, in W or kW - not an energy (kWh) sensor. Optional: with it, Hungry Machines learns your array's real output and shading.</small>
+          <small class="label-text">A power sensor for your inverter, or a metering smart plug between a plug-in inverter and the wall, in W or kW - not an energy (kWh) sensor. Optional: with it, Hungry Machines learns your array's real output and shading.</small>
         </label>
       `;
     }

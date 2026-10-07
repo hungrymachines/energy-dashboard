@@ -1,6 +1,6 @@
 # Hungry Machines — Home Assistant Integration
 
-Hungry Machines optimizes when your home runs its biggest energy users — HVAC, EV charger, home battery, water heater — to shift load into the cheapest hours of your time-of-use rate plan, while keeping the comfort and charge constraints you set.
+Outsmart your electric bill - Hungry Machines Energy provides an energy management system that shifts HVAC, EV charging, home batteries, and other electric loads to cheaper hours for homes and buildings with time-of-use or dynamic electricity rates. It keeps the comfort and charge constraints you set.
 
 This package adds the Hungry Machines control surface to Home Assistant: a sidebar panel for managing schedules and constraints, plus two Lovelace cards for at-a-glance status. Sign in with the same account you create at [hungrymachines.io](https://hungrymachines.io), and your dashboard shows the schedules generated each night.
 
@@ -119,7 +119,7 @@ Everything you'd expect to tune lives inside the panel's **Settings** tab:
 
 Comfort and charge constraints are edited per-appliance from the **Dashboard** — each appliance card has an **Edit constraints** button that opens a per-type editor, plus a **pause toggle** that excludes that one appliance from optimization without deleting it (there's also a master optimization switch that pauses everything):
 
-- **HVAC** — base temperature, savings level (1 = tight ±2°F, 2 = moderate ±6°F, 3 = aggressive ±12°F), optimization mode (`cool`, `heat`, `auto`, `off`), and `time_away` / `time_home` (HH:MM, the times you typically leave and return). An optional **hourly comfort bands** override lets advanced users specify a per-hour low/high in °F across all 24 hours instead of the symmetric base±band — useful if your comfort needs change throughout the day in ways the base+savings-level abstraction can't capture.
+- **HVAC** — a low/high comfort limit in °F for every one of the 24 hours. That table is what the panel edits and what every save sends. Beneath it a **Defaults** group holds base temperature, savings level (1 = tight ±2°F, 2 = moderate ±6°F, 3 = aggressive ±12°F), optimization mode (`cool`, `heat`, `auto`, `off`), and `time_away` / `time_home` (HH:MM, the times you typically leave and return). Those four shape the table whenever you press **Reset to defaults**, and the backend derives the same shape for any home that has never edited an hour.
 - **EV charger** — target charge %, minimum charge %, current charge %, deadline time (HH:MM by which the target must be reached).
 - **Home battery** — target charge %, minimum charge %, deadline time.
 - **Water heater** — minimum and maximum tank temperature (°F).

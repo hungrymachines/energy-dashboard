@@ -778,7 +778,13 @@ async def capture_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
             watts = _read_power_watts(hass, production_sensor_entity_id)
             if watts is None:
                 continue
-            watts = max(0.0, watts)
+            # Plug-in (balcony) solar pushes current BACKWARD through
+            # the outlet, and some metering smart plugs report that
+            # reverse flow as a negative number. Production has no
+            # sign, so take the magnitude; a bare clamp-to-zero would
+            # record every daylight sample as 0 W and the nightly fit
+            # would silently stay on the irradiance tier.
+            watts = abs(watts)
             reading = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "state": "PRODUCING" if watts > 0 else "IDLE",
