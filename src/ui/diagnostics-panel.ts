@@ -10,7 +10,10 @@ import { getIntegrationVersion } from '../utils/version.js';
  * `<hm-diagnostics-panel>` — three-signal divergence renderer.
  *
  * Renders the verdict from `/api/v1/integration/health/divergence` as
- * a status banner plus a per-signal coverage / agreement table. The
+ * a small badge on a collapsed "Command check" row; the one-line
+ * explanation and the per-signal coverage / agreement table sit inside
+ * it. The verdict is diagnostic, so it never leads the dashboard as a
+ * banner — the same treatment the "Sensor health" row gets. The
  * panel embeds it under the integration-health badge so users with
  * misbehaving thermostats (the Tuya / mini-split scenario the
  * reconciler was built for) get a one-line "your thermostat reports
@@ -153,10 +156,12 @@ export class HmDiagnosticsPanel extends LitElement {
       text-transform: uppercase;
       letter-spacing: 0.05em;
     }
-    .sensor-details {
+    .sensor-details,
+    .check-details {
       margin-top: 10px;
     }
-    .sensor-details > summary {
+    .sensor-details > summary,
+    .check-details > summary {
       cursor: pointer;
       font-size: 13px;
       font-weight: 600;
@@ -166,7 +171,8 @@ export class HmDiagnosticsPanel extends LitElement {
       gap: 10px;
       padding: 6px 0;
     }
-    .sensor-details > summary > .summary-badge {
+    .sensor-details > summary > .summary-badge,
+    .check-details > summary > .summary-badge {
       font-size: 11px;
       font-weight: 600;
       padding: 2px 8px;
@@ -185,6 +191,20 @@ export class HmDiagnosticsPanel extends LitElement {
     .summary-badge.bad {
       background: rgba(220, 38, 38, 0.12);
       color: #991B1B;
+    }
+    .summary-badge.muted {
+      background: rgba(100, 116, 139, 0.12);
+      color: #475569;
+    }
+    .check-details > summary > .window {
+      font-weight: 400;
+      color: var(--hm-muted, #64748B);
+    }
+    .check-msg {
+      margin: 6px 0 0;
+      font-size: 13px;
+      line-height: 1.4;
+      color: var(--hm-muted, #64748B);
     }
     .sensor-details[open] > .sensor-grid {
       margin-top: 8px;
@@ -312,14 +332,17 @@ export class HmDiagnosticsPanel extends LitElement {
     const tone = _toneFor(r.verdict);
     const badge = _badgeFor(r.verdict);
     return html`
-      <div class="banner ${tone}">
-        <span class="badge">${badge}</span>
-        <span class="msg">${r.human_readable}</span>
-      </div>
-      ${r.sample_count > 0
-        ? html`
-            <details>
-              <summary>Signal details (last ${r.lookback_hours} h, ${r.sample_count} readings)</summary>
+      <details class="check-details">
+        <summary>
+          Command check
+          <span class="summary-badge ${tone}">${badge}</span>
+          <span class="window">${r.sample_count > 0
+            ? `last ${r.lookback_hours} h, ${r.sample_count} readings`
+            : ''}</span>
+        </summary>
+        <p class="check-msg">${r.human_readable}</p>
+        ${r.sample_count > 0
+          ? html`
               <div class="details">
                 <span class="label">Commanded coverage</span>
                 <span class=${_pctClass(r.commanded_coverage_pct)}>${_fmtPct(r.commanded_coverage_pct)}</span>
@@ -338,9 +361,9 @@ export class HmDiagnosticsPanel extends LitElement {
                 <span class="label">Power obeyed commands</span>
                 <span class=${_pctClass(r.power_obeyed_pct, 70)}>${_fmtPct(r.power_obeyed_pct)}</span>
               </div>
-            </details>
-          `
-        : null}
+            `
+          : null}
+      </details>
       ${this._renderSensorBlock()}
     `;
   }
@@ -435,10 +458,11 @@ function _sensorIcon(v: ConfiguredSensor['verdict']): { glyph: string; cls: stri
   return { glyph: '✗', cls: 'bad' };
 }
 
-function _toneFor(v: DivergenceReport['verdict']): 'healthy' | 'warn' | 'error' | 'muted' {
+/** Tone names match the `.summary-badge` classes the sensor row uses. */
+function _toneFor(v: DivergenceReport['verdict']): 'healthy' | 'intermittent' | 'bad' | 'muted' {
   if (v === 'healthy') return 'healthy';
-  if (v === 'entity_unreliable' || v === 'commanded_missing') return 'warn';
-  if (v === 'thermostat_ignoring_commands') return 'error';
+  if (v === 'entity_unreliable' || v === 'commanded_missing') return 'intermittent';
+  if (v === 'thermostat_ignoring_commands') return 'bad';
   return 'muted';
 }
 
