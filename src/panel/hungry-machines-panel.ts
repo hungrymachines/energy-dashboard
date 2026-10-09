@@ -1463,6 +1463,13 @@ export class HungryMachinesPanel extends LitElement {
   };
 
   hass: unknown = undefined;
+
+  // Home Assistant's configured timezone, for the signup form. '' when the
+  // panel has no hass object yet or the config carries no zone.
+  private _hassTimeZone(): string {
+    const config = (this.hass as { config?: { time_zone?: unknown } } | undefined)?.config;
+    return typeof config?.time_zone === 'string' ? config.time_zone : '';
+  }
   _auth: AuthState = authStore.state;
   _view: View = 'dashboard';
   _schedulesLoading = false;
@@ -2563,7 +2570,7 @@ export class HungryMachinesPanel extends LitElement {
     if (status !== 'authed') {
       return html`
         <div class="login-gate">
-          <hm-login-form></hm-login-form>
+          <hm-login-form .timezone=${this._hassTimeZone()}></hm-login-form>
         </div>
       `;
     }

@@ -121,11 +121,16 @@ export class HmLoginForm extends LitElement {
   `;
 
   static override properties = {
+    timezone: { type: String },
     _tab: { state: true },
     _pending: { state: true },
     _error: { state: true },
   };
 
+  /** The home's IANA timezone, passed in by the panel from Home Assistant's
+   * own configuration. Sent at signup so the account's schedules are keyed to
+   * the right local midnight from the first plan. */
+  timezone = '';
   _tab: Tab = 'signin';
   _pending = false;
   _error: string | null = null;
@@ -192,8 +197,22 @@ export class HmLoginForm extends LitElement {
       const n = Number(zoneRaw);
       if (Number.isFinite(n)) body.pricing_location = n;
     }
+    const tz = this._signupTimezone();
+    if (tz) body.timezone = tz;
     await authStore.signup(body);
   };
+
+  // Home Assistant's configured zone when the panel supplied one, else the
+  // browser's. Empty when neither is available, in which case the field is
+  // left out and the API applies its own default.
+  private _signupTimezone(): string {
+    if (this.timezone) return this.timezone;
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    } catch {
+      return '';
+    }
+  }
 
   override render() {
     const isSignin = this._tab === 'signin';

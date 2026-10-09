@@ -152,4 +152,50 @@ describe('hm-login-form', () => {
     expect(btn!.disabled).toBe(true);
     expect(el.shadowRoot!.querySelector('.spinner')).not.toBeNull();
   });
+  it('signup sends the home timezone the panel passed in', async () => {
+    const signupSpy = vi.spyOn(authStore, 'signup').mockImplementation(async () => {
+      /* noop — prevent real fetch */
+    });
+
+    const el = mountForm();
+    el.timezone = 'America/Chicago';
+    await el.updateComplete;
+    const root = el.shadowRoot!;
+    root.querySelectorAll<HTMLButtonElement>('button.tab')[1]!.click();
+    await el.updateComplete;
+
+    setInput(root, 'email', 'new@example.com');
+    setInput(root, 'password', 'hunter2hunter2');
+    submitForm(root);
+    await Promise.resolve();
+    await el.updateComplete;
+
+    expect(signupSpy).toHaveBeenCalledTimes(1);
+    expect(signupSpy.mock.calls[0]![0]).toMatchObject({
+      email: 'new@example.com',
+      timezone: 'America/Chicago',
+    });
+  });
+
+  it('signup falls back to the browser timezone when the panel passed none', async () => {
+    const signupSpy = vi.spyOn(authStore, 'signup').mockImplementation(async () => {
+      /* noop */
+    });
+
+    const el = mountForm();
+    await el.updateComplete;
+    const root = el.shadowRoot!;
+    root.querySelectorAll<HTMLButtonElement>('button.tab')[1]!.click();
+    await el.updateComplete;
+
+    setInput(root, 'email', 'new@example.com');
+    setInput(root, 'password', 'hunter2hunter2');
+    submitForm(root);
+    await Promise.resolve();
+    await el.updateComplete;
+
+    const body = signupSpy.mock.calls[0]![0] as { timezone?: string };
+    const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    expect(body.timezone ?? '').toBe(browserZone || '');
+  });
 });

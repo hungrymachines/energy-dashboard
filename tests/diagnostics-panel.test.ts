@@ -101,7 +101,7 @@ describe('hm-diagnostics-panel', () => {
       .forEach((n) => n.remove());
   });
 
-  it('renders the healthy banner when all signals agree', async () => {
+  it('renders a healthy badge, not a banner, when all signals agree', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -127,14 +127,16 @@ describe('hm-diagnostics-panel', () => {
     const el = mountPanel();
     await flush(el);
 
-    const banner = el.shadowRoot!.querySelector('.banner');
-    expect(banner).not.toBeNull();
-    expect(banner!.classList.contains('healthy')).toBe(true);
-    const badge = el.shadowRoot!.querySelector('.badge');
+    expect(el.shadowRoot!.querySelector('.banner')).toBeNull();
+    const check = el.shadowRoot!.querySelector('details.check-details') as HTMLDetailsElement;
+    expect(check).not.toBeNull();
+    expect(check.open).toBe(false);
+    const badge = check.querySelector('summary .summary-badge');
+    expect(badge!.classList.contains('healthy')).toBe(true);
     expect(badge!.textContent).toContain('OK');
   });
 
-  it('renders the entity_unreliable banner with the right tone', async () => {
+  it('renders the entity_unreliable badge with the right tone', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -160,13 +162,12 @@ describe('hm-diagnostics-panel', () => {
     const el = mountPanel();
     await flush(el);
 
-    const banner = el.shadowRoot!.querySelector('.banner');
-    expect(banner!.classList.contains('warn')).toBe(true);
-    const badge = el.shadowRoot!.querySelector('.badge');
+    const badge = el.shadowRoot!.querySelector('.check-details summary .summary-badge');
+    expect(badge!.classList.contains('intermittent')).toBe(true);
     expect(badge!.textContent).toContain('Entity unreliable');
   });
 
-  it('renders the thermostat_ignoring banner as an error', async () => {
+  it('renders the thermostat_ignoring badge as bad, still collapsed', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -192,11 +193,12 @@ describe('hm-diagnostics-panel', () => {
     const el = mountPanel();
     await flush(el);
 
-    const banner = el.shadowRoot!.querySelector('.banner');
-    expect(banner!.classList.contains('error')).toBe(true);
+    expect(el.shadowRoot!.querySelector('.banner')).toBeNull();
+    const badge = el.shadowRoot!.querySelector('.check-details summary .summary-badge');
+    expect(badge!.classList.contains('bad')).toBe(true);
   });
 
-  it('renders the commanded_missing banner with the upgrade prompt', async () => {
+  it('keeps the commanded_missing upgrade prompt inside the collapsed row', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -222,9 +224,10 @@ describe('hm-diagnostics-panel', () => {
     const el = mountPanel();
     await flush(el);
 
-    const banner = el.shadowRoot!.querySelector('.banner');
-    expect(banner!.classList.contains('warn')).toBe(true);
-    const msg = el.shadowRoot!.querySelector('.msg');
+    expect(el.shadowRoot!.querySelector('.banner')).toBeNull();
+    const badge = el.shadowRoot!.querySelector('.check-details summary .summary-badge');
+    expect(badge!.classList.contains('intermittent')).toBe(true);
+    const msg = el.shadowRoot!.querySelector('.check-details .check-msg');
     expect(msg!.textContent).toContain('Upgrade');
   });
 

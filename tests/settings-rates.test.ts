@@ -48,7 +48,7 @@ function ratesResponse(overrides: Record<string, unknown> = {}): unknown {
     dynamic_zone: null,
     pricing_adder_cents_per_kwh: null,
     available_dynamic_zones: [
-      { slug: 'comed', iso: 'PJM', label: 'ComEd (Northern Illinois)' },
+      { slug: 'comed', label: 'ComEd (Northern Illinois)' },
     ],
     ...overrides,
   };
