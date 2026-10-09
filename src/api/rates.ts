@@ -1,6 +1,6 @@
 import { apiFetch } from './client.js';
 
-export type DynamicZoneOption = { slug: string; iso: string; label: string };
+export type DynamicZoneOption = { slug: string; label: string };
 
 export type PricingZoneOption = {
   id: number;
@@ -33,6 +33,8 @@ export interface RatesResponse {
   intervals: number[];
   rates_cents_per_kwh: number[];
   unit: string;
+  /** ISO 4217 code of the curve being served, e.g. "USD". */
+  currency: string;
   source: 'custom' | 'zone' | 'dynamic';
   /** Which seasonal rate table the zone curve came from. Always emitted. */
   season: string;

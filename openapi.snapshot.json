@@ -21,6 +21,28 @@
         }
       }
     },
+    "/admin/health": {
+      "get": {
+        "summary": "Admin Health",
+        "description": "The public health payload plus the scheduler's job table.",
+        "operationId": "admin_health_admin_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/admin/trigger/nightly": {
       "post": {
         "summary": "Trigger Nightly",
@@ -919,7 +941,7 @@
           "schedules"
         ],
         "summary": "Get Schedule History",
-        "description": "Return EVERY stored optimization for each appliance/date in the window.\n\n`appliance_schedules` is append-only so each nightly compute survives\nlater writes. This endpoint exposes that history so the panel /\nadmins can compare what the optimizer chose night-over-night for the\nsame target day.\n\nWindow is capped at `_HISTORY_MAX_DAYS` (90); requesting more raises\n400. Output shape:\n```\n{\n  \"start\": \"...\", \"end\": \"...\",\n  \"appliances\": [\n    {\"appliance_id\": \"...\", \"appliance_type\": \"...\", \"name\": \"...\",\n     \"history\": [<full appliance_schedules row>, ...]},\n    ...\n  ]\n}\n```\nThe history list contains the raw row (schedule JSONB, constraints_used,\ncosts, savings, created_at) \u2014 callers diff or chart whichever fields they\ncare about.",
+        "description": "Return EVERY stored optimization for each appliance/date in the window.\n\n`appliance_schedules` is append-only so each nightly compute survives\nlater writes. This endpoint exposes that history so the panel /\nadmins can compare what the optimizer chose night-over-night for the\nsame target day.\n\nWindow is capped at `_HISTORY_MAX_DAYS` (90); requesting more raises\n400. Output shape:\n```\n{\n  \"start\": \"...\", \"end\": \"...\",\n  \"appliances\": [\n    {\"appliance_id\": \"...\", \"appliance_type\": \"...\", \"name\": \"...\",\n     \"history\": [<full appliance_schedules row>, ...]},\n    ...\n  ]\n}\n```\nThe history list contains each row's `id`, `date`, `baseline_cost`,\n`optimized_cost`, `savings_pct` and `created_at` verbatim; `schedule`\nand `constraints_used` are projected through\n`public_fields.project_schedule_blob` / `project_constraints_used`\n(US-APH-003) to the same fixed field set `/schedules` serves, per\nappliance type -- callers diff or chart whichever fields they care\nabout.",
         "operationId": "get_schedule_history_api_v1_schedules_history_get",
         "security": [
           {
@@ -1035,6 +1057,7 @@
           "appliances"
         ],
         "summary": "List Appliances",
+        "description": "List the caller's appliances.\n\nUnlike `list_user_appliances` (the internal helper the nightly job and\nother jobs call, which fails open to `[]` so a single blip can't abort\nthe whole loop), this ROUTE answers 503 when the database is unavailable\nor the query fails -- a third-party client reading `[]` can't tell \"no\nappliances\" from \"couldn't ask\" (US-APH-014).",
         "operationId": "list_appliances_api_v1_appliances_get",
         "responses": {
           "200": {
@@ -1772,7 +1795,7 @@
           "devices"
         ],
         "summary": "Get Device Price Schedule",
-        "description": "Return a stoplight's local price curve + per-slot tiers for today+tomorrow.\n\nA display-only stoplight (US-STOP-001) pulls this to cache a full day (or\ntwo) of prices and their cheap/normal/expensive tiers, so it keeps lighting\nthe right lamp when the network blips. Tiers come from the SAME range-thirds\nclassifier the phone's Right Now indicator uses (`app.services.price_tier`),\nso lamp and phone agree by construction.\n\nSLOT 0 IS LOCAL MIDNIGHT (the invariant every 48-slot artifact shares; see\n`get_device_config`). Response: {tz, generated_at (UTC ISO-8601), currency,\nslots:[{start, end, price_cents, tier}]}. `start`/`end` are LOCAL ISO-8601\nwith offset; `price_cents` is rounded to 1 dp; `tier` is\ncheap|normal|expensive. Each day is tiered against ITS OWN curve.\n\nEmits an ETag over the serialized slots and honours If-None-Match -> 304\n(curve unchanged, empty body) so a stoplight polling hourly mostly gets an\nempty response.",
+        "description": "Return a stoplight's local price curve + per-slot tiers for today+tomorrow.\n\nA display-only stoplight (US-STOP-001) pulls this to cache a full day (or\ntwo) of prices and their cheap/normal/expensive tiers, so it keeps lighting\nthe right lamp when the network blips. Tiers come from the SAME range-thirds\nclassifier the phone's Right Now indicator uses (`app.services.price_tier`),\nso lamp and phone agree by construction.\n\nSLOT 0 IS LOCAL MIDNIGHT (the invariant every 48-slot artifact shares; see\n`get_device_config`). Response: {tz, generated_at (UTC ISO-8601), currency,\nslots:[{start, end, price_cents, tier}]}. `start`/`end` are LOCAL ISO-8601\nwith offset; `price_cents` is rounded to 1 dp; `tier` is\ncheap|normal|expensive. Each day is tiered against ITS OWN curve.\n\n`currency` is the ISO 4217 code of the curve actually served TODAY\n(`pricing.resolve_curve_currency`, US-APH-013) -- USD for the catalog/\ncustom sources and USD dynamic zones, the real feed currency (GBP/EUR/\nAUD) for a non-USD dynamic zone. Safe to surface for real: the stoplight\nfirmware (hm-stoplight/firmware/main/cloud/wire.c, price_schedule.h)\nstores this purely as an informational label in an 8-byte buffer and\nnever compares or renders a symbol off it, so any ISO 4217 code fits and\nnothing in the firmware depends on the old hardcoded `\"USD\"`.\n\nEmits an ETag over the serialized slots and honours If-None-Match -> 304\n(curve unchanged, empty body) so a stoplight polling hourly mostly gets an\nempty response.",
         "operationId": "get_device_price_schedule_api_v1_devices_price_schedule_get",
         "responses": {
           "200": {
@@ -3049,7 +3072,7 @@
           "customer-metrics"
         ],
         "summary": "Me Metrics Daily",
-        "description": "The caller's per-day metrics over a date window, for charting a trend.\n\nUnlike `/summary` this is NOT aggregated: each entry is one calendar day's\nown savings/peaks/flexibility/comfort straight off `user_metrics_daily`.\nDays with no rollup row are **omitted** (not zero-filled), so gaps read as\n\"no data that day\" rather than a fabricated zero. Ordered oldest \u2192 newest.\n\nThe window is capped at `_MAX_WINDOW_DAYS` (90), mirroring the\n`/schedules/history` ceiling; a wider span or `start > end` returns `400`.",
+        "description": "The caller's per-day metrics over a date window, for charting a trend.\n\nUnlike `/summary` this is NOT aggregated: each entry is one calendar day's\nown savings/peaks/flexibility/comfort straight off `user_metrics_daily`.\nDays with no rollup row are **omitted** (not zero-filled), so gaps read as\n\"no data that day\" rather than a fabricated zero. Ordered oldest \u2192 newest.\n\nThe window is capped at `_MAX_WINDOW_DAYS` (90) calendar days, matching\n`/summary` and `/rankings`' `window` cap; a wider span or `start > end`\nreturns `400`.",
         "operationId": "me_metrics_daily_api_v1_me_metrics_daily_get",
         "security": [
           {
@@ -3691,7 +3714,8 @@
             "type": "string",
             "enum": [
               "hacs",
-              "node"
+              "node",
+              "custom"
             ],
             "title": "Kind"
           },
@@ -3722,6 +3746,20 @@
               }
             ],
             "title": "Ha Version"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9 ._-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
           }
         },
         "type": "object",
@@ -3730,7 +3768,7 @@
           "version"
         ],
         "title": "ClientInfo",
-        "description": "Who sent this batch \u2014 display-only telemetry, never control input.\n\nEvery push from a release that knows about it identifies the software\non the other end: the HACS integration's manifest version, and (on a\nfleet node) the blessed bundle tag the container was started with. It\nlets a later control change be graded per home \u2014 \"the homes still on\n3.6.0 behaved like this, the ones on 3.7.0 like that\" \u2014 instead of\nguessing which fix a given day's readings were produced under.\n\nOptional on the batch: older clients omit it and nothing else about\nthe batch changes."
+        "description": "Who sent this batch \u2014 display-only telemetry, never control input.\n\nEvery push from a release that knows about it identifies the software\non the other end: the HACS integration's manifest version, and (on a\nfleet node) the blessed bundle tag the container was started with. It\nlets a later control change be graded per home \u2014 \"the homes still on\n3.6.0 behaved like this, the ones on 3.7.0 like that\" \u2014 instead of\nguessing which fix a given day's readings were produced under.\n\nOptional on the batch: older clients omit it and nothing else about\nthe batch changes.\n\n`\"custom\"` (US-APH-006) is the honest value for any client that is\nneither of our own: pair it with `name` to say what the client is."
       },
       "CreateCheckoutRequest": {
         "properties": {
@@ -4109,10 +4147,6 @@
             "type": "string",
             "title": "Slug"
           },
-          "iso": {
-            "type": "string",
-            "title": "Iso"
-          },
           "label": {
             "type": "string",
             "title": "Label"
@@ -4121,7 +4155,6 @@
         "type": "object",
         "required": [
           "slug",
-          "iso",
           "label"
         ],
         "title": "DynamicZoneOption"
@@ -4941,6 +4974,11 @@
             "title": "Unit",
             "default": "cents/kWh"
           },
+          "currency": {
+            "type": "string",
+            "title": "Currency",
+            "default": "USD"
+          },
           "export_rates_cents_per_kwh": {
             "anyOf": [
               {
@@ -5364,6 +5402,17 @@
               }
             ],
             "title": "Pricing Location"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
           },
           "newsletter_opt_in": {
             "anyOf": [

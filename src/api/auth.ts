@@ -6,6 +6,9 @@ export interface SignupBody {
   location_zip?: string;
   home_size_sqft?: number;
   pricing_location?: number;
+  /** IANA timezone for the home, e.g. "America/Chicago". Schedules are keyed
+   * to local midnight, so a new account should start in the right zone. */
+  timezone?: string;
 }
 
 export interface LoginBody {

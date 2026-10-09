@@ -90,8 +90,8 @@ function ratesResponse(overrides: Record<string, unknown> = {}): unknown {
     adder_grid_ruleset_id: null,
     delivery_tod_cents: null,
     available_dynamic_zones: [
-      { slug: 'comed', iso: 'PJM', label: 'ComEd (Northern Illinois)' },
-      { slug: 'ameren', iso: 'MISO', label: 'Ameren Illinois (Power Smart Pricing)' },
+      { slug: 'comed', label: 'ComEd (Northern Illinois)' },
+      { slug: 'ameren', label: 'Ameren Illinois (Power Smart Pricing)' },
     ],
     available_delivery_tariffs: [],
     ...overrides,

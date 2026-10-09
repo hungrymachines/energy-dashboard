@@ -21,6 +21,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Admin Health
+         * @description The public health payload plus the scheduler's job table.
+         */
+        get: operations["admin_health_admin_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/trigger/nightly": {
         parameters: {
             query?: never;
@@ -593,9 +613,13 @@ export interface paths {
          *       ]
          *     }
          *     ```
-         *     The history list contains the raw row (schedule JSONB, constraints_used,
-         *     costs, savings, created_at) — callers diff or chart whichever fields they
-         *     care about.
+         *     The history list contains each row's `id`, `date`, `baseline_cost`,
+         *     `optimized_cost`, `savings_pct` and `created_at` verbatim; `schedule`
+         *     and `constraints_used` are projected through
+         *     `public_fields.project_schedule_blob` / `project_constraints_used`
+         *     (US-APH-003) to the same fixed field set `/schedules` serves, per
+         *     appliance type -- callers diff or chart whichever fields they care
+         *     about.
          */
         get: operations["get_schedule_history_api_v1_schedules_history_get"];
         put?: never;
@@ -645,7 +669,16 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Appliances */
+        /**
+         * List Appliances
+         * @description List the caller's appliances.
+         *
+         *     Unlike `list_user_appliances` (the internal helper the nightly job and
+         *     other jobs call, which fails open to `[]` so a single blip can't abort
+         *     the whole loop), this ROUTE answers 503 when the database is unavailable
+         *     or the query fails -- a third-party client reading `[]` can't tell "no
+         *     appliances" from "couldn't ask" (US-APH-014).
+         */
         get: operations["list_appliances_api_v1_appliances_get"];
         put?: never;
         /** Create Appliance */
@@ -940,6 +973,15 @@ export interface paths {
          *     slots:[{start, end, price_cents, tier}]}. `start`/`end` are LOCAL ISO-8601
          *     with offset; `price_cents` is rounded to 1 dp; `tier` is
          *     cheap|normal|expensive. Each day is tiered against ITS OWN curve.
+         *
+         *     `currency` is the ISO 4217 code of the curve actually served TODAY
+         *     (`pricing.resolve_curve_currency`, US-APH-013) -- USD for the catalog/
+         *     custom sources and USD dynamic zones, the real feed currency (GBP/EUR/
+         *     AUD) for a non-USD dynamic zone. Safe to surface for real: the stoplight
+         *     firmware (hm-stoplight/firmware/main/cloud/wire.c, price_schedule.h)
+         *     stores this purely as an informational label in an 8-byte buffer and
+         *     never compares or renders a symbol off it, so any ISO 4217 code fits and
+         *     nothing in the firmware depends on the old hardcoded `"USD"`.
          *
          *     Emits an ETag over the serialized slots and honours If-None-Match -> 304
          *     (curve unchanged, empty body) so a stoplight polling hourly mostly gets an
@@ -1480,8 +1522,9 @@ export interface paths {
          *     Days with no rollup row are **omitted** (not zero-filled), so gaps read as
          *     "no data that day" rather than a fabricated zero. Ordered oldest → newest.
          *
-         *     The window is capped at `_MAX_WINDOW_DAYS` (90), mirroring the
-         *     `/schedules/history` ceiling; a wider span or `start > end` returns `400`.
+         *     The window is capped at `_MAX_WINDOW_DAYS` (90) calendar days, matching
+         *     `/summary` and `/rankings`' `window` cap; a wider span or `start > end`
+         *     returns `400`.
          */
         get: operations["me_metrics_daily_api_v1_me_metrics_daily_get"];
         put?: never;
@@ -1734,19 +1777,24 @@ export interface components {
          *
          *     Optional on the batch: older clients omit it and nothing else about
          *     the batch changes.
+         *
+         *     `"custom"` (US-APH-006) is the honest value for any client that is
+         *     neither of our own: pair it with `name` to say what the client is.
          */
         ClientInfo: {
             /**
              * Kind
              * @enum {string}
              */
-            kind: "hacs" | "node";
+            kind: "hacs" | "node" | "custom";
             /** Version */
             version: string;
             /** Node Bundle */
             node_bundle?: string | null;
             /** Ha Version */
             ha_version?: string | null;
+            /** Name */
+            name?: string | null;
         };
         /** CreateCheckoutRequest */
         CreateCheckoutRequest: {
@@ -1865,8 +1913,6 @@ export interface components {
         DynamicZoneOption: {
             /** Slug */
             slug: string;
-            /** Iso */
-            iso: string;
             /** Label */
             label: string;
         };
@@ -2136,6 +2182,11 @@ export interface components {
              * @default cents/kWh
              */
             unit: string;
+            /**
+             * Currency
+             * @default USD
+             */
+            currency: string;
             /** Export Rates Cents Per Kwh */
             export_rates_cents_per_kwh?: number[] | null;
         };
@@ -2246,6 +2297,8 @@ export interface components {
             home_size_sqft?: number | null;
             /** Pricing Location */
             pricing_location?: number | null;
+            /** Timezone */
+            timezone?: string | null;
             /** Newsletter Opt In */
             newsletter_opt_in?: boolean | null;
         };
@@ -2339,6 +2392,26 @@ export interface components {
 export type $defs = Record<string, never>;
 export interface operations {
     health_check_health_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    admin_health_admin_health_get: {
         parameters: {
             query?: never;
             header?: never;
