@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from hungry_machines import scheduler
+from hungry_machines import scheduler, units
 from hungry_machines.const import DOMAIN
 
 
@@ -34,6 +34,7 @@ def _climate_state(
     max_temp: float | None = None,
     fan_modes: list[str] | None = None,
     hvac_modes: list[str] | None = None,
+    step: object | None = None,
 ) -> MagicMock:
     """Build a hass.states.get(...) return value matching a climate entity.
 
@@ -55,6 +56,8 @@ def _climate_state(
         attrs["fan_modes"] = fan_modes
     if hvac_modes is not None:
         attrs["hvac_modes"] = hvac_modes
+    if step is not None:
+        attrs["target_temp_step"] = step
     state.attributes = attrs
     return state
 
@@ -3064,21 +3067,21 @@ async def _apply_metric(state, setpoint: float = 72.0) -> dict:
 @pytest.mark.asyncio
 async def test_metric_apply_sends_celsius_setpoint() -> None:
     payload = await _apply_metric(_climate_state("cool", supports_range=False))
-    assert payload["temperature"] == 22.22
+    assert payload["temperature"] == 22.0
 
 
 @pytest.mark.asyncio
 async def test_metric_max_temp_in_celsius_does_not_clamp() -> None:
     state = _climate_state("cool", supports_range=False, min_temp=16, max_temp=35)
     payload = await _apply_metric(state)
-    assert payload["temperature"] == 22.22
+    assert payload["temperature"] == 22.0
 
 
 @pytest.mark.asyncio
 async def test_metric_range_converts_low_and_high() -> None:
     payload = await _apply_metric(_climate_state("heat_cool", supports_range=True))
-    assert payload["target_temp_low"] == 22.22
-    assert payload["target_temp_high"] == 22.22
+    assert payload["target_temp_low"] == 22.0
+    assert payload["target_temp_high"] == 22.0
 
 
 @pytest.mark.asyncio
@@ -3103,6 +3106,73 @@ async def test_metric_verify_resends_celsius_on_mismatch() -> None:
     args = hass.services.async_call.await_args.args
     assert args[1] == "set_temperature"
     assert args[2]["temperature"] == 22.22
+
+
+# --- Metric HA: snap to the device step (US-TMP-006) ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("step", [0.5, 1, 1.0])
+async def test_metric_snaps_72f_to_22c(step) -> None:
+    state = _climate_state("cool", supports_range=False, step=step)
+    payload = await _apply_metric(state)
+    assert payload["temperature"] == 22.0
+
+
+@pytest.mark.asyncio
+async def test_metric_snap_stays_inside_band_edge() -> None:
+    # 73 F = 22.78 C rounds to 23.0 C = 73.4 F, past the 70-73 band.
+    state = _climate_state("cool", supports_range=False, step=1)
+    hass = _metric_hass(state)
+    cache = _hvac_cache(setpoint=73.0)
+    cache["schedule"]["hvac-1"]["schedule"]["high_temps"] = [73.0] * 48
+    cache["schedule"]["hvac-1"]["schedule"]["low_temps"] = [70.0] * 48
+    hass.data[DOMAIN] = cache
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, _entry())
+    assert hass.services.async_call.await_args.args[2]["temperature"] == 22.0
+
+
+@pytest.mark.parametrize("step", [None, 0, "x", -1])
+def test_metric_snap_bad_step_uses_half_degree(step) -> None:
+    attrs = {} if step is None else {"target_temp_step": step}
+    f = scheduler._snap_to_device_step(72.0, attrs, None)
+    assert f == units.to_f(22.0, units.CELSIUS)
+
+
+def test_metric_snap_band_narrower_than_step_keeps_nearest() -> None:
+    # Band 71.9-72.0 F sits between 22.0 C (71.6 F) and 22.5 C (72.5 F).
+    f = scheduler._snap_to_device_step(72.0, {"target_temp_step": 1}, (71.9, 72.0))
+    assert f == 71.6
+
+
+def test_fahrenheit_ha_does_not_snap() -> None:
+    state = _climate_state("cool", supports_range=False, step=1)
+    payload = scheduler._build_hvac_payload(
+        "climate.x", state, 72.4, band=(70.0, 74.0),
+    )
+    assert payload["temperature"] == 72.4
+
+
+@pytest.mark.asyncio
+async def test_metric_last_commanded_keeps_unsnapped_f() -> None:
+    state = _climate_state("cool", supports_range=False, step=1)
+    hass = _metric_hass(state)
+    hass.data[DOMAIN] = _hvac_cache(setpoint=72.4)
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, _entry())
+    assert hass.services.async_call.await_args.args[2]["temperature"] == 22.0
+    last = hass.data[DOMAIN][scheduler._LAST_COMMANDED_KEY]["climate.living_room"]
+    assert last["setpoint"] == 72.4
+
+
+def test_metric_one_degree_tracking_steps_change_sent_value() -> None:
+    sent = {
+        round(scheduler._snap_to_device_step(f, {"target_temp_step": 1}, None), 2)
+        for f in (72.0, 71.0, 70.0, 69.0)
+    }
+    # 1 F tracking steps repeat a value on a 1 C device, then move on.
+    assert len(sent) >= 2
 
 
 # --- Metric HA: inbound temperatures convert to °F (US-TMP-004) ---

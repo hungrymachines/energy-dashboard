@@ -468,12 +468,50 @@ def _clamp_to_entity_range(
     return clamped
 
 
+def _snap_to_device_step(
+    setpoint_f: float,
+    attrs: dict,
+    band: tuple[float, float] | None,
+) -> float:
+    """Round a °F setpoint to the thermostat's °C step, staying in the band.
+
+    A 1 °C device cannot hold 72 °F (22.22 °C); rounding can also push the
+    value past a band edge, in which case step back toward the band.
+    """
+    try:
+        step = float(attrs.get("target_temp_step"))
+    except (TypeError, ValueError):
+        step = 0.5
+    if not step > 0:
+        step = 0.5
+    celsius = units.from_f(setpoint_f, units.CELSIUS)
+    snapped = round(celsius / step) * step
+    snapped_f = units.to_f(snapped, units.CELSIUS)
+    if band is None:
+        return snapped_f
+    low, high = band
+    if snapped_f > high:
+        candidate = units.to_f(snapped - step, units.CELSIUS)
+    elif snapped_f < low:
+        candidate = units.to_f(snapped + step, units.CELSIUS)
+    else:
+        return snapped_f
+    if low <= candidate <= high:
+        return candidate
+    # Band narrower than the step: keep whichever is nearest the band.
+    return min(
+        (snapped_f, candidate),
+        key=lambda v: max(low - v, v - high, 0.0),
+    )
+
+
 def _build_hvac_payload(
     entity_id: str,
     state: object | None,
     setpoint: float,
     assumed_mode: str | None = None,
     ha_unit: str = units.FAHRENHEIT,
+    band: tuple[float, float] | None = None,
 ) -> dict | None:
     """Build the climate.set_temperature payload for a single setpoint.
 
@@ -524,6 +562,8 @@ def _build_hvac_payload(
     # Last-mile defense: never send a value outside the entity's own
     # accepted range. Logs the clamp so operators can see when the
     # backend's value collides with the AC's hardware limits.
+    if ha_unit == units.CELSIUS:
+        setpoint = _snap_to_device_step(setpoint, attrs, band)
     safe_setpoint = _clamp_to_entity_range(entity_id, attrs, setpoint, ha_unit)
     # `setpoint` and the clamp work in °F; convert last, into HA's unit.
     out_setpoint = units.from_f(safe_setpoint, ha_unit)
@@ -1240,6 +1280,7 @@ async def _apply_hvac(
     # _record_last_commanded so the readings collector and the
     # set-then-verify pass both treat the override as the commanded
     # truth for this slot.
+    band: tuple[float, float] | None = None
     override = _comfort_band_override(
         hass, entity_id, schedule, slot, mode_canonical,
     )
@@ -1258,6 +1299,7 @@ async def _apply_hvac(
         high = _band_edge(schedule, "high_temps", slot)
         low = _band_edge(schedule, "low_temps", slot)
         if high is not None and low is not None and low <= high:
+            band = (low, high)
             clamped = max(low, min(setpoint, high))
             if clamped != setpoint:
                 _LOGGER.warning(
@@ -1317,7 +1359,7 @@ async def _apply_hvac(
 
     payload = _build_hvac_payload(
         entity_id, state, setpoint, assumed_mode=mode_canonical,
-        ha_unit=units.ha_unit(hass),
+        ha_unit=units.ha_unit(hass), band=band,
     )
     if payload is None:
         # No setpoint payload — the unit should be OFF (a scheduled OFF
