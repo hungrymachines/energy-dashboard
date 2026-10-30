@@ -1479,6 +1479,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/fleet/map": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Fleet Map
+         * @description One row per home with the identity, status, savings, rate, price and
+         *     outdoor-temperature fields the map tooltip shows (US-MAP-003/004, PRD
+         *     section 5.3), plus one `zones[]` entry per US price zone with a
+         *     footprint (US-MAP-005).
+         */
+        get: operations["fleet_map_admin_fleet_map_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/metrics/summary": {
         parameters: {
             query?: never;
@@ -2079,6 +2102,8 @@ export interface components {
             demand_window_start?: string | null;
             /** Demand Window End */
             demand_window_end?: string | null;
+            /** Temperature Unit */
+            temperature_unit?: ("F" | "C") | null;
         };
         /** PreferencesUpdate */
         PreferencesUpdate: {
@@ -2118,6 +2143,8 @@ export interface components {
             demand_window_start?: string | null;
             /** Demand Window End */
             demand_window_end?: string | null;
+            /** Temperature Unit */
+            temperature_unit?: ("F" | "C") | null;
         };
         /** PricingZoneOption */
         PricingZoneOption: {
@@ -2284,6 +2311,8 @@ export interface components {
             override_active?: boolean | null;
             /** Room Target */
             room_target?: number | null;
+            /** Setpoint Step F */
+            setpoint_step_f?: number | null;
         };
         /** SignupRequest */
         SignupRequest: {
@@ -4285,6 +4314,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fleet_map_admin_fleet_map_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };

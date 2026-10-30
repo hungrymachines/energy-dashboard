@@ -3016,6 +3016,31 @@
         }
       }
     },
+    "/admin/fleet/map": {
+      "get": {
+        "tags": [
+          "fleet-admin"
+        ],
+        "summary": "Fleet Map",
+        "description": "One row per home with the identity, status, savings, rate, price and\noutdoor-temperature fields the map tooltip shows (US-MAP-003/004, PRD\nsection 5.3), plus one `zones[]` entry per US price zone with a\nfootprint (US-MAP-005).",
+        "operationId": "fleet_map_admin_fleet_map_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/me/metrics/summary": {
       "get": {
         "tags": [
@@ -4556,6 +4581,21 @@
               }
             ],
             "title": "Demand Window End"
+          },
+          "temperature_unit": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "F",
+                  "C"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperature Unit"
           }
         },
         "type": "object",
@@ -4773,6 +4813,21 @@
               }
             ],
             "title": "Demand Window End"
+          },
+          "temperature_unit": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "F",
+                  "C"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperature Unit"
           }
         },
         "type": "object",
@@ -5350,6 +5405,17 @@
               }
             ],
             "title": "Room Target"
+          },
+          "setpoint_step_f": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Setpoint Step F"
           }
         },
         "type": "object",
