@@ -1,5 +1,12 @@
 import { LitElement, html, css, type TemplateResult } from 'lit';
+import { live } from 'lit/directives/live.js';
 import { authStore, type AuthState } from '../store.js';
+import {
+  haUnitFrom,
+  temperatureUnitStore,
+  unitLabel,
+  type TempUnit,
+} from '../utils/temperature.js';
 import {
   getAllSchedules,
   recomputeSchedule,
@@ -50,6 +57,7 @@ import {
 type HassStateLike = { entity_id?: string; state?: unknown; attributes?: Record<string, unknown> };
 type HassLike = {
   states?: Record<string, HassStateLike>;
+  config?: { unit_system?: { temperature?: string } };
   callService?: (domain: string, service: string, data?: Record<string, unknown>) => Promise<unknown> | unknown;
 };
 
@@ -1454,6 +1462,8 @@ export class HungryMachinesPanel extends LitElement {
     _optToggleBusy: { state: true },
     _deviceOptToggleBusy: { state: true },
     _spikeGuardToggleBusy: { state: true },
+    _unitBusy: { state: true },
+    _unitError: { state: true },
     _powerLimitsBusy: { state: true },
     _feedbackCategory: { state: true },
     _feedbackMessage: { state: true },
@@ -1482,6 +1492,9 @@ export class HungryMachinesPanel extends LitElement {
   // appliance_id, so one card's toggle spinner doesn't block the others.
   _deviceOptToggleBusy: Record<string, boolean> = {};
   _spikeGuardToggleBusy = false;
+  _unitBusy = false;
+  _unitError: string | null = null;
+  private _unsubscribeUnit: (() => void) | null = null;
   // Per-field busy guard for the "Home power limits" settings section
   // (US-WHC-009), keyed by UpdatePreferencesBody field name.
   _powerLimitsBusy: Partial<Record<keyof UpdatePreferencesBody, boolean>> = {};
@@ -1589,12 +1602,24 @@ export class HungryMachinesPanel extends LitElement {
         this._schedulesFetched = false;
       }
     });
+    this._unsubscribeUnit = temperatureUnitStore.subscribe(() => this.requestUpdate());
     void authStore.hydrate();
     void this._loadSchedulesIfNeeded();
   }
 
+  override willUpdate(changed: Map<PropertyKey, unknown>): void {
+    if (changed.has('hass')) temperatureUnitStore.setHaUnit(haUnitFrom(this.hass));
+    if (changed.has('_preferences')) {
+      temperatureUnitStore.setPreference(this._preferences?.temperature_unit ?? null);
+    }
+  }
+
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    if (this._unsubscribeUnit) {
+      this._unsubscribeUnit();
+      this._unsubscribeUnit = null;
+    }
     if (this._unsubscribe) {
       this._unsubscribe();
       this._unsubscribe = null;
@@ -2822,6 +2847,50 @@ export class HungryMachinesPanel extends LitElement {
     `;
   }
 
+  private async _onUnitChange(value: string): Promise<void> {
+    if (this._unitBusy) return;
+    const next: TempUnit | null = value === 'F' || value === 'C' ? value : null;
+    this._unitBusy = true;
+    this._unitError = null;
+    try {
+      this._preferences = await updatePreferences({ temperature_unit: next });
+      this._persistUserPrefs();
+    } catch {
+      // PUT failed — _preferences is untouched, so the select reverts.
+      this._unitError = 'Could not save the unit. Try again.';
+    } finally {
+      this._unitBusy = false;
+      this.requestUpdate();
+    }
+  }
+
+  private _renderUnitSection(): TemplateResult {
+    const pref = this._preferences?.temperature_unit ?? null;
+    const ha = temperatureUnitStore.state.haUnit;
+    const haText = ha ? ` (${unitLabel(ha)})` : '';
+    const current = pref ?? '';
+    return html`
+      <div class="settings-section" data-section="temperature-units">
+        <h3>Temperature units</h3>
+        <p class="hint">Choose how temperatures appear here. Your comfort range is unchanged.</p>
+        <label>
+          <span class="label-text">Show temperatures in</span>
+          <select
+            name="temperature_unit"
+            ?disabled=${this._unitBusy}
+            .value=${live(current)}
+            @change=${(e: Event) => void this._onUnitChange((e.target as HTMLSelectElement).value)}
+          >
+            <option value="" ?selected=${current === ''}>Use Home Assistant's setting${haText}</option>
+            <option value="F" ?selected=${current === 'F'}>°F</option>
+            <option value="C" ?selected=${current === 'C'}>°C</option>
+          </select>
+        </label>
+        ${this._unitError ? html`<p class="zone-error">${this._unitError}</p>` : ''}
+      </div>
+    `;
+  }
+
   private async _toggleSpikeGuard(): Promise<void> {
     if (this._spikeGuardToggleBusy) return;
     const next = !this._spikeGuardEnabled();
@@ -3702,6 +3771,7 @@ export class HungryMachinesPanel extends LitElement {
     return html`
       <h2>Settings</h2>
       <div class="settings">
+        ${this._renderUnitSection()}
         <div class="settings-section">
           <h3>Weather entity</h3>
           <p class="hint">

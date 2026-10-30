@@ -1,5 +1,6 @@
 import { LitElement, html, css, type TemplateResult } from 'lit';
 import { authStore, type AuthState } from '../store.js';
+import { haUnitFrom, temperatureUnitStore } from '../utils/temperature.js';
 import {
   getAllSchedules,
   type ApplianceScheduleEntry,
@@ -39,7 +40,10 @@ type HassStateLike = {
   state?: unknown;
   attributes?: Record<string, unknown>;
 };
-type HassLike = { states?: Record<string, HassStateLike> };
+type HassLike = {
+  states?: Record<string, HassStateLike>;
+  config?: { unit_system?: { temperature?: string } };
+};
 
 const SCHEDULE_TTL_MS = 5 * 60 * 1000;
 const PREFERENCES_DEBOUNCE_MS = 500;
@@ -275,6 +279,7 @@ export class HmThermostatCard extends LitElement {
 
   private _config: HmThermostatCardConfig = {};
   private _unsubscribe: (() => void) | null = null;
+  private _unsubscribeUnit: (() => void) | null = null;
   private _scheduleFetchedAt = 0;
   private _preferencesTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -301,12 +306,21 @@ export class HmThermostatCard extends LitElement {
         this._schedules = null;
       }
     });
+    this._unsubscribeUnit = temperatureUnitStore.subscribe(() => this.requestUpdate());
     void authStore.hydrate();
     void this._loadIfAuthed();
   }
 
+  override willUpdate(changed: Map<PropertyKey, unknown>): void {
+    if (changed.has('hass')) temperatureUnitStore.setHaUnit(haUnitFrom(this.hass));
+  }
+
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    if (this._unsubscribeUnit) {
+      this._unsubscribeUnit();
+      this._unsubscribeUnit = null;
+    }
     if (this._unsubscribe) {
       this._unsubscribe();
       this._unsubscribe = null;
@@ -333,6 +347,7 @@ export class HmThermostatCard extends LitElement {
       ]);
       this._schedules = schedules;
       this._rates = rates;
+      temperatureUnitStore.setPreference(preferences?.temperature_unit ?? null);
       if (preferences && typeof preferences.savings_level === 'number') {
         this._savingsLevel = this._clampLevel(preferences.savings_level);
       }
