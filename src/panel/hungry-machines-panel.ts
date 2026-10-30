@@ -2,6 +2,7 @@ import { LitElement, html, css, type TemplateResult } from 'lit';
 import { live } from 'lit/directives/live.js';
 import { authStore, type AuthState } from '../store.js';
 import {
+  formatDelta,
   haUnitFrom,
   temperatureUnitStore,
   unitLabel,
@@ -158,6 +159,11 @@ function constantArray(value: number, length = 48): number[] {
 type ChartSize = 'small' | 'medium' | 'large';
 const CHART_SIZES: ReadonlyArray<ChartSize> = ['small', 'medium', 'large'];
 const CHART_SIZE_STORAGE_KEY = 'hm-panel-chart-size';
+
+/** A °F/hr rate in the chosen unit; a rate is a delta, so no 32 offset. */
+function _perHour(rateF: number): string {
+  return `${formatDelta(rateF, temperatureUnitStore.state.unit)}/hr`;
+}
 
 function _loadChartSize(): ChartSize {
   try {
@@ -3109,7 +3115,7 @@ export class HungryMachinesPanel extends LitElement {
         !Number.isFinite(high as number);
       const summary = isSetpointStep
         ? `Setpoint test: ${rates.phases_observed ?? 3} holds observed; the model learns from them directly.`
-        : `Measured cooling: ${((low as number) * 2).toFixed(1)} °F/hr on Low fan, ${((high as number) * 2).toFixed(1)} °F/hr on High fan.`;
+        : `Measured cooling: ${_perHour((low as number) * 2)} on Low fan, ${_perHour((high as number) * 2)} on High fan.`;
       return html`
         <div class="banner calibration complete" role="status">
           <div class="banner-text">

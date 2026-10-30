@@ -1,6 +1,6 @@
 import { LitElement, html, css, type TemplateResult } from 'lit';
 import { authStore, type AuthState } from '../store.js';
-import { haUnitFrom, temperatureUnitStore } from '../utils/temperature.js';
+import { haUnitFrom, liveTemp, temperatureUnitStore } from '../utils/temperature.js';
 import {
   getAllSchedules,
   type ApplianceScheduleEntry,
@@ -460,13 +460,14 @@ export class HmThermostatCard extends LitElement {
     return null;
   }
 
-  private _formatTemp(raw: string | null, unit = '°'): string {
+  private _formatTemp(entityId: string | undefined, raw: string | null): string {
     if (raw === null) return '—';
     const n = Number(raw);
-    if (Number.isFinite(n)) {
-      return `${Math.round(n)}${unit}`;
-    }
-    return `${raw}${unit}`;
+    if (!Number.isFinite(n)) return `${raw}°`;
+    const attrUnit = this.hass?.states?.[entityId ?? '']?.attributes?.unit_of_measurement;
+    const source =
+      attrUnit === '°C' ? 'C' : attrUnit === '°F' ? 'F' : temperatureUnitStore.state.haUnit ?? 'F';
+    return `${liveTemp(n, source, temperatureUnitStore.state.unit)}°`;
   }
 
   override render(): TemplateResult {
@@ -545,14 +546,14 @@ export class HmThermostatCard extends LitElement {
         <div class="metrics">
           <div class="indoor-wrap">
             ${indoorConfigured
-              ? html`<span class="indoor">${this._formatTemp(indoorRaw)}</span>`
+              ? html`<span class="indoor">${this._formatTemp(entities.indoor_temp, indoorRaw)}</span>`
               : html`<span class="missing-entity">
                   Indoor temperature entity not set.
                   <a href="#hm-panel">Configure in HM panel</a>
                 </span>`}
             ${entities.outdoor_temp
               ? html`<span class="outdoor">
-                  Outside ${this._formatTemp(outdoorRaw)}
+                  Outside ${this._formatTemp(entities.outdoor_temp, outdoorRaw)}
                 </span>`
               : null}
           </div>

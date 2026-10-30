@@ -66,7 +66,7 @@ const AUX_FIELDS: Partial<Record<ApplianceType, { name: string; label: string; h
   water_heater: {
     name: 'temp_entity_id',
     label: 'Tank temperature sensor (optional)',
-    help: 'sensor.* exposing tank temp in °F',
+    help: 'sensor.* exposing tank temp',
     domain: 'sensor',
   },
   robot: {
@@ -105,7 +105,7 @@ const HVAC_INDOOR_HUMIDITY_FIELD = {
 const DEHU_TEMP_FIELD = {
   name: 'indoor_temp_entity_id',
   label: 'Room temperature sensor (required)',
-  help: 'sensor.* exposing room temp in °F. Required — a dehumidifier entity has no built-in thermometer and every reading needs a temperature.',
+  help: 'sensor.* exposing room temp. Required — a dehumidifier entity has no built-in thermometer and every reading needs a temperature.',
   domain: 'sensor',
 } as const;
 
