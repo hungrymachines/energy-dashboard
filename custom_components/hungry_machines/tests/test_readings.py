@@ -1572,3 +1572,65 @@ def test_water_heater_metric_converts_before_clamp() -> None:
     hass = _metric(_hass({"sensor.tank": tank}))
     reading = readings._build_water_heater_reading(hass, control, "sensor.tank")
     assert reading["value"] == 122.0
+
+
+# --- out-of-range indoor temperature (US-TMP-005) --------------------------
+
+
+async def _capture_hvac_at(hass, temp: float) -> None:
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    hass.states.get = MagicMock(
+        return_value=_state("cool", {"current_temperature": temp})
+    )
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, _entry())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("temp,kept", [(29.9, False), (120.1, False), (30.0, True), (120.0, True)])
+async def test_capture_hvac_range_bounds_are_inclusive(temp: float, kept: bool) -> None:
+    hass = _hass({})
+    await _capture_hvac_at(hass, temp)
+    buf = hass.data[DOMAIN].get("readings_buffer", {})
+    assert len(buf.get("home", [])) == (1 if kept else 0)
+
+
+@pytest.mark.asyncio
+async def test_capture_hvac_out_of_range_warns_once(caplog) -> None:
+    hass = _hass({})
+    with caplog.at_level("WARNING", logger=readings.__name__):
+        await _capture_hvac_at(hass, 200.0)
+        await _capture_hvac_at(hass, 200.0)
+        await _capture_hvac_at(hass, 200.0)
+    msgs = [r for r in caplog.records if "dropping reading" in r.getMessage()]
+    assert len(msgs) == 1
+    assert "climate.test" in msgs[0].getMessage()
+    assert "200.0" in msgs[0].getMessage()
+    # Back in range, then out again: warns again.
+    with caplog.at_level("WARNING", logger=readings.__name__):
+        await _capture_hvac_at(hass, 72.0)
+        await _capture_hvac_at(hass, 200.0)
+    msgs = [r for r in caplog.records if "dropping reading" in r.getMessage()]
+    assert len(msgs) == 2
+
+
+def test_dehumidifier_out_of_range_dropped() -> None:
+    ts = _state("21000")
+    ts.entity_id = "sensor.t"
+    hass = _hass({"sensor.t": ts})
+    dh = _state("on")
+    dh.entity_id = "humidifier.d"
+    dh.attributes = {}
+    assert readings._build_dehumidifier_reading(
+        hass, dh, indoor_temp_entity_id="sensor.t"
+    ) is None
+    ts.state = "30.0"
+    assert readings._build_dehumidifier_reading(
+        hass, dh, indoor_temp_entity_id="sensor.t"
+    )["indoor_temp"] == 30.0

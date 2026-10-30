@@ -147,6 +147,32 @@ def _record_aux_status(
     }
 
 
+_RANGE_KEY = "reading_out_of_range"
+
+
+def _indoor_in_range(hass: HomeAssistant, entity_id: str, indoor_f: float) -> bool:
+    """True when the °F indoor value is inside the API's accepted range.
+
+    Bounds are inclusive and match the backend, so one bad sample is
+    dropped here instead of failing the whole hourly batch. Warns once
+    when an entity goes out of range, and again only after it has been
+    back in range."""
+    flagged = hass.data.setdefault(DOMAIN, {}).setdefault(_RANGE_KEY, set())
+    if units.READING_MIN_F <= indoor_f <= units.READING_MAX_F:
+        flagged.discard(entity_id)
+        return True
+    if entity_id not in flagged:
+        flagged.add(entity_id)
+        unit = units.ha_unit(hass)
+        _LOGGER.warning(
+            "Hungry Machines: dropping reading for '%s': indoor temperature "
+            "%.1f \u00b0F (HA unit %s) is outside %.0f-%.0f \u00b0F",
+            entity_id, indoor_f, unit,
+            units.READING_MIN_F, units.READING_MAX_F,
+        )
+    return False
+
+
 def get_aux_sensor_health(hass: HomeAssistant) -> dict[str, dict[str, Any]]:
     """Public read of the aux-sensor health snapshot. The HACS `/api/v1/readings`
     POST handler embeds this in the request so the backend can render
@@ -515,6 +541,8 @@ def _build_hvac_home_reading(
             state.state,
         )
         return None
+    if not _indoor_in_range(hass, indoor_temp_entity_id or state.entity_id, indoor_temp):
+        return None
     reading: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "indoor_temp": indoor_temp,
@@ -660,6 +688,8 @@ def _build_dehumidifier_reading(
             "sensor is required to record dehumidifier readings.",
             state.entity_id, indoor_temp_entity_id,
         )
+        return None
+    if not _indoor_in_range(hass, indoor_temp_entity_id or state.entity_id, indoor_temp):
         return None
 
     reading: dict[str, Any] = {
