@@ -551,6 +551,20 @@ The text the user sees during setup. Identical content; HA expects both. New lan
 ### `frontend/hungry-machines.js`
 The built TypeScript bundle. Gitignored on master; only present locally after `npm run build`, and only present in releases inside the zip.
 
+### `units.py`
+
+The backend and all of this integration work in °F, but Home Assistant reports and accepts climate values in its system unit, which is metric on a default install. Every temperature that crosses the HA boundary goes through `units.py`, whatever unit the user chose to see. Choosing a display unit is a separate conversion, done in TypeScript. A metric HA with a °F user and a US HA with a °C user are both valid.
+
+What HA does (read from the 2026.6.4 source): `climate.set_temperature` converts from the system unit and raises `ServiceValidationError` out of range. `current_temperature`, `temperature`, `min_temp` and `max_temp` are in the system unit. `target_temp_step` is not converted, so it stays in the device's own unit. A sensor can report a different unit from the system, so sensors go through `sensor_state_f`, which reads the sensor's `unit_of_measurement`, and climate attributes go through `climate_attr_f`.
+
+Outbound, `_build_hvac_payload` works in °F and converts last. On a Celsius HA it first snaps the setpoint to the device step in `_snap_to_device_step`, stepping back toward the band if rounding pushed it past an edge. A guard override passes no band, so its command is snapped but not pulled back. `last_commanded` and the `commanded_setpoint` reading stay in unsnapped °F, because they record the plan's intent. `expected_setpoint` is the snapped value read back from the payload, so the verify pass compares against what the unit was actually sent. Otherwise a 1 °C unit holding 22 °C for a 72 °F plan could read as disobeying.
+
+Inbound, `readings.py` drops any indoor reading outside `READING_MIN_F`..`READING_MAX_F` (30-120 °F, the API's check) and warns once per entity. The API rejects a batch all-or-nothing and `flush_readings` retries a failed bucket hourly with no limit, so one bad reading would otherwise block its bucket forever.
+
+`ha_unit()` returns °F for anything but the literal `°C`, so a `MagicMock` hass reads as °F and tests of °F behaviour need no setup. For a metric test, set `hass.config.units.temperature_unit = "°C"`. `units.py` imports neither `scheduler` nor `readings`, because `readings` imports `scheduler` at module load.
+
+`scripts/ha_unit_smoke.py` proves all this on a real HomeAssistant object with a real `generic_thermostat`, which fake hass objects cannot do. It needs no network or credentials. Run the docker command in its docstring from the monorepo root; exit 0 means every scenario passed. The `us-cool` scenario is the regression anchor for °F installs. The verify scenario shortens `_VERIFY_DELAY_SECONDS` and counts `set_temperature` calls on the HA event bus, so the real armed pass runs. On the v3.9.2 code, before this conversion existed, 6 of the 7 scenarios fail.
+
 That's the whole integration. ~100 lines of Python total. If a story tempts you to add more, ask: "could this live in TypeScript instead?" The answer is almost always yes.
 
 If a story tempts you to import something heavy (a full charting library, a date library, a runtime CSS-in-JS engine), pause and check whether a dozen lines of plain Lit + `Intl.*` would do — they almost always do.
