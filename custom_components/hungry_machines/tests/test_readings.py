@@ -1513,3 +1513,62 @@ async def test_hvac_reading_omits_room_target_for_a_legacy_schedule() -> None:
     ):
         await readings.capture_readings(hass2, entry2)
     assert "room_target" not in hass2.data[DOMAIN]["readings_buffer"]["home"][0]
+
+
+# --- Metric HA: readings post in °F (US-TMP-004) ---
+
+
+def _metric(hass: MagicMock) -> MagicMock:
+    hass.config.units.temperature_unit = "°C"
+    return hass
+
+
+@pytest.mark.asyncio
+async def test_capture_hvac_metric_posts_fahrenheit() -> None:
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    state = _state("cool", {"current_temperature": 22.2, "temperature": 22.0})
+    hass = _metric(_hass({"climate.living_room": state}))
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, _entry())
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["indoor_temp"] == 71.96
+    assert posted["target_temp"] == 71.6
+
+
+@pytest.mark.asyncio
+async def test_capture_hvac_celsius_aux_sensor_on_fahrenheit_ha() -> None:
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {
+            "entity_id": "climate.living_room",
+            "indoor_temp_entity_id": "sensor.room",
+        },
+    }
+    sensor = MagicMock()
+    sensor.state = "22.2"
+    sensor.attributes = {"unit_of_measurement": "°C"}
+    state = _state("cool", {"current_temperature": 72.0, "temperature": 72.0})
+    hass = _hass({"climate.living_room": state, "sensor.room": sensor})
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, _entry())
+    assert hass.data[DOMAIN]["readings_buffer"]["home"][0]["indoor_temp"] == 71.96
+
+
+def test_water_heater_metric_converts_before_clamp() -> None:
+    tank = MagicMock()
+    tank.state = "50"
+    tank.attributes = {}
+    control = MagicMock()
+    control.state = "on"
+    hass = _metric(_hass({"sensor.tank": tank}))
+    reading = readings._build_water_heater_reading(hass, control, "sensor.tank")
+    assert reading["value"] == 122.0

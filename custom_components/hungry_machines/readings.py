@@ -36,7 +36,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from . import api
+from . import api, units
 from .const import DOMAIN
 from .scheduler import (
     _cache_age_seconds,
@@ -475,7 +475,7 @@ def _build_hvac_home_reading(
         sensor_state = hass.states.get(indoor_temp_entity_id) if hass.states else None
         if sensor_state is not None:
             raw = getattr(sensor_state, "state", None)
-            indoor_temp = _coerce_float(raw)
+            indoor_temp = units.sensor_state_f(hass, sensor_state)
             if indoor_temp is None:
                 _record_aux_status(
                     hass, indoor_temp_entity_id,
@@ -498,7 +498,9 @@ def _build_hvac_home_reading(
                 purpose="indoor temperature",
             )
     if indoor_temp is None:
-        indoor_temp = state.attributes.get("current_temperature")
+        indoor_temp = units.climate_attr_f(
+            hass, state.attributes.get("current_temperature")
+        )
         if indoor_temp is not None:
             indoor_source = "entity"
     if indoor_temp is None:
@@ -532,7 +534,7 @@ def _build_hvac_home_reading(
     # appliances missing an id) omit this and the backend stores NULL.
     if appliance_id:
         reading["appliance_id"] = appliance_id
-    target_temp = state.attributes.get("temperature")
+    target_temp = units.climate_attr_f(hass, state.attributes.get("temperature"))
     if target_temp is not None:
         reading["target_temp"] = target_temp
     # The slot's ROOM target beside the unit's own setpoint (US-CTL-041).
@@ -644,7 +646,7 @@ def _build_dehumidifier_reading(
             )
         else:
             raw = getattr(ts, "state", None)
-            indoor_temp = _coerce_float(raw)
+            indoor_temp = units.sensor_state_f(hass, ts)
             _record_aux_status(
                 hass, indoor_temp_entity_id,
                 status="ok" if indoor_temp is not None else "invalid_state",
@@ -720,7 +722,7 @@ def _build_water_heater_reading(
     if temp_entity_id:
         temp_state = _read_state(hass, temp_entity_id)
         if temp_state is not None:
-            tank_temp = _coerce_float(temp_state.state)
+            tank_temp = units.sensor_state_f(hass, temp_state)
     if tank_temp is None:
         tank_temp = 120.0
     return {

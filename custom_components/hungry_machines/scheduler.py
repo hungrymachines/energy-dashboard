@@ -710,12 +710,7 @@ def _resolve_indoor_temp(
     aux_entity_id = _aux_indoor_temp_entity_id(hass, entity_id)
     if aux_entity_id:
         aux_state = hass.states.get(aux_entity_id) if hass.states else None
-        raw = getattr(aux_state, "state", None) if aux_state else None
-        # Local import: readings.py imports get_last_commanded from
-        # this module at module load time, so a top-level import
-        # here would be circular.
-        from .readings import _coerce_float
-        indoor = _coerce_float(raw)
+        indoor = units.sensor_state_f(hass, aux_state) if aux_state else None
         aux_source_used = indoor is not None
     if indoor is None:
         # No room sensor configured, or it's missing/non-numeric — the
@@ -724,10 +719,7 @@ def _resolve_indoor_temp(
         # is the case the room sensor exists to cover.
         state = hass.states.get(entity_id) if hass.states else None
         attrs = getattr(state, "attributes", None) or {} if state else {}
-        try:
-            indoor = float(attrs.get("current_temperature"))
-        except (TypeError, ValueError):
-            indoor = None
+        indoor = units.climate_attr_f(hass, attrs.get("current_temperature"))
     return indoor, aux_entity_id, aux_source_used
 
 
@@ -778,10 +770,9 @@ def _resolve_unit_setpoint(
             pass
     state = hass.states.get(entity_id) if hass.states else None
     attrs = getattr(state, "attributes", None) or {} if state else {}
-    try:
-        return float(attrs.get("temperature"))
-    except (TypeError, ValueError):
-        pass
+    unit_setpoint = units.climate_attr_f(hass, attrs.get("temperature"))
+    if unit_setpoint is not None:
+        return unit_setpoint
     return _resolve_setpoint(schedule, slot)
 
 
@@ -1107,9 +1098,8 @@ def _log_pause_silence_if_outside_band(
     report deserves an attributable log line instead of silence."""
     state = hass.states.get(entity_id) if hass.states else None
     attrs = getattr(state, "attributes", None) or {} if state else {}
-    try:
-        indoor = float(attrs.get("current_temperature"))
-    except (TypeError, ValueError):
+    indoor = units.climate_attr_f(hass, attrs.get("current_temperature"))
+    if indoor is None:
         _log_comfort_silence(hass, entity_id, None)
         return
 

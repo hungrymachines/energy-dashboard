@@ -3103,3 +3103,59 @@ async def test_metric_verify_resends_celsius_on_mismatch() -> None:
     args = hass.services.async_call.await_args.args
     assert args[1] == "set_temperature"
     assert args[2]["temperature"] == 22.22
+
+
+# --- Metric HA: inbound temperatures convert to °F (US-TMP-004) ---
+
+
+def _celsius_sensor(value: str, unit: str = "°C") -> MagicMock:
+    s = MagicMock()
+    s.state = value
+    s.attributes = {"unit_of_measurement": unit}
+    return s
+
+
+@pytest.mark.asyncio
+async def test_metric_watchdog_in_band_celsius_room_latches_nothing() -> None:
+    state = _climate_state("cool", supports_range=False, hvac_modes=["off", "cool"])
+    state.attributes["current_temperature"] = 22.2  # 71.96 °F, inside 70-74
+    hass = _metric_hass(state)
+    hass.data[DOMAIN] = _override_cache(hvac_mode_schedule=["COOL"] * 48)
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.comfort_watchdog(hass, _entry())
+
+    assert not hass.services.async_call.await_args_list
+    assert not hass.data[DOMAIN].get("comfort_latch", {}).get(
+        "climate.living_room", {}
+    ).get("active")
+
+
+@pytest.mark.asyncio
+async def test_metric_watchdog_overcooled_celsius_room_latches_off() -> None:
+    state = _climate_state("cool", supports_range=False, hvac_modes=["off", "cool"])
+    state.attributes["current_temperature"] = 16.0  # 60.8 °F, below the 70 °F low
+    hass = _metric_hass(state)
+    hass.data[DOMAIN] = _override_cache(hvac_mode_schedule=["COOL"] * 48)
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.comfort_watchdog(hass, _entry())
+
+    latch = hass.data[DOMAIN]["comfort_latch"]["climate.living_room"]
+    assert latch["active"] is True and latch["direction"] == "off_overcool"
+
+
+def test_metric_resolve_indoor_temp_converts_climate_and_aux() -> None:
+    state = _climate_state("cool", supports_range=False)
+    state.attributes["current_temperature"] = 22.2
+    hass = _metric_hass(state)
+    indoor, _aux, used = scheduler._resolve_indoor_temp(hass, "climate.living_room")
+    assert indoor == 71.96 and used is False
+
+    hass = _hass(state)  # °F HA with a °C aux sensor
+    hass.data[DOMAIN] = _override_cache(indoor_temp_entity_id="sensor.room")
+    hass.states.get = MagicMock(
+        side_effect=lambda eid: _celsius_sensor("22.2") if eid == "sensor.room" else state
+    )
+    indoor, _aux, used = scheduler._resolve_indoor_temp(hass, "climate.living_room")
+    assert indoor == 71.96 and used is True
