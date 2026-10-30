@@ -3041,3 +3041,65 @@ async def test_cross_story_a_legacy_api_body_tracks_nothing() -> None:
         c for c in hass.services.async_call.await_args_list
         if c.args[1] == "set_temperature"
     ]
+
+
+# --- Metric HA: setpoints cross the boundary in °C (US-TMP-003) ---
+
+
+def _metric_hass(state: object | None = None) -> MagicMock:
+    hass = _hass(state)
+    hass.config.units.temperature_unit = "°C"
+    return hass
+
+
+async def _apply_metric(state, setpoint: float = 72.0) -> dict:
+    hass = _metric_hass(state)
+    hass.data[DOMAIN] = _hvac_cache(setpoint=setpoint)
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, _entry())
+    hass.services.async_call.assert_awaited_once()
+    return hass.services.async_call.await_args.args[2]
+
+
+@pytest.mark.asyncio
+async def test_metric_apply_sends_celsius_setpoint() -> None:
+    payload = await _apply_metric(_climate_state("cool", supports_range=False))
+    assert payload["temperature"] == 22.22
+
+
+@pytest.mark.asyncio
+async def test_metric_max_temp_in_celsius_does_not_clamp() -> None:
+    state = _climate_state("cool", supports_range=False, min_temp=16, max_temp=35)
+    payload = await _apply_metric(state)
+    assert payload["temperature"] == 22.22
+
+
+@pytest.mark.asyncio
+async def test_metric_range_converts_low_and_high() -> None:
+    payload = await _apply_metric(_climate_state("heat_cool", supports_range=True))
+    assert payload["target_temp_low"] == 22.22
+    assert payload["target_temp_high"] == 22.22
+
+
+@pytest.mark.asyncio
+async def test_metric_verify_accepts_matching_celsius_readback() -> None:
+    hass = _metric_hass(_climate_state("cool", supports_range=False))
+    hass.states.get.return_value.attributes.update({"temperature": 22.2})
+    await scheduler._verify_hvac_apply(
+        hass, entity_id="climate.living_room", expected_mode="cool",
+        expected_setpoint=72.0, expected_fan=None, slot=30,
+    )
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_metric_verify_resends_celsius_on_mismatch() -> None:
+    hass = _metric_hass(_climate_state("cool", supports_range=False))
+    hass.states.get.return_value.attributes.update({"temperature": 25.0})
+    await scheduler._verify_hvac_apply(
+        hass, entity_id="climate.living_room", expected_mode="cool",
+        expected_setpoint=72.0, expected_fan=None, slot=30,
+    )
+    args = hass.services.async_call.await_args.args
+    assert args[1] == "set_temperature"
+    assert args[2]["temperature"] == 22.22

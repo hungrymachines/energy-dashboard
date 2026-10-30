@@ -93,7 +93,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_call_later
 
 from . import api
-from . import comfort
+from . import comfort, units
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -413,7 +413,12 @@ _FEATURE_TARGET_TEMPERATURE_RANGE = 2
 _RANGE_HVAC_MODES = frozenset({"heat_cool", "auto"})
 
 
-def _clamp_to_entity_range(entity_id: str, attrs: dict, setpoint: float) -> float:
+def _clamp_to_entity_range(
+    entity_id: str,
+    attrs: dict,
+    setpoint: float,
+    ha_unit: str = units.FAHRENHEIT,
+) -> float:
     """Constrain the setpoint to the climate entity's hardware range.
 
     HA climate entities expose `min_temp` and `max_temp` attributes
@@ -435,11 +440,17 @@ def _clamp_to_entity_range(entity_id: str, attrs: dict, setpoint: float) -> floa
     # HA climate defaults (homeassistant.components.climate.const).
     DEFAULT_MIN, DEFAULT_MAX = 45.0, 95.0
     try:
-        entity_min = float(attrs.get("min_temp")) if attrs.get("min_temp") is not None else DEFAULT_MIN
+        entity_min = (
+            units.to_f(float(attrs.get("min_temp")), ha_unit)
+            if attrs.get("min_temp") is not None else DEFAULT_MIN
+        )
     except (TypeError, ValueError):
         entity_min = DEFAULT_MIN
     try:
-        entity_max = float(attrs.get("max_temp")) if attrs.get("max_temp") is not None else DEFAULT_MAX
+        entity_max = (
+            units.to_f(float(attrs.get("max_temp")), ha_unit)
+            if attrs.get("max_temp") is not None else DEFAULT_MAX
+        )
     except (TypeError, ValueError):
         entity_max = DEFAULT_MAX
 
@@ -462,6 +473,7 @@ def _build_hvac_payload(
     state: object | None,
     setpoint: float,
     assumed_mode: str | None = None,
+    ha_unit: str = units.FAHRENHEIT,
 ) -> dict | None:
     """Build the climate.set_temperature payload for a single setpoint.
 
@@ -512,7 +524,9 @@ def _build_hvac_payload(
     # Last-mile defense: never send a value outside the entity's own
     # accepted range. Logs the clamp so operators can see when the
     # backend's value collides with the AC's hardware limits.
-    safe_setpoint = _clamp_to_entity_range(entity_id, attrs, setpoint)
+    safe_setpoint = _clamp_to_entity_range(entity_id, attrs, setpoint, ha_unit)
+    # `setpoint` and the clamp work in °F; convert last, into HA's unit.
+    out_setpoint = units.from_f(safe_setpoint, ha_unit)
 
     base = {"entity_id": entity_id}
     if hvac_mode in _RANGE_HVAC_MODES and supports_range:
@@ -520,11 +534,11 @@ def _build_hvac_payload(
         # thermostat to maintain the exact setpoint.
         return {
             **base,
-            "target_temp_low": safe_setpoint,
-            "target_temp_high": safe_setpoint,
+            "target_temp_low": out_setpoint,
+            "target_temp_high": out_setpoint,
         }
     if hvac_mode in ("cool", "heat") or hvac_mode in _RANGE_HVAC_MODES:
-        return {**base, "temperature": safe_setpoint}
+        return {**base, "temperature": out_setpoint}
     _LOGGER.info(
         "Hungry Machines HVAC: %s is in mode '%s', skipping setpoint apply",
         entity_id,
@@ -1313,6 +1327,7 @@ async def _apply_hvac(
 
     payload = _build_hvac_payload(
         entity_id, state, setpoint, assumed_mode=mode_canonical,
+        ha_unit=units.ha_unit(hass),
     )
     if payload is None:
         # No setpoint payload — the unit should be OFF (a scheduled OFF
@@ -1419,10 +1434,16 @@ async def _apply_hvac(
         hass,
         entity_id=entity_id,
         expected_mode=mode_canonical,
-        expected_setpoint=payload.get("temperature") or payload.get("target_temp_high"),
+        expected_setpoint=_payload_setpoint_f(payload, units.ha_unit(hass)),
         expected_fan=fan_label,
         slot=slot,
     )
+
+
+def _payload_setpoint_f(payload: dict, ha_unit: str) -> float | None:
+    """The payload's setpoint back in °F, so verification compares in °F."""
+    value = payload.get("temperature") or payload.get("target_temp_high")
+    return units.to_f(value, ha_unit) if value is not None else None
 
 
 _VERIFY_DELAY_SECONDS = 60  # 1 min — Tuya cloud roundtrips settle within this
@@ -1501,17 +1522,18 @@ async def _verify_hvac_apply(
     # heating or cooling — skip both when we commanded OFF.
     actively_on = expected_mode is None or expected_mode.strip().lower() not in ("off",)
     if actively_on and expected_setpoint is not None:
-        reported_setpoint = attrs.get("temperature")
-        try:
-            reported_f = float(reported_setpoint) if reported_setpoint is not None else None
-        except (TypeError, ValueError):
-            reported_f = None
+        reported_f = units.climate_attr_f(hass, attrs.get("temperature"))
         if reported_f is None or abs(reported_f - float(expected_setpoint)) > _SETPOINT_TOLERANCE_F:
             fixes.append(f"setpoint {reported_f!r}→{expected_setpoint}")
             try:
                 await hass.services.async_call(
                     "climate", "set_temperature",
-                    {"entity_id": entity_id, "temperature": float(expected_setpoint)},
+                    {
+                        "entity_id": entity_id,
+                        "temperature": units.from_f(
+                            float(expected_setpoint), units.ha_unit(hass)
+                        ),
+                    },
                     blocking=False,
                 )
             except Exception as err:  # noqa: BLE001
