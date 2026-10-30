@@ -2646,6 +2646,7 @@ export class HungryMachinesPanel extends LitElement {
         .applianceId=${this._editorApplianceId}
         .applianceType=${this._editorApplianceType}
         .currentConstraints=${this._editorConstraints}
+        .temperatureUnit=${temperatureUnitStore.state.unit}
         .open=${this._editorOpen}
         @constraints-saved=${(e: CustomEvent) => this._onConstraintsSaved(e)}
         @constraints-cancelled=${() => this._onEditorClosed()}

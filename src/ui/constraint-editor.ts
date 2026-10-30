@@ -10,6 +10,13 @@ import {
   hasHourlyComfortBands,
   type ComfortMode,
 } from '../utils/hourly.js';
+import {
+  displayTemp,
+  limitsFor,
+  parseTempInput,
+  unitLabel,
+  type TempUnit,
+} from '../utils/temperature.js';
 
 type OptimizationMode = 'cool' | 'heat' | 'auto' | 'off';
 
@@ -238,6 +245,7 @@ export class HmConstraintEditor extends LitElement {
     applianceId: { attribute: false },
     applianceType: { attribute: false },
     currentConstraints: { attribute: false },
+    temperatureUnit: { attribute: false },
     open: { type: Boolean, reflect: true },
     _values: { state: true },
     _errors: { state: true },
@@ -253,6 +261,7 @@ export class HmConstraintEditor extends LitElement {
   applianceId = '';
   applianceType: ApplianceType = 'hvac';
   currentConstraints: Record<string, unknown> | undefined = undefined;
+  temperatureUnit: TempUnit = 'F';
   open = false;
   _values: Record<string, string> = {};
   _errors: ErrorMap = {};
@@ -264,6 +273,14 @@ export class HmConstraintEditor extends LitElement {
   _hourlyEnabled = false;
   _hourlyLow: string[] = [];
   _hourlyHigh: string[] = [];
+  // Stored °F, and the display strings they rendered as. A cell whose string
+  // still equals its seed is untouched and saves the stored °F exactly, so
+  // opening in °C never rewrites a value the user did not edit.
+  private _hourlyHighF: number[] = [];
+  private _hourlyLowF: number[] = [];
+  private _seedHigh: string[] = [];
+  private _seedLow: string[] = [];
+  private _shownUnit: TempUnit = 'F';
   _resetting = false;
   _resetError: string | null = null;
 
@@ -281,6 +298,9 @@ export class HmConstraintEditor extends LitElement {
   private _dirty = false;
 
   override willUpdate(changed: Map<string, unknown>): void {
+    if (changed.has('temperatureUnit') && this.temperatureUnit !== this._shownUnit) {
+      this._onUnitChanged();
+    }
     const key = `${this.applianceType}|${this.applianceId}|${this.open ? '1' : '0'}`;
     // The panel opens the editor seeded with a synchronous fallback
     // (the user-level preferences row) and THEN reassigns
@@ -328,8 +348,10 @@ export class HmConstraintEditor extends LitElement {
       hourly_low_temps_f: isFiniteNumberArray(low) ? low : undefined,
     };
     if (hasHourlyComfortBands(prefsLike)) {
-      this._hourlyHigh = (prefsLike.hourly_high_temps_f as number[]).map((n) => String(n));
-      this._hourlyLow = (prefsLike.hourly_low_temps_f as number[]).map((n) => String(n));
+      this._setHourlyFromF(
+        prefsLike.hourly_high_temps_f as number[],
+        prefsLike.hourly_low_temps_f as number[],
+      );
     } else {
       // No stored hourly override: seed from the local mirror of the
       // shaped default (`deriveHourlyComfortBand`) so a first-time
@@ -355,8 +377,10 @@ export class HmConstraintEditor extends LitElement {
    */
   private _loadDerivedHourlyBands(): void {
     if (this.applianceType !== 'hvac') {
-      this._hourlyHigh = Array.from({ length: 24 }, () => '76');
-      this._hourlyLow = Array.from({ length: 24 }, () => '68');
+      this._setHourlyFromF(
+        Array.from({ length: 24 }, () => 76),
+        Array.from({ length: 24 }, () => 68),
+      );
       return;
     }
     const v = this._values;
@@ -383,8 +407,60 @@ export class HmConstraintEditor extends LitElement {
       time_home: timeHome,
       mode,
     });
-    this._hourlyHigh = high.map((n) => String(n));
-    this._hourlyLow = low.map((n) => String(n));
+    this._setHourlyFromF(high, low);
+  }
+
+  /** Load a °F band: keep the stored values and render the display strings. */
+  private _setHourlyFromF(high: number[], low: number[]): void {
+    const unit = this.temperatureUnit;
+    this._shownUnit = unit;
+    this._hourlyHighF = [...high];
+    this._hourlyLowF = [...low];
+    this._seedHigh = high.map((n) => displayTemp(n, unit));
+    this._seedLow = low.map((n) => displayTemp(n, unit));
+    this._hourlyHigh = [...this._seedHigh];
+    this._hourlyLow = [...this._seedLow];
+  }
+
+  /**
+   * The unit changed while the editor is open. Untouched cells reseed from
+   * the stored °F; edited cells convert to the new unit and stay edited.
+   */
+  private _onUnitChanged(): void {
+    const from = this._shownUnit;
+    const to = this.temperatureUnit;
+    const oldHigh = this._hourlyHigh;
+    const oldLow = this._hourlyLow;
+    const oldSeedHigh = this._seedHigh;
+    const oldSeedLow = this._seedLow;
+    const highF = this._hourlyHighF;
+    const lowF = this._hourlyLowF;
+    this._shownUnit = to;
+    this._seedHigh = highF.map((n) => displayTemp(n, to));
+    this._seedLow = lowF.map((n) => displayTemp(n, to));
+    const convert = (cur: string, seed: string, seedNew: string): string => {
+      if (cur === seed) return seedNew;
+      const f = parseTempInput(cur, from);
+      return f === null ? cur : displayTemp(f, to);
+    };
+    this._hourlyHigh = oldHigh.map((c, i) => convert(c, oldSeedHigh[i] ?? '', this._seedHigh[i] ?? ''));
+    this._hourlyLow = oldLow.map((c, i) => convert(c, oldSeedLow[i] ?? '', this._seedLow[i] ?? ''));
+    // An edited cell that converted may now equal the new seed; it is then
+    // untouched, and saves the stored value. A real edit keeps its text.
+    if (Object.keys(this._errors).length > 0) this._errors = this._validate(this._values);
+  }
+
+  private _hourlyCellF(
+    display: string[],
+    seed: string[],
+    storedF: number[],
+    i: number,
+  ): { f: number | null; edited: boolean } {
+    const cur = display[i] ?? '';
+    if (cur === (seed[i] ?? '') && storedF[i] !== undefined) {
+      return { f: storedF[i] as number, edited: false };
+    }
+    return { f: parseTempInput(cur, this.temperatureUnit), edited: true };
   }
 
   private _seedValues(): Record<string, string> {
@@ -574,16 +650,27 @@ export class HmConstraintEditor extends LitElement {
         }
         if (this._hourlyEnabled) {
           for (let i = 0; i < 24; i++) {
-            const lowRaw = this._hourlyLow[i] ?? '';
-            const highRaw = this._hourlyHigh[i] ?? '';
-            const low = Number(lowRaw);
-            const high = Number(highRaw);
-            const lowOk = lowRaw !== '' && Number.isFinite(low) && low >= 50 && low <= 90;
-            const highOk = highRaw !== '' && Number.isFinite(high) && high >= 50 && high <= 90;
-            if (!lowOk) errors[`hourly_low_${i}`] = 'Must be 50–90';
-            if (!highOk) errors[`hourly_high_${i}`] = 'Must be 50–90';
-            if (lowOk && highOk && low >= high) {
-              errors[`hourly_row_${i}`] = 'High must be greater than low';
+            const lim = limitsFor('hourly', this.temperatureUnit);
+            const rangeMsg = `Must be ${lim.min}–${lim.max} ${unitLabel(this.temperatureUnit)}`;
+            const lowCell = this._hourlyCellF(this._hourlyLow, this._seedLow, this._hourlyLowF, i);
+            const highCell = this._hourlyCellF(this._hourlyHigh, this._seedHigh, this._hourlyHighF, i);
+            const inRange = (raw: string) => {
+              const n = Number(raw);
+              return raw.trim() !== '' && Number.isFinite(n) && n >= lim.min && n <= lim.max;
+            };
+            // Range applies to edited cells only; a stored 50 or 90 °F that
+            // rounds just outside the display range must not block save.
+            const lowOk = lowCell.edited ? inRange(this._hourlyLow[i] ?? '') : lowCell.f !== null;
+            const highOk = highCell.edited ? inRange(this._hourlyHigh[i] ?? '') : highCell.f !== null;
+            if (!lowOk) errors[`hourly_low_${i}`] = rangeMsg;
+            if (!highOk) errors[`hourly_high_${i}`] = rangeMsg;
+            if (lowOk && highOk) {
+              // Edited rows compare what the user sees; untouched rows compare
+              // the stored °F, where display rounding could tie two values.
+              const rowEdited = lowCell.edited || highCell.edited;
+              const low = rowEdited ? Number(this._hourlyLow[i]) : (lowCell.f as number);
+              const high = rowEdited ? Number(this._hourlyHigh[i]) : (highCell.f as number);
+              if (low >= high) errors[`hourly_row_${i}`] = 'High must be greater than low';
             }
           }
         }
@@ -642,8 +729,12 @@ export class HmConstraintEditor extends LitElement {
         if (timeHome !== '') payload['time_home'] = timeHome;
         // Hourly limits are always the saved comfort band (US-SDC-032) —
         // the table is the primary control, not an opt-in override.
-        payload['hourly_low_temps_f'] = this._hourlyLow.map((s) => Number(s));
-        payload['hourly_high_temps_f'] = this._hourlyHigh.map((s) => Number(s));
+        payload['hourly_low_temps_f'] = this._hourlyLow.map(
+          (_, i) => this._hourlyCellF(this._hourlyLow, this._seedLow, this._hourlyLowF, i).f,
+        );
+        payload['hourly_high_temps_f'] = this._hourlyHigh.map(
+          (_, i) => this._hourlyCellF(this._hourlyHigh, this._seedHigh, this._hourlyHighF, i).f,
+        );
         return payload;
       }
     }
@@ -713,8 +804,7 @@ export class HmConstraintEditor extends LitElement {
         time_home: timeHome,
         optimization_mode: mode,
       });
-      this._hourlyHigh = result.hourly_high_temps_f.map((n) => String(n));
-      this._hourlyLow = result.hourly_low_temps_f.map((n) => String(n));
+      this._setHourlyFromF(result.hourly_high_temps_f, result.hourly_low_temps_f);
     } catch {
       this._loadDerivedHourlyBands();
       this._resetError = 'Could not reach the server — showing the built-in defaults.';
@@ -758,6 +848,8 @@ export class HmConstraintEditor extends LitElement {
     const onResetDefaults = () => {
       void this._onResetDefaults();
     };
+    const unit = this.temperatureUnit;
+    const hLim = limitsFor('hourly', unit);
     const fmtHour = (i: number) =>
       `${String(i).padStart(2, '0')}:00`;
     const hasHourlyErrors =
@@ -1186,14 +1278,14 @@ export class HmConstraintEditor extends LitElement {
                   </label>
                 </fieldset>
                 <div class="hourly-bands">
-                  <span class="label-text">Hourly comfort limits (°F)</span>
+                  <span class="label-text">Hourly comfort limits (${unitLabel(unit)})</span>
                   <div class="hourly-content">
                     <table class="hourly-table">
                       <thead>
                         <tr>
                           <th>Hour</th>
-                          <th>Low °F</th>
-                          <th>High °F</th>
+                          <th>Low ${unitLabel(unit)}</th>
+                          <th>High ${unitLabel(unit)}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1210,9 +1302,9 @@ export class HmConstraintEditor extends LitElement {
                                 <input
                                   name="hourly_low_${i}"
                                   type="number"
-                                  step="0.5"
-                                  min="50"
-                                  max="90"
+                                  step=${String(hLim.step)}
+                                  min=${String(hLim.min)}
+                                  max=${String(hLim.max)}
                                   class=${lowErr || rowErr ? 'invalid' : ''}
                                   .value=${this._hourlyLow[i] ?? ''}
                                   @input=${onHourlyLow(i)}
@@ -1222,9 +1314,9 @@ export class HmConstraintEditor extends LitElement {
                                 <input
                                   name="hourly_high_${i}"
                                   type="number"
-                                  step="0.5"
-                                  min="50"
-                                  max="90"
+                                  step=${String(hLim.step)}
+                                  min=${String(hLim.min)}
+                                  max=${String(hLim.max)}
                                   class=${highErr || rowErr ? 'invalid' : ''}
                                   .value=${this._hourlyHigh[i] ?? ''}
                                   @input=${onHourlyHigh(i)}
