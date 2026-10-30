@@ -1,4 +1,5 @@
 import { LitElement, html, css, type PropertyValues } from 'lit';
+import { fToC, type TempUnit } from '../utils/temperature.js';
 
 /**
  * `<hm-optimization-chart>`
@@ -21,6 +22,11 @@ import { LitElement, html, css, type PropertyValues } from 'lit';
  *   • `'percent'`    — 0-100 % axis, "Optimized Charge" wording
  *   • `'kw'`         — kW axis, "Solar Generation" wording (caller supplies
  *                      `yMin`/`yMax`; there's no derived-range fallback)
+ *
+ * `displayUnit` is the unit the person reads. Data, `yMin` and `yMax` stay in
+ * the data's kind (°F for `'fahrenheit'`); with `displayUnit = 'C'` the chart
+ * converts lines, range, ticks, axis title and marker label. Percent and kW
+ * charts ignore it.
  *
  * Inputs are 48-element half-hourly arrays (matching the API schedule shape).
  * The rate bars are decimated to 24 hourly bars for visual clarity. Built
@@ -226,6 +232,7 @@ export class HmOptimizationChart extends LitElement {
     targetValues: { attribute: false },
     targetMarker: { attribute: false },
     unit: { attribute: false },
+    displayUnit: { attribute: false },
     yMin: { attribute: false },
     yMax: { attribute: false },
     // `size` reflects to the host attribute so CSS attribute-selectors
@@ -239,6 +246,7 @@ export class HmOptimizationChart extends LitElement {
   targetValues: number[] | undefined = undefined;
   targetMarker: OptimizationChartMarker | undefined = undefined;
   unit: OptimizationChartUnit = 'fahrenheit';
+  displayUnit: TempUnit = 'F';
   // Caller-supplied fixed Y-axis range. When both are set, the chart
   // uses them verbatim and skips the auto-derive logic. Useful for
   // pinning per-appliance scales (HVAC 40–100 °F, water heater 50–150
@@ -362,6 +370,11 @@ export class HmOptimizationChart extends LitElement {
     const plotWidth = width - padLeft - padRight;
     const plotHeight = height - padTop - padBottom;
 
+    // °F data shown in °C: convert at the edge, the inputs are never touched.
+    const toC = this.unit === 'fahrenheit' && this.displayUnit === 'C';
+    const conv = (v: number): number => (toC ? fToC(v) : v);
+    const degScale = toC ? 5 / 9 : 1;
+
     const svg = document.createElementNS(SVG_NS, 'svg');
     svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
     svg.setAttribute('role', 'img');
@@ -394,25 +407,25 @@ export class HmOptimizationChart extends LitElement {
       Number.isFinite(this.yMax) &&
       this.yMax > this.yMin
     ) {
-      yMin = this.yMin;
-      yMax = this.yMax;
+      yMin = toC ? Math.floor(fToC(this.yMin)) : this.yMin;
+      yMax = toC ? Math.ceil(fToC(this.yMax)) : this.yMax;
     } else if (this.unit === 'percent') {
       yMin = 0;
       yMax = 100;
     } else {
       const tempValues: number[] = [];
       for (const arr of [this.highLimits, this.lowLimits, this.targetValues]) {
-        if (this._isFiniteArray(arr)) tempValues.push(...arr);
+        if (this._isFiniteArray(arr)) tempValues.push(...arr.map(conv));
       }
       yMin = Math.min(...tempValues);
       yMax = Math.max(...tempValues);
-      if (yMax - yMin < 4) {
+      if (yMax - yMin < 4 * degScale) {
         const center = (yMax + yMin) / 2;
-        yMin = center - 4;
-        yMax = center + 4;
+        yMin = center - 4 * degScale;
+        yMax = center + 4 * degScale;
       } else {
-        yMin -= 2;
-        yMax += 2;
+        yMin -= 2 * degScale;
+        yMax += 2 * degScale;
       }
     }
 
@@ -473,7 +486,7 @@ export class HmOptimizationChart extends LitElement {
       const expanded = values.length === HALF_HOUR_SLOTS ? values : this._expand24To48(values);
       if (expanded.length !== HALF_HOUR_SLOTS) return;
       for (let i = 0; i < HALF_HOUR_SLOTS; i++) {
-        points.push(`${slotX(i)},${valueY(expanded[i])}`);
+        points.push(`${slotX(i)},${valueY(conv(expanded[i]))}`);
       }
       const polyline = document.createElementNS(SVG_NS, 'polyline');
       polyline.setAttribute('class', cls);
@@ -490,7 +503,7 @@ export class HmOptimizationChart extends LitElement {
     if (this._isMarkerValid(this.targetMarker)) {
       const m = this.targetMarker as OptimizationChartMarker;
       const cx = slotX(m.interval);
-      const cy = valueY(m.value);
+      const cy = valueY(conv(m.value));
 
       const drop = document.createElementNS(SVG_NS, 'line');
       drop.setAttribute('class', 'marker-line');
@@ -508,7 +521,7 @@ export class HmOptimizationChart extends LitElement {
       dot.setAttribute('r', '3.5');
       svg.appendChild(dot);
 
-      const labelText = m.label ?? this._defaultMarkerLabel(m);
+      const labelText = m.label ?? this._defaultMarkerLabel(m, toC);
       const label = document.createElementNS(SVG_NS, 'text');
       label.setAttribute('class', 'marker-label');
       // Anchor right of midline, left of right edge. Flip if too close.
@@ -575,7 +588,7 @@ export class HmOptimizationChart extends LitElement {
     yTitle.setAttribute('y', String(titleY));
     yTitle.setAttribute('text-anchor', 'start');
     yTitle.textContent =
-      this.unit === 'percent' ? '%' : this.unit === 'kw' ? 'kW' : '°F';
+      this.unit === 'percent' ? '%' : this.unit === 'kw' ? 'kW' : toC ? '°C' : '°F';
     svg.appendChild(yTitle);
 
     const priceTitle = document.createElementNS(SVG_NS, 'text');
@@ -618,13 +631,13 @@ export class HmOptimizationChart extends LitElement {
     );
   }
 
-  private _defaultMarkerLabel(m: OptimizationChartMarker): string {
+  private _defaultMarkerLabel(m: OptimizationChartMarker, toC = false): string {
     const hour = Math.floor(m.interval / 2);
     const minute = m.interval % 2 === 0 ? '00' : '30';
     const time = `${String(hour).padStart(2, '0')}:${minute}`;
     if (this.unit === 'percent') {
       return `${Math.round(m.value)}% by ${time}`;
     }
-    return `${Math.round(m.value)}° by ${time}`;
+    return `${Math.round(toC ? fToC(m.value) : m.value)}° by ${time}`;
   }
 }

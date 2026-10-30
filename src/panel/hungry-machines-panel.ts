@@ -3349,6 +3349,7 @@ export class HungryMachinesPanel extends LitElement {
           .targetValues=${targetValues}
           .targetMarker=${marker}
           .unit=${chartUnit}
+          .displayUnit=${temperatureUnitStore.state.unit}
           .yMin=${yMin}
           .yMax=${yMax}
           .size=${this._chartSize}

@@ -568,6 +568,7 @@ export class HmThermostatCard extends LitElement {
               .lowLimits=${lowLimits}
               .targetValues=${targetValues}
               .unit=${'fahrenheit'}
+              .displayUnit=${temperatureUnitStore.state.unit}
               .yMin=${40}
               .yMax=${100}
               .size=${'medium'}
