@@ -12,6 +12,7 @@ import {
 } from '../utils/hourly.js';
 import {
   displayTemp,
+  fToC,
   limitsFor,
   parseTempInput,
   unitLabel,
@@ -25,6 +26,7 @@ const OPTIMIZATION_MODES: ReadonlyArray<OptimizationMode> = ['cool', 'heat', 'au
 type ErrorMap = Record<string, string>;
 
 const TIME_PATTERN = /^\d{2}:\d{2}$/;
+const SCALAR_TEMP_FIELDS = ['base_temperature', 'max_temp_f', 'min_temp_f'] as const;
 
 function toNumber(v: unknown): number | null {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
@@ -281,6 +283,10 @@ export class HmConstraintEditor extends LitElement {
   private _seedHigh: string[] = [];
   private _seedLow: string[] = [];
   private _shownUnit: TempUnit = 'F';
+  // Same rule for the scalar comfort fields: stored °F and the display string
+  // it rendered as, keyed by field name.
+  private _scalarF: Record<string, number> = {};
+  private _scalarSeed: Record<string, string> = {};
   _resetting = false;
   _resetError: string | null = null;
 
@@ -445,9 +451,56 @@ export class HmConstraintEditor extends LitElement {
     };
     this._hourlyHigh = oldHigh.map((c, i) => convert(c, oldSeedHigh[i] ?? '', this._seedHigh[i] ?? ''));
     this._hourlyLow = oldLow.map((c, i) => convert(c, oldSeedLow[i] ?? '', this._seedLow[i] ?? ''));
+    const values = { ...this._values };
+    for (const name of SCALAR_TEMP_FIELDS) {
+      const stored = this._scalarF[name];
+      if (stored === undefined || values[name] === undefined) continue;
+      const oldSeed = this._scalarSeed[name] ?? '';
+      const newSeed = this._scalarDisplay(name, stored, to);
+      this._scalarSeed[name] = newSeed;
+      const cur = values[name] ?? '';
+      if (cur === oldSeed) {
+        values[name] = newSeed;
+      } else {
+        const f = parseTempInput(cur, from);
+        if (f !== null) values[name] = this._scalarDisplay(name, f, to);
+      }
+    }
+    this._values = values;
     // An edited cell that converted may now equal the new seed; it is then
     // untouched, and saves the stored value. A real edit keeps its text.
     if (Object.keys(this._errors).length > 0) this._errors = this._validate(this._values);
+  }
+
+  /** Water heater values show as whole degrees; the rest to the nearest 0.5. */
+  private _scalarDisplay(name: string, f: number, unit: TempUnit): string {
+    if (unit === 'C' && name !== 'base_temperature') return String(Math.round(fToC(f)));
+    return displayTemp(f, unit);
+  }
+
+  /** The °F a scalar field saves: the stored value while untouched, else the parsed text. */
+  private _scalarCellF(name: string): { f: number | null; edited: boolean } {
+    const cur = this._values[name] ?? '';
+    const stored = this._scalarF[name];
+    if (stored !== undefined && cur === (this._scalarSeed[name] ?? '')) {
+      return { f: stored, edited: false };
+    }
+    return { f: parseTempInput(cur, this.temperatureUnit), edited: true };
+  }
+
+  private _seedScalars(values: Record<string, string>, raw: Record<string, number | null>): Record<string, string> {
+    const unit = this.temperatureUnit;
+    this._scalarF = {};
+    this._scalarSeed = {};
+    const out = { ...values };
+    for (const name of SCALAR_TEMP_FIELDS) {
+      const f = raw[name];
+      if (f === null || f === undefined) continue;
+      this._scalarF[name] = f;
+      this._scalarSeed[name] = this._scalarDisplay(name, f, unit);
+      out[name] = this._scalarSeed[name] as string;
+    }
+    return out;
   }
 
   private _hourlyCellF(
@@ -485,10 +538,13 @@ export class HmConstraintEditor extends LitElement {
           deadline_time: s('deadline_time'),
         };
       case 'water_heater':
-        return {
-          max_temp_f: s('max_temp_f'),
-          min_temp_f: s('min_temp_f'),
-        };
+        return this._seedScalars(
+          { max_temp_f: s('max_temp_f'), min_temp_f: s('min_temp_f') },
+          {
+            max_temp_f: toNumber((c as Record<string, unknown>)['max_temp_f']),
+            min_temp_f: toNumber((c as Record<string, unknown>)['min_temp_f']),
+          },
+        );
       case 'robot':
         // Defaults mirror the backend's own fallbacks (_optimize_robot in
         // nightly.py) so a first-time editor shows the same plan the
@@ -517,7 +573,7 @@ export class HmConstraintEditor extends LitElement {
         // explicitly unchecks the box.
         const optEnabledRaw = (c as Record<string, unknown>)['optimization_enabled'];
         const optEnabled = optEnabledRaw === false ? '' : '1';
-        return {
+        return this._seedScalars({
           base_temperature: base === null ? '72' : String(base),
           savings_level: savings === null ? '1' : String(savings),
           optimization_mode: (OPTIMIZATION_MODES as ReadonlyArray<string>).includes(mode)
@@ -528,7 +584,7 @@ export class HmConstraintEditor extends LitElement {
           optimize_hvac_fan: optFan === true ? '1' : '',
           optimize_hvac_mode: optMode === true ? '1' : '',
           optimization_enabled: optEnabled,
-        };
+        }, { base_temperature: base === null ? 72 : base });
       }
     }
   }
@@ -561,9 +617,11 @@ export class HmConstraintEditor extends LitElement {
         errors[name] = 'Required';
         return null;
       }
+      if (!this._scalarCellF(name).edited) return this._scalarCellF(name).f;
+      const lim = limitsFor('water_heater', this.temperatureUnit);
       const n = Number(raw);
-      if (!Number.isFinite(n) || n < 60 || n > 180) {
-        errors[name] = 'Must be 60–180';
+      if (!Number.isFinite(n) || n < lim.min || n > lim.max) {
+        errors[name] = `Must be ${lim.min}–${lim.max}`;
         return null;
       }
       return n;
@@ -600,8 +658,17 @@ export class HmConstraintEditor extends LitElement {
         break;
       }
       case 'water_heater': {
-        const maxT = reqTemp('max_temp_f');
-        const minT = reqTemp('min_temp_f');
+        let maxT = reqTemp('max_temp_f');
+        let minT = reqTemp('min_temp_f');
+        if (
+          maxT !== null &&
+          minT !== null &&
+          (this._scalarCellF('max_temp_f').edited || this._scalarCellF('min_temp_f').edited)
+        ) {
+          // Compare what the user sees, not the converted °F.
+          maxT = Number(values['max_temp_f']);
+          minT = Number(values['min_temp_f']);
+        }
         if (maxT !== null && minT !== null && minT >= maxT) {
           errors['min_temp_f'] = 'Must be less than max';
         }
@@ -630,8 +697,17 @@ export class HmConstraintEditor extends LitElement {
         break;
       }
       case 'hvac': {
-        const base = Number(values['base_temperature'] ?? '');
-        if (!Number.isFinite(base)) errors['base_temperature'] = 'Required';
+        const baseRaw = values['base_temperature'] ?? '';
+        const baseCell = this._scalarCellF('base_temperature');
+        if (baseRaw.trim() === '' || !Number.isFinite(Number(baseRaw))) {
+          errors['base_temperature'] = 'Required';
+        } else if (baseCell.edited) {
+          const bl = limitsFor('base', this.temperatureUnit);
+          const bn = Number(baseRaw);
+          if (bn < bl.min || bn > bl.max) {
+            errors['base_temperature'] = `Must be ${bl.min}–${bl.max} ${unitLabel(this.temperatureUnit)}`;
+          }
+        }
         const sv = Number(values['savings_level'] ?? '');
         if (!Number.isFinite(sv) || sv < 1 || sv > 3) {
           errors['savings_level'] = 'Must be 1–3';
@@ -698,8 +774,8 @@ export class HmConstraintEditor extends LitElement {
         };
       case 'water_heater':
         return {
-          max_temp_f: Number(v['max_temp_f']),
-          min_temp_f: Number(v['min_temp_f']),
+          max_temp_f: this._scalarCellF('max_temp_f').f,
+          min_temp_f: this._scalarCellF('min_temp_f').f,
         };
       case 'robot':
         return {
@@ -712,7 +788,7 @@ export class HmConstraintEditor extends LitElement {
       case 'hvac':
       default: {
         const payload: Record<string, unknown> = {
-          base_temperature: Number(v['base_temperature']),
+          base_temperature: this._scalarCellF('base_temperature').f,
           savings_level: Number(v['savings_level']),
           optimization_mode: (v['optimization_mode'] ?? 'auto') as OptimizationMode,
           optimize_hvac_fan: v['optimize_hvac_fan'] === '1',
@@ -789,7 +865,7 @@ export class HmConstraintEditor extends LitElement {
     this._resetting = true;
     this._resetError = null;
     const v = this._values;
-    const baseNum = toNumber(v['base_temperature']);
+    const baseNum = this._scalarCellF('base_temperature').f;
     const savingsNum = toNumber(v['savings_level']);
     const modeStr = v['optimization_mode'] ?? 'auto';
     const mode =
@@ -850,6 +926,7 @@ export class HmConstraintEditor extends LitElement {
     };
     const unit = this.temperatureUnit;
     const hLim = limitsFor('hourly', unit);
+    const wLim = limitsFor('water_heater', unit);
     const fmtHour = (i: number) =>
       `${String(i).padStart(2, '0')}:00`;
     const hasHourlyErrors =
@@ -995,13 +1072,13 @@ export class HmConstraintEditor extends LitElement {
           ${type === 'water_heater'
             ? html`
                 <label>
-                  <span class="label-text">Max temperature (°F)</span>
+                  <span class="label-text">Max temperature (${unitLabel(unit)})</span>
                   <input
                     name="max_temp_f"
                     type="number"
-                    min="60"
-                    max="180"
-                    step="1"
+                    min=${wLim.min}
+                    max=${wLim.max}
+                    step=${wLim.step}
                     .value=${v['max_temp_f'] ?? ''}
                     @input=${onNum('max_temp_f')}
                   />
@@ -1010,13 +1087,13 @@ export class HmConstraintEditor extends LitElement {
                     : null}
                 </label>
                 <label>
-                  <span class="label-text">Min temperature (°F)</span>
+                  <span class="label-text">Min temperature (${unitLabel(unit)})</span>
                   <input
                     name="min_temp_f"
                     type="number"
-                    min="60"
-                    max="180"
-                    step="1"
+                    min=${wLim.min}
+                    max=${wLim.max}
+                    step=${wLim.step}
                     .value=${v['min_temp_f'] ?? ''}
                     @input=${onNum('min_temp_f')}
                   />
@@ -1119,11 +1196,11 @@ export class HmConstraintEditor extends LitElement {
                     table directly.
                   </p>
                   <label>
-                    <span class="label-text">Base temperature (°F)</span>
+                    <span class="label-text">Base temperature (${unitLabel(unit)})</span>
                     <input
                       name="base_temperature"
                       type="number"
-                      step="0.5"
+                      step=${limitsFor('base', unit).step}
                       .value=${v['base_temperature'] ?? ''}
                       @input=${onNum('base_temperature')}
                     />
