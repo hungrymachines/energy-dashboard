@@ -17,6 +17,8 @@ FAHRENHEIT = "°F"
 # Plausible indoor range in °F; readings outside it are sensor garbage.
 READING_MIN_F = 30.0
 READING_MAX_F = 120.0
+# The API rejects a whole batch over one setpoint_step_f outside (0, 5].
+SETPOINT_STEP_MAX_F = 5.0
 
 _CELSIUS_UNITS = {"°c", "c"}
 _FAHRENHEIT_UNITS = {"°f", "f"}

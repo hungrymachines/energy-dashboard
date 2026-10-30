@@ -575,7 +575,8 @@ def _build_hvac_home_reading(
     if room_target is not None:
         reading["room_target"] = room_target
     # The device's setpoint resolution in °F, so the backend can grade a
-    # 1 °C thermostat against its own step (US-TMP-010). °F installs omit it.
+    # 1 °C thermostat against its own step (US-TMP-010). °F installs omit it,
+    # and so does a step the API would refuse: a rejected batch retries forever.
     if units.ha_unit(hass) == units.CELSIUS:
         step = state.attributes.get("target_temp_step")
         if (
@@ -583,7 +584,9 @@ def _build_hvac_home_reading(
             and not isinstance(step, bool)
             and step > 0
         ):
-            reading["setpoint_step_f"] = round(step * 1.8, 2)
+            step_f = round(step * 1.8, 2)
+            if 0 < step_f <= units.SETPOINT_STEP_MAX_F:
+                reading["setpoint_step_f"] = step_f
     indoor_humidity = _read_indoor_humidity(
         hass, state, indoor_humidity_entity_id,
     )

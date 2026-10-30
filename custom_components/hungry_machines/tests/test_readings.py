@@ -1652,6 +1652,17 @@ def test_setpoint_step_f_on_celsius(step, expected) -> None:
     assert _step_reading(True, {"target_temp_step": step})["setpoint_step_f"] == expected
 
 
+def test_setpoint_step_f_sends_the_largest_step_the_api_accepts() -> None:
+    assert _step_reading(True, {"target_temp_step": 2.5})["setpoint_step_f"] == 4.5
+
+
+@pytest.mark.parametrize("step", [3, 5, 0.001, float("inf")])
+def test_setpoint_step_f_omitted_when_the_api_would_reject_it(step) -> None:
+    # hungry-machines-api validates 0 < step <= 5 and rejects the whole batch,
+    # and flush_readings retries a rejected bucket forever (US-TMP-018).
+    assert "setpoint_step_f" not in _step_reading(True, {"target_temp_step": step})
+
+
 def test_setpoint_step_f_omitted_without_step() -> None:
     assert "setpoint_step_f" not in _step_reading(True, {})
 

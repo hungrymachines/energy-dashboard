@@ -252,6 +252,16 @@ Reproduced a second time in US-SOL-023 (`_renderSolarCard`), in a different file
 
 **Panel copy can only cite what `/api/v1/schedules` actually returns.** `_format_appliance_schedule` (backend `app/routes/schedules.py`) emits `appliance_id`, `appliance_type`, `name`, `schedule`, `savings_pct`, `source`, `entities`, `optimization_enabled`, and optionally `stale` / `integration_health` — and nothing else. In particular there is **no `constraints_used`**: that block is written to the `appliance_schedules` row and read back only by `/api/v1/schedules/history`. A spec asking the panel to show something out of `constraints_used` (US-SOL-023 wanted a fitted-day count from `model_fit.n_days`) is describing data this endpoint does not carry. Write against `schedule.*` and `source`, or bring the field into `_format_appliance_schedule` in the backend repo first.
 
+### Temperature display units
+
+Every API value stays °F and no `_f` field is renamed. `src/utils/temperature.ts` holds the conversions and `temperatureUnitStore`, which resolves the unit as preference, then Home Assistant's `unit_system.temperature`, then °F. It is a module singleton, so the panel and every card on the page change together with no reload, and listeners fire only when the resolved unit changes. The HA-boundary conversion in Python is separate: see `units.py` in section 13.
+
+The Settings selector saves `temperature_unit` through `PUT /api/v1/preferences`, and null means follow Home Assistant. `<hm-optimization-chart>` takes °F data plus `displayUnit` and converts at the edge, so an explicit 40-100 °F axis reads 4-38 °C. Percent and kW charts ignore `displayUnit`.
+
+`<hm-constraint-editor>` keeps the stored °F beside each display string and sends a converted number only for a field whose string changed. A round trip through the display would move a band: 70 °F shows as 21 °C, which is 69.8 °F. Range checks apply only to edited fields, so a stored value that rounds just outside the °C form range cannot block a save. A value typed back to its seed counts as untouched.
+
+The US-TMP-018 milestone drove the built bundle in headless Chrome over CDP with the panel and a card on one page. An untouched save in °C sent the fixture's °F arrays exactly, one edit changed exactly one value (25.5 °C to 77.9 °F), and with a °F Home Assistant and a null preference the serialized dashboard, card, editors, Settings and write bodies matched a v3.9.2 build, apart from the new selector section.
+
 ### `<hm-thermostat-card>` — Lovelace card
 
 ```yaml
@@ -560,6 +570,8 @@ What HA does (read from the 2026.6.4 source): `climate.set_temperature` converts
 Outbound, `_build_hvac_payload` works in °F and converts last. On a Celsius HA it first snaps the setpoint to the device step in `_snap_to_device_step`, stepping back toward the band if rounding pushed it past an edge. A guard override passes no band, so its command is snapped but not pulled back. `last_commanded` and the `commanded_setpoint` reading stay in unsnapped °F, because they record the plan's intent. `expected_setpoint` is the snapped value read back from the payload, so the verify pass compares against what the unit was actually sent. Otherwise a 1 °C unit holding 22 °C for a 72 °F plan could read as disobeying.
 
 Inbound, `readings.py` drops any indoor reading outside `READING_MIN_F`..`READING_MAX_F` (30-120 °F, the API's check) and warns once per entity. The API rejects a batch all-or-nothing and `flush_readings` retries a failed bucket hourly with no limit, so one bad reading would otherwise block its bucket forever.
+
+`setpoint_step_f` follows the same rule. The integration sends it only when it falls inside the API's `(0, 5]` °F, so a 3 °C device or a step that rounds to 0.00 omits the field. The grader then uses its default tolerance for that unit, and the rest of the reading still lands.
 
 `ha_unit()` returns °F for anything but the literal `°C`, so a `MagicMock` hass reads as °F and tests of °F behaviour need no setup. For a metric test, set `hass.config.units.temperature_unit = "°C"`. `units.py` imports neither `scheduler` nor `readings`, because `readings` imports `scheduler` at module load.
 
