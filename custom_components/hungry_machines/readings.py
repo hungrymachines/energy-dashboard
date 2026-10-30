@@ -574,6 +574,16 @@ def _build_hvac_home_reading(
     room_target = get_room_target(hass, state.entity_id)
     if room_target is not None:
         reading["room_target"] = room_target
+    # The device's setpoint resolution in °F, so the backend can grade a
+    # 1 °C thermostat against its own step (US-TMP-010). °F installs omit it.
+    if units.ha_unit(hass) == units.CELSIUS:
+        step = state.attributes.get("target_temp_step")
+        if (
+            isinstance(step, (int, float))
+            and not isinstance(step, bool)
+            and step > 0
+        ):
+            reading["setpoint_step_f"] = round(step * 1.8, 2)
     indoor_humidity = _read_indoor_humidity(
         hass, state, indoor_humidity_entity_id,
     )

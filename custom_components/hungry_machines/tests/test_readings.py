@@ -1634,3 +1634,27 @@ def test_dehumidifier_out_of_range_dropped() -> None:
     assert readings._build_dehumidifier_reading(
         hass, dh, indoor_temp_entity_id="sensor.t"
     )["indoor_temp"] == 30.0
+
+
+# --- setpoint_step_f (US-TMP-010) ---
+
+
+def _step_reading(celsius: bool, attrs_extra: dict) -> dict:
+    hass = _hass({})
+    if celsius:
+        _metric(hass)
+    state = _state("cool", {"current_temperature": 22.0 if celsius else 72.0, "temperature": 22.0 if celsius else 72.0, **attrs_extra})
+    return readings._build_hvac_home_reading(hass, state)
+
+
+@pytest.mark.parametrize("step,expected", [(1, 1.8), (0.5, 0.9)])
+def test_setpoint_step_f_on_celsius(step, expected) -> None:
+    assert _step_reading(True, {"target_temp_step": step})["setpoint_step_f"] == expected
+
+
+def test_setpoint_step_f_omitted_without_step() -> None:
+    assert "setpoint_step_f" not in _step_reading(True, {})
+
+
+def test_setpoint_step_f_omitted_on_fahrenheit() -> None:
+    assert "setpoint_step_f" not in _step_reading(False, {"target_temp_step": 1})
