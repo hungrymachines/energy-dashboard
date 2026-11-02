@@ -71,7 +71,7 @@ A **Hungry Machines** entry now appears in your sidebar, and the two Lovelace ca
 Click the **Hungry Machines** entry in the sidebar and enter the same hungrymachines.io email and password to load your dashboard. The first time in, the dashboard is empty — use **Add appliance** to register each device you want optimized:
 
 - Pick a type (HVAC, EV charger, home battery, water heater, or solar).
-- For HVAC, choose the `climate.*` entity it controls and, optionally, dedicated indoor-temperature / humidity / power sensors. The indoor-temperature sensor is the one Hungry Machines models, optimizes and holds inside your band — leave it empty to use the thermostat's own reading. Add a card per HVAC if you have more than one — each gets its own thermal model and schedule.
+- For HVAC, choose the `climate.*` entity it controls and, optionally, dedicated indoor-temperature / humidity / power sensors. Set the thermostat to the same mode as the device's optimization mode, or the thermostat's setting wins and the log records an error (see [Thermostat modes](#thermostat-modes)). The indoor-temperature sensor is the one Hungry Machines models, optimizes and holds inside your band — leave it empty to use the thermostat's own reading. Add a card per HVAC if you have more than one — each gets its own thermal model and schedule.
 - For EV charger / battery / water heater, choose the switch and any state-of-charge or tank-temperature sensor.
 - For solar, enter your system size, tilt, and azimuth, and optionally pick a **production sensor** — a `sensor.*` reporting your inverter's or plug's instantaneous output in W or kW (not an energy `kWh` sensor). Solar has no switch to control; the sensor is what lets Hungry Machines learn your array's real output and shading instead of estimating from the nameplate rating.
 
@@ -113,8 +113,9 @@ Everything you'd expect to tune lives inside the panel's **Settings** tab:
 - **Pricing source** — one section with two modes:
   - **Static (time-of-use zone)** — choose a preset rate plan from the catalog (the list covers common US utilities). If none fits, switch on **hourly rate overrides** and enter your own per-hour ¢/kWh. If you would like to add a new area or location, please contact us at [info@hungrymachines.io](mailto:info@hungrymachines.io). 
   - **Dynamic (changes daily)** — follow real-time and dynamic prices for a supported grid region instead of a fixed TOU schedule. Pick your **Region** (currently ComEd and Ameren Illinois) and a **delivery charge estimate** (a flat ¢/kWh added to the wholesale price to approximate delivery, capacity, and taxes). ComEd customers can additionally pick their **Delivery plan** — the ComEd Delivery Time-of-Day rate — which prefills four editable per-period distribution prices (Morning, Mid-Day Peak, Evening, Overnight) from the published rate table for that plan; check them against the Distribution Facility Charge lines on your own bill and edit any that differ, so the per-half-hour distribution charge follows your own numbers instead of an estimate. With a plan chosen, the flat delivery-charge field then only needs to cover the small non-delivery residual (taxes, supply riders), around 2¢/kWh. The Region, Delivery plan, period-price, and delivery-charge fields only appear when Source = Dynamic (Delivery plan and period prices only appear once your utility offers a plan). If you have another area or location to add, please contact us at [info@hungrymachines.io](mailto:info@hungrymachines.io). 
-  - **Export rates** — what your utility pays for power you send back to the grid, as a 48-slot half-hourly table in ¢/kWh. It sits under both modes, because export credit is priced separately from what you buy. Leave it empty if you are not paid for exports. Fill it in and the optimizer values your solar surplus against it, so an appliance only soaks up daylight generation when running then beats selling that power.
+  - **Export rate** — what your utility pays for power you send back to the grid. ComEd and Ameren Illinois customers choose by when net metering started. From 2025 on, or with a solar rebate, exports earn supply and transmission without delivery; this is the default. Before 2025 with no rebate, exports earn the full price. Other live hourly prices choose between the market price alone and the full price. Other fixed and time-of-use plans default to the same prices we use to plan your devices. You can also enter your own hourly rates, or say you are not paid for exports. A chart shows today's export price against what you pay, and the solar card plots it against your generation. The optimizer values your solar surplus against this rate, so an appliance only soaks up daylight generation when running then beats selling that power.
 - **Temperature units** — show temperatures in °F, °C, or follow Home Assistant's setting (the default). The choice is saved on your account and changes the panel and every card at once, with no reload. It never moves your comfort range: the service and your stored bands stay in °F, and the panel converts only what it shows. This is separate from a second conversion that always runs, between Home Assistant's own unit and °F, so a metric Home Assistant works whichever unit you pick. Requires a backend that serves `temperature_unit` on `/api/v1/preferences` (API migration 076).
+- **Time zone** — plans and prices line up with this zone, so it should match where your home is. A new account takes Home Assistant's zone, and Settings shows it so you can change it. A change applies from your next nightly plan.
 - **Send feedback** — a short form to send a comment, bug report, or feature request to the team without leaving Home Assistant.
 - **Account** — sign out, or email info@hungrymachines.io if you want your account deleted.
 
@@ -139,6 +140,24 @@ If you don't use HACS:
 
 1. **Settings → Devices & Services**, click **Hungry Machines**, then the ⋮ menu, then **Delete**. The sidebar entry and Lovelace cards disappear.
 2. To remove the package entirely, also remove it from HACS.
+
+## Checking that it's working
+
+Open **Settings → System → Logs** in Home Assistant and search for `Hungry Machines`. Problems appear there as warnings when they start and once a day while they last. Good news is in the full log, under **Load full logs**: when an upload, a solar production sensor, today's plan, the weather push, or a thermostat mode starts working or recovers, plus one line each hour listing what was uploaded.
+
+The integration reads your devices every 5 minutes and uploads once an hour, at 2 minutes past. If an upload fails, the readings wait in memory and go up at the next hourly upload. A Home Assistant restart clears any readings still waiting.
+
+## Thermostat modes
+
+Keep your thermostat's mode in line with the device's optimization mode, which you set under **Edit constraints**: Heat with Heating only, Cool with Cooling only. If you choose Auto, Hungry Machines picks heating or cooling each day from the forecast, so the thermostat has to match that day's plan. If you choose Off, Hungry Machines leaves the thermostat alone.
+
+If they conflict, including a thermostat that is off or in its own Auto (`heat_cool`) mode, **the thermostat's setting wins**. Hungry Machines sends it nothing, not even a comfort correction, and logs an error naming both modes. Thermostat Auto isn't supported yet, so in shoulder seasons you can pause optimization for that device and leave the thermostat in Auto.
+
+If you turned on letting Hungry Machines control the mode, and on window units, it switches the mode itself, so these checks don't apply. Off stays a command it can give and take back.
+
+**The one exception is the freeze floor.** If a room falls below 50 °F, Hungry Machines heats it to 52 °F, then puts the thermostat back the way it found it. This overrides the plan, a pause, and the thermostat's own setting, because pipes can freeze. It needs a unit with a heat mode, and it checks every 5 minutes while Home Assistant is running and has an appliance list from us. Hungry Machines never commands a setpoint below 50 °F.
+
+Hungry Machines plans around electricity prices only. It does not price natural gas or choose a fuel: your thermostat still decides when to use a gas furnace or auxiliary heat.
 
 ## Support
 

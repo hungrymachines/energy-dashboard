@@ -80,6 +80,13 @@ GUARD_STEP_F = 2.0
 MIN_ON_SECONDS = 600  # 10 minutes
 
 
+# The room is never left below this, whatever the plan, a pause or the
+# thermostat's own mode says: pipes can freeze. Crossing it heats to the
+# release temperature, then hands the unit back as it was found.
+FREEZE_FLOOR_F = 50.0
+FREEZE_RELEASE_F = 52.0
+
+
 # An override decision: (canonical_mode, edge) or None to apply the
 # schedule as-is. canonical_mode is "COOL" / "HEAT" / "OFF". For COOL/HEAT,
 # edge is the setpoint to command — a step toward the far band edge (see

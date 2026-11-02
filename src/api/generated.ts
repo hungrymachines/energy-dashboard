@@ -2216,6 +2216,20 @@ export interface components {
             currency: string;
             /** Export Rates Cents Per Kwh */
             export_rates_cents_per_kwh?: number[] | null;
+            /**
+             * Export Rate Mode
+             * @default retail
+             */
+            export_rate_mode: string;
+            /**
+             * Export Supply Available
+             * @default false
+             */
+            export_supply_available: boolean;
+            /** Export Supply Basis */
+            export_supply_basis?: string | null;
+            /** Effective Export Rates Cents Per Kwh */
+            effective_export_rates_cents_per_kwh?: number[] | null;
         };
         /** RatesUpdate */
         RatesUpdate: {
@@ -2239,6 +2253,8 @@ export interface components {
             delivery_tod_cents?: unknown;
             /** Export Rates Cents Per Kwh */
             export_rates_cents_per_kwh?: unknown;
+            /** Export Rate Mode */
+            export_rate_mode?: unknown;
         };
         /** ReadingsResponse */
         ReadingsResponse: {

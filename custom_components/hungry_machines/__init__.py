@@ -55,7 +55,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_time_change
 
-from . import readings, weather
+from . import health, readings, weather
 from .version import MANIFEST_VERSION
 from .const import (
     DOMAIN,
@@ -225,6 +225,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             minute=[5, 10, 15, 20, 25, 35, 40, 45, 50, 55],
             second=45,
         )
+    )
+
+    health.note(
+        "started; readings are captured every 5 minutes and uploaded once an "
+        "hour at 2 minutes past"
     )
 
     # v2.1+: capture every 5 min into an in-memory buffer; flush to the

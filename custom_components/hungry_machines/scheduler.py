@@ -92,7 +92,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_call_later
 
-from . import api
+from . import api, health
 from . import comfort, units
 from .const import DOMAIN
 
@@ -200,6 +200,10 @@ async def fetch_today_schedule(
     """Fetch /api/v1/schedules and cache one entry per appliance."""
     body = await api.get_schedules(hass, entry)
     if body is None:
+        health.report(
+            hass, "schedule", False,
+            "could not fetch today's plan; the last plan keeps running",
+        )
         return None
     appliances = body.get("appliances") if isinstance(body, dict) else None
     if not isinstance(appliances, list) or not appliances:
@@ -209,6 +213,10 @@ async def fetch_today_schedule(
         _domain_data(hass).pop("schedule", None)
         return None
 
+    health.report(
+        hass, "schedule", True, "fetched today's plan for %d appliances",
+        len(appliances),
+    )
     cache: dict[str, Any] = {
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         # Master pause switch from the panel toggle. Missing key (older
@@ -412,6 +420,8 @@ _FEATURE_TARGET_TEMPERATURE_RANGE = 2
 # Single-setpoint modes (`cool`, `heat`) require `temperature` instead.
 _RANGE_HVAC_MODES = frozenset({"heat_cool", "auto"})
 
+_FREEZE_LATCH_KEY = "freeze_latch"
+
 
 def _clamp_to_entity_range(
     entity_id: str,
@@ -562,6 +572,7 @@ def _build_hvac_payload(
     # Last-mile defense: never send a value outside the entity's own
     # accepted range. Logs the clamp so operators can see when the
     # backend's value collides with the AC's hardware limits.
+    setpoint = max(setpoint, comfort.FREEZE_FLOOR_F)
     if ha_unit == units.CELSIUS:
         setpoint = _snap_to_device_step(setpoint, attrs, band)
     safe_setpoint = _clamp_to_entity_range(entity_id, attrs, setpoint, ha_unit)
@@ -1041,6 +1052,10 @@ def _comfort_band_override(
         return None
 
     sched_mode = str(schedule.get("mode") or "").strip().lower()
+    # The thermostat's own setting wins a conflict, so the guard stands down
+    # too: its OFF would be taken for our own and woken into the plan's mode.
+    if mode_canonical is None and _overruling_mode(hass, entity_id, schedule):
+        sched_mode = ""
 
     high = _band_edge(schedule, "high_temps", slot)
     low = _band_edge(schedule, "low_temps", slot)
@@ -1190,7 +1205,12 @@ async def comfort_watchdog(hass: HomeAssistant, entry: ConfigEntry) -> None:
         entity_id = info.get("entity_id")
         schedule = info.get("schedule") or {}
         name = info.get("name")
-        if not isinstance(entity_id, str) or not entity_id or not schedule:
+        if not isinstance(entity_id, str) or not entity_id:
+            continue
+        # Ahead of the pause and the empty-plan checks: this one never waits.
+        if await _hold_freeze_floor(hass, entity_id, name):
+            continue
+        if not schedule:
             continue
 
         if master_paused or info.get("optimization_enabled") is False:
@@ -1227,6 +1247,134 @@ async def comfort_watchdog(hass: HomeAssistant, entry: ConfigEntry) -> None:
             )
 
 
+def _overruling_mode(
+    hass: HomeAssistant, entity_id: str, schedule: dict,
+) -> str | None:
+    """The thermostat's mode when it conflicts with the plan, else None.
+
+    Only temperature-only plans can conflict. A plan carrying
+    `hvac_mode_schedule` switches the mode itself, so a mode that differs
+    from the day's may just be our own last command. Off is no conflict
+    when we were the ones who turned the unit off.
+    """
+    if schedule.get("hvac_mode_schedule") is not None:
+        return None
+    plan_mode = str(schedule.get("mode") or "").strip().lower()
+    if plan_mode not in ("cool", "heat"):
+        return None
+    state = hass.states.get(entity_id) if hass.states else None
+    mode = str(getattr(state, "state", "") or "").strip().lower()
+    if not mode or mode in ("unavailable", "unknown") or mode == plan_mode:
+        return None
+    if mode == "off":
+        last = get_last_commanded(hass, entity_id) or {}
+        if str(last.get("hvac_mode") or "").upper() == "OFF":
+            return None
+    return mode
+
+
+def _report_thermostat_mode(
+    hass: HomeAssistant,
+    entity_id: str,
+    appliance_name: str | None,
+    overruling: str | None,
+    thermostat_mode: str,
+    plan_mode: str,
+) -> None:
+    """Log whether the thermostat's mode lets the day's plan run."""
+    if plan_mode not in ("cool", "heat"):
+        return
+    name = appliance_name or entity_id
+    key = f"thermostat_mode:{entity_id}"
+    if overruling is not None:
+        label = "Auto" if overruling in _RANGE_HVAC_MODES else overruling.capitalize()
+        health.report(
+            hass, key, False,
+            "%s is set to %s but today's plan is for %s. The thermostat's "
+            "setting wins, so Hungry Machines is leaving it alone. Change the "
+            "thermostat or the device's optimization mode so they match.",
+            name, label, plan_mode.capitalize(),
+            error=True,
+        )
+    elif thermostat_mode == plan_mode:
+        health.report(
+            hass, key, True, "%s mode matches today's plan (%s)", name, plan_mode,
+        )
+
+
+async def _hold_freeze_floor(
+    hass: HomeAssistant, entity_id: str, appliance_name: str | None,
+) -> bool:
+    """Keep the room above the freeze floor. True while we hold the unit.
+
+    The one thing that outranks a pause and the thermostat's own mode. A
+    unit already heating to a target at or above the release temperature
+    keeps its target: lowering it would only slow the recovery.
+    """
+    latches = _domain_data(hass).setdefault(_FREEZE_LATCH_KEY, {})
+    holding = entity_id in latches
+    indoor, _aux_entity_id, _aux_used = _resolve_indoor_temp(hass, entity_id)
+    if indoor is None:
+        return holding
+    name = appliance_name or entity_id
+    key = f"freeze:{entity_id}"
+    state = hass.states.get(entity_id) if hass.states else None
+    attrs = getattr(state, "attributes", None) or {} if state else {}
+    mode = str(getattr(state, "state", "") or "").strip().lower()
+
+    if holding and indoor >= comfort.FREEZE_RELEASE_F:
+        restore = latches.pop(entity_id)["restore_mode"]
+        if restore != "heat":
+            await _maybe_set_hvac_mode(
+                hass, entity_id, attrs, restore.upper(), _current_slot(),
+            )
+        health.report(
+            hass, key, True, "%s is back to %.1f°F, so the freeze floor let go",
+            name, indoor,
+        )
+        return False
+    if not holding and indoor >= comfort.FREEZE_FLOOR_F:
+        return False
+
+    available = [str(m).lower() for m in attrs.get("hvac_modes") or []]
+    if mode != "heat" and "heat" not in available:
+        health.report(
+            hass, key, False,
+            "%s reads %.1f°F, below the %.0f°F freeze floor, and this unit "
+            "has no heat mode, so Hungry Machines cannot warm the room",
+            name, indoor, comfort.FREEZE_FLOOR_F,
+            error=True,
+        )
+        return False
+
+    if not holding:
+        latches[entity_id] = {"restore_mode": mode}
+    health.report(
+        hass, key, False,
+        "%s reads %.1f°F, below the %.0f°F freeze floor. Heating to %.0f°F "
+        "whatever the plan, pause or thermostat setting says.",
+        name, indoor, comfort.FREEZE_FLOOR_F, comfort.FREEZE_RELEASE_F,
+        error=True,
+    )
+    if mode != "heat":
+        await _maybe_set_hvac_mode(hass, entity_id, attrs, "HEAT", _current_slot())
+    target = units.climate_attr_f(hass, attrs.get("temperature"))
+    if mode == "heat" and target is not None and target >= comfort.FREEZE_RELEASE_F:
+        return True
+    payload = _build_hvac_payload(
+        entity_id, state, comfort.FREEZE_RELEASE_F, assumed_mode="HEAT",
+        ha_unit=units.ha_unit(hass),
+    )
+    if payload is not None:
+        try:
+            await hass.services.async_call(
+                "climate", "set_temperature", payload, blocking=False,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("freeze floor setpoint failed for %s: %s", entity_id, err)
+    return True
+
+
 async def _apply_hvac(
     hass: HomeAssistant,
     entity_id: str,
@@ -1242,11 +1390,14 @@ async def _apply_hvac(
     NOT bypass the comfort guard: an active guard latch still wins below,
     the same as it does over the plan's own setpoint.
     """
+    if entity_id in _domain_data(hass).get(_FREEZE_LATCH_KEY, {}):
+        return
     setpoint = _resolve_setpoint(schedule, slot)
     if setpoint_override is not None:
         setpoint = setpoint_override
     mode_canonical = _resolve_canonical(schedule, "hvac_mode_schedule", slot)
     fan_canonical = _resolve_canonical(schedule, "fan_mode_schedule", slot)
+    overruling: str | None = None
 
     # Wake a unit that reports `off` under a TEMPERATURE-ONLY schedule.
     # Those schedules carry no hvac_mode_schedule — they assume the
@@ -1263,7 +1414,11 @@ async def _apply_hvac(
         state_now = hass.states.get(entity_id) if hass.states else None
         raw_now = str(getattr(state_now, "state", "") or "").strip().lower() if state_now else ""
         sched_mode = str(schedule.get("mode") or "").strip().lower()
-        if raw_now == "off" and sched_mode in ("cool", "heat"):
+        overruling = _overruling_mode(hass, entity_id, schedule)
+        _report_thermostat_mode(
+            hass, entity_id, appliance_name, overruling, raw_now, sched_mode,
+        )
+        if raw_now == "off" and overruling is None and sched_mode in ("cool", "heat"):
             mode_canonical = sched_mode.upper()
             _LOGGER.warning(
                 "Hungry Machines HVAC wake slot=%d: %s reports 'off' under a "
@@ -1286,6 +1441,13 @@ async def _apply_hvac(
     )
     if override is not None:
         mode_canonical, setpoint = override
+    elif overruling is not None:
+        # The thermostat wins a conflict: send it nothing, and clear the
+        # record so readings don't claim a command we never made.
+        _record_last_commanded(
+            hass, entity_id, hvac_mode=None, fan_mode=None, setpoint=None,
+        )
+        return
     elif setpoint is not None:
         # Defense-in-depth band clamp: the backend already clamps
         # setpoint_temps into [low_temps[slot], high_temps[slot]] at

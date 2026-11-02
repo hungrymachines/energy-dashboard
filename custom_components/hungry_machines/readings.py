@@ -36,7 +36,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from . import api, units
+from . import api, health, units
 from .const import DOMAIN
 from .scheduler import (
     _cache_age_seconds,
@@ -265,6 +265,12 @@ def _resolve_hvac_state(state: Any) -> str:
     return "OFF"
 _HOME_BUCKET = "home"
 _BUFFER_KEY = "readings_buffer"
+# The API rejects a POST over 100 readings, so a bucket that outgrew one
+# hourly flush must go up in pieces or it can never leave.
+_MAX_BATCH_READINGS = 100
+# About 3.5 days for two HVAC units. A bucket stuck behind a batch the API
+# keeps rejecting drains from the oldest end instead of growing forever.
+_MAX_BUFFERED_READINGS = 2000
 
 # ---------------------------------------------------------------------------
 # Appliance-list cache — survives a slow/failing API call
@@ -781,7 +787,28 @@ def _buffer(hass: HomeAssistant) -> dict[str, list[dict]]:
 
 def _append(hass: HomeAssistant, key: str, reading: dict) -> None:
     buf = _buffer(hass)
-    buf.setdefault(key, []).append(reading)
+    bucket = buf.setdefault(key, [])
+    bucket.append(reading)
+    if len(bucket) > _MAX_BUFFERED_READINGS:
+        del bucket[0]
+        health.report(
+            hass, f"buffer:{key}", False,
+            "%s has been unable to upload for days; the oldest readings are "
+            "being dropped",
+            _bucket_label(hass, key),
+        )
+
+
+def _bucket_label(hass: HomeAssistant, key: str) -> str:
+    """The buffer key in words: HVAC readings, or the appliance's name."""
+    if key == _HOME_BUCKET:
+        return "HVAC readings"
+    cache = hass.data.get(DOMAIN, {}).get(_APPLIANCES_CACHE_KEY)
+    appliances = cache.get("appliances") if isinstance(cache, dict) else None
+    for appliance in appliances or []:
+        if appliance.get("id") == key and appliance.get("name"):
+            return str(appliance["name"])
+    return f"Appliance {key}"
 
 
 async def capture_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
@@ -819,10 +846,24 @@ async def capture_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
                 not isinstance(production_sensor_entity_id, str)
                 or not production_sensor_entity_id
             ):
+                health.report(
+                    hass, f"solar:{aid}", True,
+                    "%s has no production sensor selected; its forecast stays "
+                    "on tilt and azimuth",
+                    appliance.get("name") or "Solar",
+                )
                 continue
             watts = _read_power_watts(hass, production_sensor_entity_id)
             if watts is None:
+                # _read_power_watts already warned; log again on recovery.
+                health.forget(hass, f"solar:{aid}")
                 continue
+            health.report(
+                hass, f"solar:{aid}", True,
+                "%s production sensor %s is connected (%.0f W now)",
+                appliance.get("name") or "Solar",
+                production_sensor_entity_id, abs(watts),
+            )
             # Plug-in (balcony) solar pushes current BACKWARD through
             # the outlet, and some metering smart plugs report that
             # reverse flow as a negative number. Production has no
@@ -934,24 +975,37 @@ async def flush_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
         return 0
 
     sent = 0
+    uploaded: list[str] = []
     for key in list(buf.keys()):
         readings = buf.get(key) or []
         if not readings:
             continue
-        if key == _HOME_BUCKET:
-            ok = await api.post_home_readings(hass, entry, readings)
-        else:
-            ok = await api.post_appliance_readings(hass, entry, key, readings)
-        if ok:
-            sent += len(readings)
-            buf[key] = []
-        else:
-            _LOGGER.info(
-                "Hungry Machines: flush of %d readings to bucket=%s failed; "
-                "retaining for next flush",
-                len(readings),
-                key,
+        label = _bucket_label(hass, key)
+        bucket_sent = 0
+        while readings:
+            batch = readings[:_MAX_BATCH_READINGS]
+            if key == _HOME_BUCKET:
+                ok = await api.post_home_readings(hass, entry, batch)
+            else:
+                ok = await api.post_appliance_readings(hass, entry, key, batch)
+            if not ok:
+                break
+            bucket_sent += len(batch)
+            del readings[:len(batch)]
+        sent += bucket_sent
+        if readings:
+            health.report(
+                hass, f"upload:{key}", False,
+                "%s upload failed; %d readings are waiting to retry at the "
+                "next hourly upload",
+                label, len(readings),
             )
+            continue
+        uploaded.append(f"{label} {bucket_sent}")
+        health.report(hass, f"upload:{key}", True, "%s upload is working", label)
+        health.forget(hass, f"buffer:{key}")
+    if uploaded:
+        health.note("uploaded readings this hour: %s", ", ".join(uploaded))
     return sent
 
 

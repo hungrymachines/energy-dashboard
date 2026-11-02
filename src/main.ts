@@ -8,6 +8,7 @@ import { HmConstraintEditor } from './ui/constraint-editor.js';
 import { HmApplianceForm } from './ui/appliance-form.js';
 import { HmOptimizationChart } from './ui/optimization-chart.js';
 import { HmDiagnosticsPanel } from './ui/diagnostics-panel.js';
+import { HmExportRateChart } from './ui/export-rate-chart.js';
 
 declare global {
   interface Window {
@@ -36,6 +37,9 @@ if (!customElements.get('hm-schedule-chart')) {
 }
 if (!customElements.get('hm-constraint-editor')) {
   customElements.define('hm-constraint-editor', HmConstraintEditor);
+}
+if (!customElements.get('hm-export-rate-chart')) {
+  customElements.define('hm-export-rate-chart', HmExportRateChart);
 }
 if (!customElements.get('hm-appliance-form')) {
   customElements.define('hm-appliance-form', HmApplianceForm);

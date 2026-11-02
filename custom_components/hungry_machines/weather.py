@@ -42,7 +42,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from . import api
+from . import api, health
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -382,4 +382,10 @@ async def push_today_forecast(
     if hourly_solar is not None:
         payload["hourly_solar_irradiance_w"] = hourly_solar
 
-    return await api.post_weather(hass, entry, payload)
+    accepted = await api.post_weather(hass, entry, payload)
+    health.report(
+        hass, "weather", accepted,
+        "forecast upload from %s %s", entity_id,
+        "is working" if accepted else "failed; the API will use Open-Meteo",
+    )
+    return accepted

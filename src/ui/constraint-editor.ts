@@ -1282,6 +1282,10 @@ export class HmConstraintEditor extends LitElement {
                     <option value="heat">Heating only</option>
                     <option value="off">Off</option>
                   </select>
+                  <div class="opt-toggles-help">
+                    Keep your thermostat in the same mode. If they differ, the
+                    thermostat's setting wins and the log records an error.
+                  </div>
                   ${errs['optimization_mode']
                     ? html`<div class="field-error">${errs['optimization_mode']}</div>`
                     : null}

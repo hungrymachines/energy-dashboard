@@ -1935,6 +1935,9 @@ async def test_comfort_override_wins_over_wake_within_same_apply() -> None:
     entry = _entry()
     hass.data[DOMAIN] = _override_cache()
     del hass.data[DOMAIN]["schedule"]["hvac-1"]["schedule"]["hvac_mode_schedule"]
+    scheduler._record_last_commanded(
+        hass, "climate.living_room", hvac_mode="OFF", fan_mode=None, setpoint=None,
+    )
 
     with patch.object(scheduler, "_current_slot", return_value=16):
         await scheduler.apply_current_slot(hass, entry)
@@ -2428,11 +2431,9 @@ async def test_no_silent_skip_warns_when_paused_and_out_of_band(caplog) -> None:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_temperature_only_schedule_wakes_off_unit() -> None:
-    """A unit reporting `off` under a temperature-only schedule (no
-    hvac_mode_schedule, schedule mode 'cool') must be woken into COOL
-    so the plan's setpoints can act — previously it stayed off forever
-    because the payload builder skips off-mode entities."""
+async def test_user_turned_off_thermostat_stays_off() -> None:
+    """Off that we did not command is the thermostat's setting, and that
+    wins: no wake, no setpoint, and the log says why."""
     state = _climate_state("off", supports_range=False,
                            hvac_modes=["off", "cool"])
     hass = _hass(state)
@@ -2440,6 +2441,28 @@ async def test_temperature_only_schedule_wakes_off_unit() -> None:
     cache = _hvac_cache(setpoint=74.0)          # temperature-only
     cache["schedule"]["hvac-1"]["schedule"]["mode"] = "cool"
     hass.data[DOMAIN] = cache
+
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_temperature_only_schedule_wakes_a_unit_we_turned_off() -> None:
+    """Off that WE commanded (the guard's overshoot OFF, a calibration's
+    passive evening) is not a conflict: wake into the plan's mode, or the
+    unit would stay off forever."""
+    state = _climate_state("off", supports_range=False,
+                           hvac_modes=["off", "cool"])
+    hass = _hass(state)
+    entry = _entry()
+    cache = _hvac_cache(setpoint=74.0)          # temperature-only
+    cache["schedule"]["hvac-1"]["schedule"]["mode"] = "cool"
+    hass.data[DOMAIN] = cache
+    scheduler._record_last_commanded(
+        hass, "climate.living_room", hvac_mode="OFF", fan_mode=None, setpoint=None,
+    )
 
     with patch.object(scheduler, "_current_slot", return_value=28):
         await scheduler.apply_current_slot(hass, entry)

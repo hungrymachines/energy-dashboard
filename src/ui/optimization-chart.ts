@@ -232,6 +232,7 @@ export class HmOptimizationChart extends LitElement {
     targetValues: { attribute: false },
     targetMarker: { attribute: false },
     unit: { attribute: false },
+    priceLabel: { attribute: false },
     displayUnit: { attribute: false },
     yMin: { attribute: false },
     yMax: { attribute: false },
@@ -246,6 +247,7 @@ export class HmOptimizationChart extends LitElement {
   targetValues: number[] | undefined = undefined;
   targetMarker: OptimizationChartMarker | undefined = undefined;
   unit: OptimizationChartUnit = 'fahrenheit';
+  priceLabel = 'Electricity Price';
   displayUnit: TempUnit = 'F';
   // Caller-supplied fixed Y-axis range. When both are set, the chart
   // uses them verbatim and skips the auto-derive logic. Useful for
@@ -318,7 +320,7 @@ export class HmOptimizationChart extends LitElement {
           : ''}
         <span class="legend-item">
           <span class="legend-swatch swatch-price" aria-hidden="true"></span>
-          Electricity Price
+          ${this.priceLabel}
         </span>
       </div>
     `;
@@ -446,7 +448,7 @@ export class HmOptimizationChart extends LitElement {
       // Average the two half-hour slots in this hour for the display value.
       const a = this.rates[h * 2] ?? 0;
       const b = this.rates[h * 2 + 1] ?? a;
-      const dollars = ((a + b) / 2) / 100;
+      const dollars = Math.max(0, (a + b) / 2) / 100;
       const yTop = priceY(dollars);
       const rect = document.createElementNS(SVG_NS, 'rect');
       rect.setAttribute('class', 'price-bar');

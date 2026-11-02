@@ -28,6 +28,8 @@ export type DeliveryTariffOption = {
   period_rates?: DeliveryTodCents;
 };
 
+export type ExportRateMode = 'supply' | 'retail' | 'custom' | 'none';
+
 export interface RatesResponse {
   pricing_location: number;
   intervals: number[];
@@ -48,6 +50,12 @@ export interface RatesResponse {
   available_pricing_zones: PricingZoneOption[];
   available_delivery_tariffs: DeliveryTariffOption[];
   export_rates_cents_per_kwh: number[] | null;
+  export_rate_mode: ExportRateMode;
+  export_supply_available: boolean;
+  /** `tariff` = this utility's credited supply and transmission, `market` = the bare market price. */
+  export_supply_basis: 'tariff' | 'market' | null;
+  /** Today's curve under `export_rate_mode`. `null` = no export credit. */
+  effective_export_rates_cents_per_kwh: number[] | null;
 }
 
 export interface UpdateRatesBody {
@@ -59,6 +67,7 @@ export interface UpdateRatesBody {
   adder_grid_ruleset_id?: number | null;
   delivery_tod_cents?: DeliveryTodCents | null;
   export_rates_cents_per_kwh?: number[] | null;
+  export_rate_mode?: ExportRateMode | null;
 }
 
 export function get(): Promise<RatesResponse> {
