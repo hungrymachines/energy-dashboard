@@ -151,11 +151,13 @@ The integration reads your devices every 5 minutes and uploads once an hour, at 
 
 Set the device's optimization mode under **Edit constraints**. It decides who chooses between heating and cooling:
 
-- **Auto:** Hungry Machines chooses. It picks heating or cooling each day from the forecast and switches your thermostat to match, even if the thermostat is in its own Auto mode. If the room leaves your comfort range the other way, say a warm afternoon on a heating day, it switches the thermostat to bring the room back. A thermostat you turn off stays off, and the log records an error.
+- **Auto:** Hungry Machines chooses. It uses your home's model and the forecast to pick which way the room would leave your comfort range, and switches your thermostat to match, even if the thermostat is in its own Auto mode. If the room leaves your comfort range the other way, say a warm afternoon on a heating day, it switches the thermostat to bring the room back. A thermostat you turn off stays off, and the log records an error.
 - **Heating only or Cooling only:** you choose. Keep your thermostat in the same mode. If they conflict, including a thermostat that is off or in its own Auto mode, **the thermostat's setting wins**. Hungry Machines sends it nothing, not even a comfort correction, and logs an error naming both modes.
 - **Off:** Hungry Machines leaves the thermostat alone.
 
 If you turned on letting Hungry Machines control the mode, and on window units, it also turns the unit on and off through the day, so these checks don't apply.
+
+**Mild days.** Each night Hungry Machines uses your home's own thermal model to predict the room with nothing running. If the room should stay inside your comfort range all day, it plans an idle day in any optimization mode: nothing runs, the setpoint parks at the edge of your range, and the thermostat only calls if the room really leaves it. A wider comfort range means more idle days. A new home needs a fitted model first, so it starts with idle days off.
 
 **The one exception is the freeze floor.** If a room falls below 50 °F, Hungry Machines heats it to 52 °F, then puts the thermostat back the way it found it. This overrides the plan, a pause, and the thermostat's own setting, because pipes can freeze. It needs a unit with a heat mode, and it checks every 5 minutes while Home Assistant is running and has an appliance list from us. Hungry Machines never commands a setpoint below 50 °F.
 

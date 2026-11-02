@@ -1278,6 +1278,8 @@ def _overruling_mode(
             return None
         return mode
     if schedule.get("auto_mode"):
+        if schedule.get("idle_day"):
+            return None
         attrs = getattr(state, "attributes", None) or {}
         modes = attrs.get("hvac_modes")
         if isinstance(modes, list) and plan_mode not in [str(m).lower() for m in modes]:
@@ -1293,13 +1295,18 @@ def _report_thermostat_mode(
     overruling: str | None,
     thermostat_mode: str,
     plan_mode: str,
+    idle_day: bool = False,
 ) -> None:
     """Log whether the thermostat's mode lets the day's plan run."""
     if plan_mode not in ("cool", "heat"):
         return
     name = appliance_name or entity_id
     key = f"thermostat_mode:{entity_id}"
-    if overruling is not None:
+    if idle_day and overruling in (None, "off"):
+        health.report(
+            hass, key, True, "%s needs no heating or cooling today", name,
+        )
+    elif overruling is not None:
         label = "Auto" if overruling in _RANGE_HVAC_MODES else overruling.capitalize()
         health.report(
             hass, key, False,
@@ -1420,6 +1427,7 @@ async def _apply_hvac(
     mode_canonical = _resolve_canonical(schedule, "hvac_mode_schedule", slot)
     fan_canonical = _resolve_canonical(schedule, "fan_mode_schedule", slot)
     overruling: str | None = None
+    idle_day = False
 
     # Wake a unit that reports `off` under a TEMPERATURE-ONLY schedule.
     # Those schedules carry no hvac_mode_schedule — they assume the
@@ -1437,11 +1445,13 @@ async def _apply_hvac(
         raw_now = str(getattr(state_now, "state", "") or "").strip().lower() if state_now else ""
         sched_mode = str(schedule.get("mode") or "").strip().lower()
         overruling = _overruling_mode(hass, entity_id, schedule)
+        idle_day = bool(schedule.get("idle_day"))
         _report_thermostat_mode(
             hass, entity_id, appliance_name, overruling, raw_now, sched_mode,
+            idle_day,
         )
         if (
-            schedule.get("auto_mode") and overruling is None
+            schedule.get("auto_mode") and overruling is None and not idle_day
             and raw_now not in ("", "off", "unavailable", "unknown", sched_mode)
             and sched_mode in ("cool", "heat")
         ):
@@ -1450,7 +1460,10 @@ async def _apply_hvac(
                 "%s is set to %s; Auto is switching it to %s for today's plan",
                 appliance_name or entity_id, raw_now, sched_mode,
             )
-        if raw_now == "off" and overruling is None and sched_mode in ("cool", "heat"):
+        if (
+            raw_now == "off" and overruling is None and not idle_day
+            and sched_mode in ("cool", "heat")
+        ):
             mode_canonical = sched_mode.upper()
             _LOGGER.warning(
                 "Hungry Machines HVAC wake slot=%d: %s reports 'off' under a "
@@ -1480,6 +1493,18 @@ async def _apply_hvac(
             hass, entity_id, hvac_mode=None, fan_mode=None, setpoint=None,
         )
         return
+    elif idle_day:
+        # Nothing should run today. Park the setpoint at the edge of the
+        # range in whichever mode the thermostat is in, so it only calls if
+        # the room really leaves. A thermostat in its own Auto or off keeps
+        # what it has: the guard still watches the range.
+        edge = {"heat": "low_temps", "cool": "high_temps"}.get(raw_now)
+        setpoint = _band_edge(schedule, edge, slot) if edge else None
+        if setpoint is None:
+            _record_last_commanded(
+                hass, entity_id, hvac_mode=None, fan_mode=None, setpoint=None,
+            )
+            return
     elif setpoint is not None:
         # Defense-in-depth band clamp: the backend already clamps
         # setpoint_temps into [low_temps[slot], high_temps[slot]] at
