@@ -378,3 +378,68 @@ async def test_freeze_floor_restores_a_thermostat_that_was_in_auto() -> None:
     hass.services.async_call.reset_mock()
     await scheduler._hold_freeze_floor(hass, "climate.a", "Attic")
     assert {"entity_id": "climate.a", "hvac_mode": "heat_cool"} in _service_data(hass, "set_hvac_mode")
+
+
+def _idle_plan(**overrides) -> dict:
+    return {
+        **_COOL_PLAN, "mode": "heat", "setpoint_temps": [67.0] * 48,
+        "idle_day": True, "auto_mode": True, **overrides,
+    }
+
+
+@pytest.mark.parametrize(("thermostat", "edge"), [("heat", 67.0), ("cool", 78.0)])
+@pytest.mark.asyncio
+async def test_idle_day_parks_at_the_edge_of_whatever_mode_it_finds(thermostat, edge) -> None:
+    hass = _unit(thermostat)
+    await scheduler._apply_hvac(hass, "climate.a", _idle_plan(), 10)
+    assert _service_data(hass, "set_hvac_mode") == []
+    assert _service_data(hass, "set_temperature")[0]["temperature"] == edge
+
+
+@pytest.mark.asyncio
+async def test_idle_day_does_not_switch_a_thermostat_in_its_own_auto() -> None:
+    hass = _unit("heat_cool", modes=["off", "heat", "cool", "heat_cool"])
+    await scheduler._apply_hvac(hass, "climate.a", _idle_plan(), 10)
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_idle_day_leaves_a_thermostat_that_is_off_alone_without_an_error(caplog) -> None:
+    hass = _unit("off")
+    with caplog.at_level(logging.INFO):
+        await scheduler._apply_hvac(hass, "climate.a", _idle_plan(), 10)
+    hass.services.async_call.assert_not_awaited()
+    assert _messages(caplog, logging.ERROR) == []
+    assert any("no heating or cooling" in m for m in _messages(caplog, logging.INFO))
+
+
+@pytest.mark.asyncio
+async def test_idle_day_does_not_wake_a_unit_we_turned_off() -> None:
+    hass = _unit("off")
+    scheduler._record_last_commanded(
+        hass, "climate.a", hvac_mode="OFF", fan_mode=None, setpoint=None,
+    )
+    await scheduler._apply_hvac(hass, "climate.a", _idle_plan(), 10)
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_idle_day_on_auto_still_rescues_a_room_leaving_the_range() -> None:
+    """The forecast was wrong: the guard is why an idle day is safe."""
+    hass = _unit("heat", indoor=80.0)
+    await scheduler._apply_hvac(hass, "climate.a", _idle_plan(), 10)
+    assert {"entity_id": "climate.a", "hvac_mode": "cool"} in _service_data(hass, "set_hvac_mode")
+
+
+@pytest.mark.asyncio
+async def test_idle_day_on_heat_only_still_leaves_a_conflict_with_the_thermostat() -> None:
+    hass = _unit("cool")
+    plan = {k: v for k, v in _idle_plan().items() if k != "auto_mode"}
+    await scheduler._apply_hvac(hass, "climate.a", plan, 10)
+    hass.services.async_call.assert_not_awaited()
+
+
+def test_idle_plans_have_no_room_target_for_the_tracker_to_chase() -> None:
+    hass = _unit("heat", indoor=75.0)
+    assert scheduler._track_room_target(hass, "climate.a", _idle_plan(), 10) is None
+
