@@ -71,7 +71,7 @@ A **Hungry Machines** entry now appears in your sidebar, and the two Lovelace ca
 Click the **Hungry Machines** entry in the sidebar and enter the same hungrymachines.io email and password to load your dashboard. The first time in, the dashboard is empty — use **Add appliance** to register each device you want optimized:
 
 - Pick a type (HVAC, EV charger, home battery, water heater, or solar).
-- For HVAC, choose the `climate.*` entity it controls and, optionally, dedicated indoor-temperature / humidity / power sensors. Set the thermostat to the same mode as the device's optimization mode, or the thermostat's setting wins and the log records an error (see [Thermostat modes](#thermostat-modes)). The indoor-temperature sensor is the one Hungry Machines models, optimizes and holds inside your band — leave it empty to use the thermostat's own reading. Add a card per HVAC if you have more than one — each gets its own thermal model and schedule.
+- For HVAC, choose the `climate.*` entity it controls and, optionally, dedicated indoor-temperature / humidity / power sensors. With the optimization mode on Auto, Hungry Machines switches the thermostat between heat and cool for you. On Heating only or Cooling only, keep the thermostat in the same mode, or its setting wins and the log records an error (see [Thermostat modes](#thermostat-modes)). The indoor-temperature sensor is the one Hungry Machines models, optimizes and holds inside your band — leave it empty to use the thermostat's own reading. Add a card per HVAC if you have more than one — each gets its own thermal model and schedule.
 - For EV charger / battery / water heater, choose the switch and any state-of-charge or tank-temperature sensor.
 - For solar, enter your system size, tilt, and azimuth, and optionally pick a **production sensor** — a `sensor.*` reporting your inverter's or plug's instantaneous output in W or kW (not an energy `kWh` sensor). Solar has no switch to control; the sensor is what lets Hungry Machines learn your array's real output and shading instead of estimating from the nameplate rating.
 
@@ -149,11 +149,13 @@ The integration reads your devices every 5 minutes and uploads once an hour, at 
 
 ## Thermostat modes
 
-Keep your thermostat's mode in line with the device's optimization mode, which you set under **Edit constraints**: Heat with Heating only, Cool with Cooling only. If you choose Auto, Hungry Machines picks heating or cooling each day from the forecast, so the thermostat has to match that day's plan. If you choose Off, Hungry Machines leaves the thermostat alone.
+Set the device's optimization mode under **Edit constraints**. It decides who chooses between heating and cooling:
 
-If they conflict, including a thermostat that is off or in its own Auto (`heat_cool`) mode, **the thermostat's setting wins**. Hungry Machines sends it nothing, not even a comfort correction, and logs an error naming both modes. Thermostat Auto isn't supported yet, so in shoulder seasons you can pause optimization for that device and leave the thermostat in Auto.
+- **Auto:** Hungry Machines chooses. It picks heating or cooling each day from the forecast and switches your thermostat to match, even if the thermostat is in its own Auto mode. If the room leaves your comfort range the other way, say a warm afternoon on a heating day, it switches the thermostat to bring the room back. A thermostat you turn off stays off, and the log records an error.
+- **Heating only or Cooling only:** you choose. Keep your thermostat in the same mode. If they conflict, including a thermostat that is off or in its own Auto mode, **the thermostat's setting wins**. Hungry Machines sends it nothing, not even a comfort correction, and logs an error naming both modes.
+- **Off:** Hungry Machines leaves the thermostat alone.
 
-If you turned on letting Hungry Machines control the mode, and on window units, it switches the mode itself, so these checks don't apply. Off stays a command it can give and take back.
+If you turned on letting Hungry Machines control the mode, and on window units, it also turns the unit on and off through the day, so these checks don't apply.
 
 **The one exception is the freeze floor.** If a room falls below 50 °F, Hungry Machines heats it to 52 °F, then puts the thermostat back the way it found it. This overrides the plan, a pause, and the thermostat's own setting, because pipes can freeze. It needs a unit with a heat mode, and it checks every 5 minutes while Home Assistant is running and has an appliance list from us. Hungry Machines never commands a setpoint below 50 °F.
 

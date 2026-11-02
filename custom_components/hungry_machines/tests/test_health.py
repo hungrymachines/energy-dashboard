@@ -293,3 +293,88 @@ async def test_plan_stays_out_while_the_freeze_floor_holds() -> None:
     plan = {**_COOL_PLAN, "mode": "heat"}
     await scheduler._apply_hvac(hass, "climate.a", plan, 10)
     hass.services.async_call.assert_not_awaited()
+
+
+def _auto_cache(mode: str = "heat") -> dict:
+    return {**_COOL_PLAN, "mode": mode, "setpoint_temps": [70.0] * 48, "auto_mode": True}
+
+
+@pytest.mark.parametrize("thermostat", ["cool", "heat_cool", "auto"])
+@pytest.mark.asyncio
+async def test_auto_plan_switches_the_thermostat_to_the_days_mode(thermostat) -> None:
+    hass = _unit(thermostat)
+    await scheduler._apply_hvac(hass, "climate.a", _auto_cache("heat"), 10)
+    assert {"entity_id": "climate.a", "hvac_mode": "heat"} in _service_data(hass, "set_hvac_mode")
+    assert _service_data(hass, "set_temperature")[0]["temperature"] == 70.0
+    assert scheduler.get_last_commanded(hass, "climate.a")["hvac_mode"] == "HEAT"
+
+
+@pytest.mark.asyncio
+async def test_auto_plan_leaves_a_matching_thermostat_alone() -> None:
+    hass = _unit("heat")
+    await scheduler._apply_hvac(hass, "climate.a", _auto_cache("heat"), 10)
+    assert _service_data(hass, "set_hvac_mode") == []
+    assert _service_data(hass, "set_temperature")
+
+
+@pytest.mark.asyncio
+async def test_auto_plan_never_turns_on_a_thermostat_someone_turned_off(caplog) -> None:
+    hass = _unit("off")
+    with caplog.at_level(logging.ERROR):
+        await scheduler._apply_hvac(hass, "climate.a", _auto_cache("heat"), 10)
+    hass.services.async_call.assert_not_awaited()
+    assert any("is set to Off" in m for m in _messages(caplog, logging.ERROR))
+
+
+@pytest.mark.asyncio
+async def test_auto_plan_wakes_a_unit_we_turned_off_ourselves() -> None:
+    hass = _unit("off")
+    scheduler._record_last_commanded(
+        hass, "climate.a", hvac_mode="OFF", fan_mode=None, setpoint=None,
+    )
+    await scheduler._apply_hvac(hass, "climate.a", _auto_cache("heat"), 10)
+    assert {"entity_id": "climate.a", "hvac_mode": "heat"} in _service_data(hass, "set_hvac_mode")
+
+
+@pytest.mark.asyncio
+async def test_auto_plan_holds_when_the_unit_cannot_do_the_days_mode(caplog) -> None:
+    hass = _unit("cool", modes=["off", "cool"])
+    with caplog.at_level(logging.ERROR):
+        await scheduler._apply_hvac(hass, "climate.a", _auto_cache("heat"), 10)
+    hass.services.async_call.assert_not_awaited()
+    assert _messages(caplog, logging.ERROR)
+
+
+@pytest.mark.asyncio
+async def test_a_heat_or_cool_plan_still_leaves_the_thermostat_in_charge() -> None:
+    hass = _unit("cool")
+    plan = {k: v for k, v in _auto_cache("heat").items() if k != "auto_mode"}
+    await scheduler._apply_hvac(hass, "climate.a", plan, 10)
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_guard_cools_a_hot_room_on_a_heating_day() -> None:
+    """A mild morning's heat plan, then a warm afternoon past the band top."""
+    hass = _unit("heat", indoor=80.0)
+    await scheduler._apply_hvac(hass, "climate.a", _auto_cache("heat"), 10)
+    assert {"entity_id": "climate.a", "hvac_mode": "cool"} in _service_data(hass, "set_hvac_mode")
+
+
+@pytest.mark.asyncio
+async def test_auto_guard_heats_a_cold_room_on_a_cooling_day() -> None:
+    hass = _unit("cool", indoor=60.0)
+    await scheduler._apply_hvac(hass, "climate.a", _auto_cache("cool"), 10)
+    assert {"entity_id": "climate.a", "hvac_mode": "heat"} in _service_data(hass, "set_hvac_mode")
+
+
+@pytest.mark.asyncio
+async def test_freeze_floor_restores_a_thermostat_that_was_in_auto() -> None:
+    hass = _unit("heat_cool", indoor=49.0, modes=["off", "heat", "cool", "heat_cool"])
+    await scheduler._hold_freeze_floor(hass, "climate.a", "Attic")
+    state = hass.states.get("climate.a")
+    state.state = "heat"
+    state.attributes["current_temperature"] = 52.0
+    hass.services.async_call.reset_mock()
+    await scheduler._hold_freeze_floor(hass, "climate.a", "Attic")
+    assert {"entity_id": "climate.a", "hvac_mode": "heat_cool"} in _service_data(hass, "set_hvac_mode")

@@ -23,6 +23,16 @@ type OptimizationMode = 'cool' | 'heat' | 'auto' | 'off';
 
 const OPTIMIZATION_MODES: ReadonlyArray<OptimizationMode> = ['cool', 'heat', 'auto', 'off'];
 
+export function modeHelp(mode: string): string {
+  if (mode === 'auto') {
+    return "Auto switches your thermostat between heat and cool for each day's plan. " +
+      'A thermostat you turn off stays off.';
+  }
+  if (mode === 'off') return 'Hungry Machines leaves this thermostat alone.';
+  return "Keep your thermostat in the same mode. If they differ, the thermostat's " +
+    'setting wins and the log records an error.';
+}
+
 type ErrorMap = Record<string, string>;
 
 const TIME_PATTERN = /^\d{2}:\d{2}$/;
@@ -1282,9 +1292,8 @@ export class HmConstraintEditor extends LitElement {
                     <option value="heat">Heating only</option>
                     <option value="off">Off</option>
                   </select>
-                  <div class="opt-toggles-help">
-                    Keep your thermostat in the same mode. If they differ, the
-                    thermostat's setting wins and the log records an error.
+                  <div class="opt-toggles-help" data-region="mode-help">
+                    ${modeHelp(v['optimization_mode'] ?? 'auto')}
                   </div>
                   ${errs['optimization_mode']
                     ? html`<div class="field-error">${errs['optimization_mode']}</div>`
