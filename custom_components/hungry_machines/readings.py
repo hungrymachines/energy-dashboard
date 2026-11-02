@@ -553,6 +553,9 @@ def _build_hvac_home_reading(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "indoor_temp": indoor_temp,
         "hvac_state": _resolve_hvac_state(state),
+        # The mode the thermostat is set to. hvac_state follows what the unit
+        # is doing; this is how the fleet dashboard sees a mode conflict.
+        "thermostat_mode": str(state.state or "").strip().lower() or None,
         # Which source the temperature came from — the backend fitter
         # treats a room sensor and a thermostat's own reading as
         # different measurements of different places (US-CTL-003).

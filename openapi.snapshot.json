@@ -89,7 +89,7 @@
     "/admin/trigger/initial_fit": {
       "post": {
         "summary": "Trigger Initial Fit",
-        "description": "Force the daily initial-period fit pass.\n\nTargets every user in their first `INITIAL_PERIOD_DAYS` (14) days of\nlearning — both no-model users and users whose first fit is recent.\nSkips users who have graduated to the weekly cadence.",
+        "description": "Force the daily initial-period fit pass.\n\nTargets every user in their first `INITIAL_PERIOD_DAYS` (14) days of\nlearning \u2014 both no-model users and users whose first fit is recent.\nSkips users who have graduated to the weekly cadence.",
         "operationId": "trigger_initial_fit_admin_trigger_initial_fit_post",
         "responses": {
           "200": {
@@ -155,7 +155,7 @@
     "/admin/trigger/urdb_import": {
       "post": {
         "summary": "Trigger Urdb Import",
-        "description": "Run a scoped NREL URDB import inline (US-VRE-012).\n\nFetches the state/utility's approved residential tariffs, translates\nthem into ``tariff_rulesets`` rows (``source='urdb'``,\n``verified=false``), and upserts keyed\n``(source, external_id, effective_from)``. Verified rows are never\noverwritten. An unscoped call is rejected — importing the entire\nURDB is never one misclick away.",
+        "description": "Run a scoped NREL URDB import inline (US-VRE-012).\n\nFetches the state/utility's approved residential tariffs, translates\nthem into ``tariff_rulesets`` rows (``source='urdb'``,\n``verified=false``), and upserts keyed\n``(source, external_id, effective_from)``. Verified rows are never\noverwritten. An unscoped call is rejected \u2014 importing the entire\nURDB is never one misclick away.",
         "operationId": "trigger_urdb_import_admin_trigger_urdb_import_post",
         "requestBody": {
           "content": {
@@ -247,7 +247,7 @@
     "/admin/trigger/fit/{target_user_id}": {
       "post": {
         "summary": "Trigger Fit For User",
-        "description": "Force a thermal-model fit for one specific user. Used to bootstrap\nor refresh a single user's model out-of-band (e.g. after fixing bad\ndata or onboarding a pilot user).\n\nRuns the fit AFTER the response is sent, on the threadpool: a champion\nfit takes ~150 s per appliance since the September 2026 fold change\n(US-CTL-026), which is longer than any reverse proxy will hold a\nrequest open and long enough to stall the event loop — and every\nother request with it — when called inline. The outcome lands in\n`fit_events` (one row per appliance: `fitted`, `insufficient_data`,\n`floor_refused`, `error`) and on the fleet dashboard's model history.\n`outcome` is kept in the body, as `null`, so callers reading the old\nshape do not break.",
+        "description": "Force a thermal-model fit for one specific user. Used to bootstrap\nor refresh a single user's model out-of-band (e.g. after fixing bad\ndata or onboarding a pilot user).\n\nRuns the fit AFTER the response is sent, on the threadpool: a champion\nfit takes ~150 s per appliance since the September 2026 fold change\n(US-CTL-026), which is longer than any reverse proxy will hold a\nrequest open and long enough to stall the event loop \u2014 and every\nother request with it \u2014 when called inline. The outcome lands in\n`fit_events` (one row per appliance: `fitted`, `insufficient_data`,\n`floor_refused`, `error`) and on the fleet dashboard's model history.\n`outcome` is kept in the body, as `null`, so callers reading the old\nshape do not break.",
         "operationId": "trigger_fit_for_user_admin_trigger_fit__target_user_id__post",
         "security": [
           {
@@ -290,7 +290,7 @@
     "/admin/trigger/fleet_metrics_backfill": {
       "post": {
         "summary": "Trigger Fleet Metrics Backfill",
-        "description": "Replay the fleet-metrics rollup over a historical date window (US-MET-010).\n\nFor every day in `[since, until]` inclusive, recomputes\n`appliance_metrics_daily` / `user_metrics_daily` / `fleet_metrics_daily`\n(including the customer-facing peaks/flexibility columns from migration 053)\nand materializes the `cohort_stats_daily` distributions. Historical price\ncurves come from the existing `get_user_rates(user_id, target_date)` path, so\na past day reconstructs against the same cached day-ahead rows and tariff\nrulesets it saw at the time — nothing in this system is purged.\n\nIdempotent per `(id, date)` and per cohort key: the metric and cohort upserts\noverwrite on their UNIQUE keys, so backfilling a range that overlaps existing\nrows never duplicates or double-counts. Runs inline (may take a while over a\nlong window). Returns the per-day summary list.",
+        "description": "Replay the fleet-metrics rollup over a historical date window (US-MET-010).\n\nFor every day in `[since, until]` inclusive, recomputes\n`appliance_metrics_daily` / `user_metrics_daily` / `fleet_metrics_daily`\n(including the customer-facing peaks/flexibility columns from migration 053)\nand materializes the `cohort_stats_daily` distributions. Historical price\ncurves come from the existing `get_user_rates(user_id, target_date)` path, so\na past day reconstructs against the same cached day-ahead rows and tariff\nrulesets it saw at the time \u2014 nothing in this system is purged.\n\nIdempotent per `(id, date)` and per cohort key: the metric and cohort upserts\noverwrite on their UNIQUE keys, so backfilling a range that overlaps existing\nrows never duplicates or double-counts. Runs inline (may take a while over a\nlong window). Returns the per-day summary list.",
         "operationId": "trigger_fleet_metrics_backfill_admin_trigger_fleet_metrics_backfill_post",
         "requestBody": {
           "content": {
@@ -525,7 +525,7 @@
           "readings"
         ],
         "summary": "Post Readings",
-        "description": "Push a batch of sensor readings.\n\nAccepts EITHER a user JWT (the HACS client) OR a device token (a fleet\nsatellite, US-SAT-06). For a device the owning `user_id` comes from the\ndevice and every reading's `appliance_id` is FORCED to the device's bound\nappliance — a satellite drives exactly one HVAC and must not be able to\nwrite another unit's stream; a mismatching client-supplied `appliance_id`\nis rejected with 400 rather than silently overwritten.",
+        "description": "Push a batch of sensor readings.\n\nAccepts EITHER a user JWT (the HACS client) OR a device token (a fleet\nsatellite, US-SAT-06). For a device the owning `user_id` comes from the\ndevice and every reading's `appliance_id` is FORCED to the device's bound\nappliance \u2014 a satellite drives exactly one HVAC and must not be able to\nwrite another unit's stream; a mismatching client-supplied `appliance_id`\nis rejected with 400 rather than silently overwritten.",
         "operationId": "post_readings_api_v1_readings_post",
         "requestBody": {
           "content": {
@@ -816,7 +816,7 @@
           "schedules"
         ],
         "summary": "Get All Schedules",
-        "description": "Unified endpoint: returns all appliance schedules for the\nauthenticated user. The integration polls this once per day.\n\nThe response includes an `integration_health` block so the panel\ncan render a banner when the HACS push pipeline goes stale or the\nthermostat sensor freezes — same probe that powers\n`GET /api/v1/integration/health` (which exists for clients that\nonly need the health check, e.g. a dashboard ping).",
+        "description": "Unified endpoint: returns all appliance schedules for the\nauthenticated user. The integration polls this once per day.\n\nThe response includes an `integration_health` block so the panel\ncan render a banner when the HACS push pipeline goes stale or the\nthermostat sensor freezes \u2014 same probe that powers\n`GET /api/v1/integration/health` (which exists for clients that\nonly need the health check, e.g. a dashboard ping).",
         "operationId": "get_all_schedules_api_v1_schedules_get",
         "responses": {
           "200": {
@@ -841,7 +841,7 @@
           "schedules"
         ],
         "summary": "Get Schedules Updated At",
-        "description": "Cheap freshness poll: the latest `created_at` across the user's\n`appliance_schedules` rows for today, without downloading any\nschedule bodies. Lets a client learn a re-optimization landed (e.g.\na spike-guard re-plan) without pulling the full `/schedules` payload\non every check.\n\n`appliance_schedules` is append-only, so the max `created_at` for\ntoday IS the correct freshness token — a later write always means a\nnewer optimization, never a mutation of an existing row.",
+        "description": "Cheap freshness poll: the latest `created_at` across the user's\n`appliance_schedules` rows for today, without downloading any\nschedule bodies. Lets a client learn a re-optimization landed (e.g.\na spike-guard re-plan) without pulling the full `/schedules` payload\non every check.\n\n`appliance_schedules` is append-only, so the max `created_at` for\ntoday IS the correct freshness token \u2014 a later write always means a\nnewer optimization, never a mutation of an existing row.",
         "operationId": "get_schedules_updated_at_api_v1_schedules_updated_at_get",
         "responses": {
           "200": {
@@ -866,7 +866,7 @@
           "schedules"
         ],
         "summary": "Get Integration Sensor Health",
-        "description": "Per-sensor health for every configured aux entity on each of\nthe user's HVAC appliances.\n\nSurfaces silently-missing sensor configurations (e.g. the user\ntypo'd the power_sensor_entity_id) by checking what fraction of\nrecent readings actually populate the corresponding column.\n\nReturns a list of dicts — each entry describes one (appliance,\nsensor) pair with a verdict ('healthy' | 'intermittent' |\n'missing_or_broken' | 'no_data') and a human-readable message.\nEmpty list when the user has no aux sensors configured.",
+        "description": "Per-sensor health for every configured aux entity on each of\nthe user's HVAC appliances.\n\nSurfaces silently-missing sensor configurations (e.g. the user\ntypo'd the power_sensor_entity_id) by checking what fraction of\nrecent readings actually populate the corresponding column.\n\nReturns a list of dicts \u2014 each entry describes one (appliance,\nsensor) pair with a verdict ('healthy' | 'intermittent' |\n'missing_or_broken' | 'no_data') and a human-readable message.\nEmpty list when the user has no aux sensors configured.",
         "operationId": "get_integration_sensor_health_api_v1_integration_sensors_get",
         "responses": {
           "200": {
@@ -891,7 +891,7 @@
           "schedules"
         ],
         "summary": "Get Integration Health",
-        "description": "Standalone integration-health probe.\n\nSame payload as the `integration_health` block on `/schedules` —\nsurfaced separately so the panel / dashboard can poll it without\npulling the full schedule payload. Useful for a \"Connection: OK /\nStale / Frozen\" badge that refreshes more often than the schedule.\n\nStatus values:\n  * `healthy`       — recent readings present, indoor temp varying.\n  * `stale_data`    — last reading > 30 minutes old.\n  * `frozen_sensor` — readings arriving but indoor_temp variance\n                      collapsed (e.g. the May-27 pilot freeze).\n  * `no_data`       — zero readings in the last 6 hours.\n\nResponse carries the user-wide verdict at the top level\n(back-compat with single-HVAC clients) plus an `appliances` list\nkeyed by appliance_id with the per-HVAC verdict (US-MHVAC-013).\nNon-HVAC appliances are omitted from the breakdown — only HVAC\nappliances feed the indoor_temp / hvac_state stream the probe\nclassifies on.",
+        "description": "Standalone integration-health probe.\n\nSame payload as the `integration_health` block on `/schedules` \u2014\nsurfaced separately so the panel / dashboard can poll it without\npulling the full schedule payload. Useful for a \"Connection: OK /\nStale / Frozen\" badge that refreshes more often than the schedule.\n\nStatus values:\n  * `healthy`       \u2014 recent readings present, indoor temp varying.\n  * `stale_data`    \u2014 last reading > 30 minutes old.\n  * `frozen_sensor` \u2014 readings arriving but indoor_temp variance\n                      collapsed (e.g. the May-27 pilot freeze).\n  * `no_data`       \u2014 zero readings in the last 6 hours.\n\nResponse carries the user-wide verdict at the top level\n(back-compat with single-HVAC clients) plus an `appliances` list\nkeyed by appliance_id with the per-HVAC verdict (US-MHVAC-013).\nNon-HVAC appliances are omitted from the breakdown \u2014 only HVAC\nappliances feed the indoor_temp / hvac_state stream the probe\nclassifies on.",
         "operationId": "get_integration_health_api_v1_integration_health_get",
         "responses": {
           "200": {
@@ -916,7 +916,7 @@
           "schedules"
         ],
         "summary": "Get Integration Divergence",
-        "description": "Three-signal divergence report over the last 24 hours.\n\nSurfaces how often each of the three signal sources (commanded,\npower, entity-reported) was available and how often pairs agreed.\nUsed by the panel diagnostics view to render the\n\"Thermostat reports unreliable state\" banner without making the\nuser squint at raw readings.\n\nVerdict values:\n  * `healthy`                       — all three signals agree\n  * `entity_unreliable`             — entity lies; commanded +\n                                      power are still trustworthy\n  * `thermostat_ignoring_commands`  — the unit isn't holding the\n                                      setpoint it was sent\n  * `commanded_missing`             — pre-Phase-2 HACS client\n  * `no_data` / `unknown`           — no readings / DB error",
+        "description": "Three-signal divergence report over the last 24 hours.\n\nSurfaces how often each of the three signal sources (commanded,\npower, entity-reported) was available and how often pairs agreed.\nUsed by the panel diagnostics view to render the\n\"Thermostat reports unreliable state\" banner without making the\nuser squint at raw readings.\n\nVerdict values:\n  * `healthy`                       \u2014 all three signals agree\n  * `entity_unreliable`             \u2014 entity lies; commanded +\n                                      power are still trustworthy\n  * `thermostat_ignoring_commands`  \u2014 the unit isn't holding the\n                                      setpoint it was sent\n  * `commanded_missing`             \u2014 pre-Phase-2 HACS client\n  * `no_data` / `unknown`           \u2014 no readings / DB error",
         "operationId": "get_integration_divergence_api_v1_integration_health_divergence_get",
         "responses": {
           "200": {
@@ -1032,7 +1032,7 @@
           "schedules"
         ],
         "summary": "Recompute Schedule",
-        "description": "Run optimization synchronously for the authenticated user, then\nreturn the freshly written schedules.\n\nUsed by the panel right after the user clicks \"Save\" on a constraint\neditor — instead of waiting for the debounced background job and\npolling, the frontend gets the new schedule inline and updates the\nchart without a page reload.\n\nLatency: typically 1-5 seconds (HVAC optimizer's bounded backtrack\nfinishes early when no better plan exists). Worst case the HVAC\noptimizer's hard-coded 28-second budget plus a couple of fast\nnon-HVAC runs. The frontend should show an \"Optimizing…\" overlay\nwhile this is in flight.",
+        "description": "Run optimization synchronously for the authenticated user, then\nreturn the freshly written schedules.\n\nUsed by the panel right after the user clicks \"Save\" on a constraint\neditor \u2014 instead of waiting for the debounced background job and\npolling, the frontend gets the new schedule inline and updates the\nchart without a page reload.\n\nLatency: typically 1-5 seconds (HVAC optimizer's bounded backtrack\nfinishes early when no better plan exists). Worst case the HVAC\noptimizer's hard-coded 28-second budget plus a couple of fast\nnon-HVAC runs. The frontend should show an \"Optimizing\u2026\" overlay\nwhile this is in flight.",
         "operationId": "recompute_schedule_api_v1_schedule_recompute_post",
         "responses": {
           "200": {
@@ -1177,7 +1177,7 @@
           "appliances"
         ],
         "summary": "Delete Appliance",
-        "description": "Permanently delete an appliance the authenticated user owns.\n\nCascades through the schema: `appliance_readings`, `appliance_schedules`,\nand any appliance-scoped constraint rows are removed via the\n`ON DELETE CASCADE` foreign keys defined in migration 002. The\nuser's `thermal_models` row is per-user (not per-appliance) and is\npreserved — re-registering an HVAC appliance lets the model keep\nusing prior learned parameters.\n\nReturns 204 on success, 404 when the appliance doesn't exist or\nisn't owned by the caller.",
+        "description": "Permanently delete an appliance the authenticated user owns.\n\nCascades through the schema: `appliance_readings`, `appliance_schedules`,\nand any appliance-scoped constraint rows are removed via the\n`ON DELETE CASCADE` foreign keys defined in migration 002. The\nuser's `thermal_models` row is per-user (not per-appliance) and is\npreserved \u2014 re-registering an HVAC appliance lets the model keep\nusing prior learned parameters.\n\nReturns 204 on success, 404 when the appliance doesn't exist or\nisn't owned by the caller.",
         "operationId": "delete_appliance_api_v1_appliances__appliance_id__delete",
         "security": [
           {
@@ -1374,7 +1374,7 @@
           "appliances"
         ],
         "summary": "Get Appliance Schedule",
-        "description": "Pull a single appliance's optimized schedule.\n\nAccepts EITHER a user JWT (the HACS client) OR a device token (a fleet\nsatellite, US-SAT-06). A satellite is scoped to its ONE bound appliance:\nrequesting any other {appliance_id} is 403, never a data leak — the check\nruns before the appliance lookup so a foreign id can't even be probed.",
+        "description": "Pull a single appliance's optimized schedule.\n\nAccepts EITHER a user JWT (the HACS client) OR a device token (a fleet\nsatellite, US-SAT-06). A satellite is scoped to its ONE bound appliance:\nrequesting any other {appliance_id} is 403, never a data leak \u2014 the check\nruns before the appliance lookup so a foreign id can't even be probed.",
         "operationId": "get_appliance_schedule_api_v1_appliances__appliance_id__schedule_get",
         "security": [
           {
@@ -1420,7 +1420,7 @@
           "appliances"
         ],
         "summary": "Post Appliance Command",
-        "description": "Enqueue a live-control command for a satellite's HVAC appliance.\n\nOwner-checked (user JWT). Validated against the appliance's IR setpoint\nclamps, written to the durable `device_commands` queue, then the in-process\ncommand bus is signaled so a device parked in a long-poll (US-SAT-08) wakes\nimmediately instead of waiting out its poll. Returns 202 `{command_id}`.\n\nOverride semantics: a command holds until the next 30-min slot boundary\nre-applies the schedule UNLESS `hold=true`, in which case it holds until the\nuser changes it — mirroring the HACS manual-override behavior.\n\nErrors:\n  * 400 — empty command (no actionable field) or a `target_temp_f` outside\n    the appliance's `[setpoint_min_f, setpoint_max_f]` IR range.\n  * 404 — appliance not found / not owned by the caller.\n  * 409 — the appliance has no bound device to receive the command.",
+        "description": "Enqueue a live-control command for a satellite's HVAC appliance.\n\nOwner-checked (user JWT). Validated against the appliance's IR setpoint\nclamps, written to the durable `device_commands` queue, then the in-process\ncommand bus is signaled so a device parked in a long-poll (US-SAT-08) wakes\nimmediately instead of waiting out its poll. Returns 202 `{command_id}`.\n\nOverride semantics: a command holds until the next 30-min slot boundary\nre-applies the schedule UNLESS `hold=true`, in which case it holds until the\nuser changes it \u2014 mirroring the HACS manual-override behavior.\n\nErrors:\n  * 400 \u2014 empty command (no actionable field) or a `target_temp_f` outside\n    the appliance's `[setpoint_min_f, setpoint_max_f]` IR range.\n  * 404 \u2014 appliance not found / not owned by the caller.\n  * 409 \u2014 the appliance has no bound device to receive the command.",
         "operationId": "post_appliance_command_api_v1_appliances__appliance_id__command_post",
         "security": [
           {
@@ -1730,7 +1730,7 @@
           "devices"
         ],
         "summary": "Claim Device",
-        "description": "Redeem an enrollment token to bind a satellite to the minting user.\n\nPublic (no auth): the device presents the enroll token as its proof of a\nsigned-in user's intent. Creates the HVAC appliance the satellite drives\nand the bound `devices` row, then returns the device's permanent bearer\ntoken exactly once.\n\nErrors:\n  * 400 — invalid / already-used / expired enrollment token (distinct\n    detail strings).\n  * 409 — the device_id is already claimed by someone.",
+        "description": "Redeem an enrollment token to bind a satellite to the minting user.\n\nPublic (no auth): the device presents the enroll token as its proof of a\nsigned-in user's intent. Creates the HVAC appliance the satellite drives\nand the bound `devices` row, then returns the device's permanent bearer\ntoken exactly once.\n\nErrors:\n  * 400 \u2014 invalid / already-used / expired enrollment token (distinct\n    detail strings).\n  * 409 \u2014 the device_id is already claimed by someone.",
         "operationId": "claim_device_api_v1_devices_claim_post",
         "requestBody": {
           "content": {
@@ -1770,7 +1770,7 @@
           "devices"
         ],
         "summary": "Get Device Config",
-        "description": "Return the satellite's runtime config, computed for its owning user.\n\nSLOT 0 IS LOCAL MIDNIGHT. Every 48-slot artifact in this system — the\nschedule the device pulls AND the `comfort_band` returned here — is keyed\nto the owning user's LOCAL midnight, not UTC (see the \"Schedule slot 0 =\nmidnight LOCAL time, not UTC\" invariant in hungry-machines-api/CLAUDE.md:\na prior HACS build read the process/UTC clock and applied the whole grid on\na 4-hour-shifted offset for EDT users). A satellite has no tz database, so\nthe server hands it the `timezone` + a two-entry offset table\n(`utc_offset_minutes_now` + `next_transition`); the firmware slot engine\n(US-SAT-12) maps UTC epoch -> local slot from that table, DST included.\n\nFields:\n  * timezone / utc_offset_minutes_now / next_transition — the offset table.\n    `next_transition` is null for zones that don't observe DST.\n  * setpoint_min_f / setpoint_max_f — the IR remote's setpoint clamp\n    (from the appliance config, else 61/86).\n  * comfort_band — today's 48-slot {high_temps_f, low_temps_f}, local-midnight\n    grid, from the appliance's comfort preferences via the comfort service.\n  * reading_push_interval_s / capture_interval_s / command_poll_wait_s —\n    the satellite's steady-state loop cadence.",
+        "description": "Return the satellite's runtime config, computed for its owning user.\n\nSLOT 0 IS LOCAL MIDNIGHT. Every 48-slot artifact in this system \u2014 the\nschedule the device pulls AND the `comfort_band` returned here \u2014 is keyed\nto the owning user's LOCAL midnight, not UTC (see the \"Schedule slot 0 =\nmidnight LOCAL time, not UTC\" invariant in hungry-machines-api/CLAUDE.md:\na prior HACS build read the process/UTC clock and applied the whole grid on\na 4-hour-shifted offset for EDT users). A satellite has no tz database, so\nthe server hands it the `timezone` + a two-entry offset table\n(`utc_offset_minutes_now` + `next_transition`); the firmware slot engine\n(US-SAT-12) maps UTC epoch -> local slot from that table, DST included.\n\nFields:\n  * timezone / utc_offset_minutes_now / next_transition \u2014 the offset table.\n    `next_transition` is null for zones that don't observe DST.\n  * setpoint_min_f / setpoint_max_f \u2014 the IR remote's setpoint clamp\n    (from the appliance config, else 61/86).\n  * comfort_band \u2014 today's 48-slot {high_temps_f, low_temps_f}, local-midnight\n    grid, from the appliance's comfort preferences via the comfort service.\n  * reading_push_interval_s / capture_interval_s / command_poll_wait_s \u2014\n    the satellite's steady-state loop cadence.",
         "operationId": "get_device_config_api_v1_devices_config_get",
         "responses": {
           "200": {
@@ -1820,7 +1820,7 @@
           "devices"
         ],
         "summary": "Poll Device Commands",
-        "description": "Long-poll for pending live-control commands (device token).\n\nReturns the bound appliance's undelivered `device_commands` immediately,\noldest first, stamping `delivered_at` on each as it hands them over. When\nnone are pending and `wait > 0`, parks on the in-process command bus for up\nto `min(wait, 55)` seconds and re-reads the moment an enqueue (US-SAT-07)\nsignals — so a user command reaches the device in seconds, not on the next\nscheduled poll. Returns `[]` on timeout. `wait=0` never blocks (a plain\n\"anything for me?\" check).\n\n**Restart-durable.** Delivery state lives in `device_commands`\n(`delivered_at`), not in the command bus's process memory. If the API\nrestarts while a command is undelivered, the in-memory Event is gone but the\nrow is not — the next poll's authoritative DB read returns it with no signal\nrequired. The bus is a latency optimization layered on the durable queue.",
+        "description": "Long-poll for pending live-control commands (device token).\n\nReturns the bound appliance's undelivered `device_commands` immediately,\noldest first, stamping `delivered_at` on each as it hands them over. When\nnone are pending and `wait > 0`, parks on the in-process command bus for up\nto `min(wait, 55)` seconds and re-reads the moment an enqueue (US-SAT-07)\nsignals \u2014 so a user command reaches the device in seconds, not on the next\nscheduled poll. Returns `[]` on timeout. `wait=0` never blocks (a plain\n\"anything for me?\" check).\n\n**Restart-durable.** Delivery state lives in `device_commands`\n(`delivered_at`), not in the command bus's process memory. If the API\nrestarts while a command is undelivered, the in-memory Event is gone but the\nrow is not \u2014 the next poll's authoritative DB read returns it with no signal\nrequired. The bus is a latency optimization layered on the durable queue.",
         "operationId": "poll_device_commands_api_v1_devices_commands_get",
         "security": [
           {
@@ -1912,7 +1912,7 @@
           "devices"
         ],
         "summary": "List Devices",
-        "description": "List the caller's claimed devices with their type + health fields.\n\nReturns one entry per bound `devices` row owned by the user. Each entry\ncarries `device_type` (`ir-climate` | `stoplight`) so the UI can render a\ndisplay-only stoplight (appliance_id NULL, no appliance behind it) without\ntreating it as a broken HVAC (US-STOP-005). A stoplight row is listed\nnormally — never filtered out for lacking an appliance. Unclaimed factory\nrows (user_id NULL) never appear — they belong to no account yet.\nAbsent telemetry (`firmware_version` / `last_seen_at` / `rssi`) is returned\nas null, never a fabricated zero, so the UI can show an honest em-dash\n(fleet-dashboard honesty rule; US-SAT-22 renders the health chip).",
+        "description": "List the caller's claimed devices with their type + health fields.\n\nReturns one entry per bound `devices` row owned by the user. Each entry\ncarries `device_type` (`ir-climate` | `stoplight`) so the UI can render a\ndisplay-only stoplight (appliance_id NULL, no appliance behind it) without\ntreating it as a broken HVAC (US-STOP-005). A stoplight row is listed\nnormally \u2014 never filtered out for lacking an appliance. Unclaimed factory\nrows (user_id NULL) never appear \u2014 they belong to no account yet.\nAbsent telemetry (`firmware_version` / `last_seen_at` / `rssi`) is returned\nas null, never a fabricated zero, so the UI can show an honest em-dash\n(fleet-dashboard honesty rule; US-SAT-22 renders the health chip).",
         "operationId": "list_devices_api_v1_devices_get",
         "responses": {
           "200": {
@@ -1937,7 +1937,7 @@
           "devices"
         ],
         "summary": "Unclaim Device",
-        "description": "Unbind a satellite the caller owns, keeping the row for factory identity.\n\nClears `user_id` / `appliance_id` / `token_hash` back to NULL so the device\nis re-claimable in place (mirrors the unclaimed factory state from\nUS-SAT-01; `_is_claimed` reads exactly these three fields) — the old device\ntoken immediately stops authenticating (its hash no longer matches any\nrow, so `get_current_device` -> 401). The `devices` row itself survives\n(last_seen_at / rssi / firmware history stay for factory identity), and the\nbound **appliance is NOT deleted**: its readings, thermal model, and\nschedule history remain. To also remove the appliance, the user deletes it\nseparately via `DELETE /api/v1/appliances/{id}`.\n\nOwner-checked: a device the caller doesn't own (or an unknown id) -> 404,\nnever leaking another account's device existence. Returns 204 on success.",
+        "description": "Unbind a satellite the caller owns, keeping the row for factory identity.\n\nClears `user_id` / `appliance_id` / `token_hash` back to NULL so the device\nis re-claimable in place (mirrors the unclaimed factory state from\nUS-SAT-01; `_is_claimed` reads exactly these three fields) \u2014 the old device\ntoken immediately stops authenticating (its hash no longer matches any\nrow, so `get_current_device` -> 401). The `devices` row itself survives\n(last_seen_at / rssi / firmware history stay for factory identity), and the\nbound **appliance is NOT deleted**: its readings, thermal model, and\nschedule history remain. To also remove the appliance, the user deletes it\nseparately via `DELETE /api/v1/appliances/{id}`.\n\nOwner-checked: a device the caller doesn't own (or an unknown id) -> 404,\nnever leaking another account's device existence. Returns 204 on success.",
         "operationId": "unclaim_device_api_v1_devices__device_id__delete",
         "security": [
           {
@@ -2161,7 +2161,7 @@
           "rates"
         ],
         "summary": "List Tariffs",
-        "description": "Browse the versioned tariff store (``tariff_rulesets``).\n\nFiltering, sorting, and pagination happen in Python — the store is\nsmall (hand-curated + per-RIN/URDB ingestion, not a bulk mirror), and\nthis keeps the endpoint testable against the mock DB. Revisit with\nserver-side filters if the store ever approaches PostgREST's 1000-row\npage cap.\n\nUnverified rows carry a ``disclaimer`` field (community-sourced data);\nverified rows omit it entirely.",
+        "description": "Browse the versioned tariff store (``tariff_rulesets``).\n\nFiltering, sorting, and pagination happen in Python \u2014 the store is\nsmall (hand-curated + per-RIN/URDB ingestion, not a bulk mirror), and\nthis keeps the endpoint testable against the mock DB. Revisit with\nserver-side filters if the store ever approaches PostgREST's 1000-row\npage cap.\n\nUnverified rows carry a ``disclaimer`` field (community-sourced data);\nverified rows omit it entirely.",
         "operationId": "list_tariffs_api_v1_rates_tariffs_get",
         "security": [
           {
@@ -2236,10 +2236,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Free-text search — case-insensitive substring over utility, plan_name, and region.",
+              "description": "Free-text search \u2014 case-insensitive substring over utility, plan_name, and region.",
               "title": "Q"
             },
-            "description": "Free-text search — case-insensitive substring over utility, plan_name, and region."
+            "description": "Free-text search \u2014 case-insensitive substring over utility, plan_name, and region."
           },
           {
             "name": "limit",
@@ -2293,7 +2293,7 @@
           "weather"
         ],
         "summary": "Push Weather",
-        "description": "Store the user's HA weather forecast for tonight's optimization.\n\nExisting forecast rows are overwritten (single-latest-row-per-user\nsemantics). Missing optional arrays (humidity, wind) are stored as\nnull — the optimizer treats those as \"use defaults\".",
+        "description": "Store the user's HA weather forecast for tonight's optimization.\n\nExisting forecast rows are overwritten (single-latest-row-per-user\nsemantics). Missing optional arrays (humidity, wind) are stored as\nnull \u2014 the optimizer treats those as \"use defaults\".",
         "operationId": "push_weather_api_v1_weather_post",
         "requestBody": {
           "content": {
@@ -2340,7 +2340,7 @@
           "calibration"
         ],
         "summary": "Get Calibration Status",
-        "description": "Return calibration state for an appliance.\n\nResponse always has:\n  * `appliance_id` — echoes the (resolved) id\n  * `is_complete` — true iff there's a `completed` or `skipped` row\n  * `is_in_progress` — true iff there's an `in_progress` row\n  * `latest_run` — projected latest row (may be null)\n  * `history` — all past rows newest-first\n  * `can_skip` — true if there's anything to skip (no terminal row)\n\nEvery projected run also carries `partial`: true when the run\ncompleted from a subset of its measurement phases (the phases that\ncame back empty, and why, are in `derived_rates.failed_phases`).\n\nEvery projected run carries its `kind` (`fan_excitation` or\n`setpoint_step`) so the panel can name which excitation a row was.",
+        "description": "Return calibration state for an appliance.\n\nResponse always has:\n  * `appliance_id` \u2014 echoes the (resolved) id\n  * `is_complete` \u2014 true iff there's a `completed` or `skipped` row\n  * `is_in_progress` \u2014 true iff there's an `in_progress` row\n  * `latest_run` \u2014 projected latest row (may be null)\n  * `history` \u2014 all past rows newest-first\n  * `can_skip` \u2014 true if there's anything to skip (no terminal row)\n\nEvery projected run also carries `partial`: true when the run\ncompleted from a subset of its measurement phases (the phases that\ncame back empty, and why, are in `derived_rates.failed_phases`).\n\nEvery projected run carries its `kind` (`fan_excitation` or\n`setpoint_step`) so the panel can name which excitation a row was.",
         "operationId": "get_calibration_status_api_v1_calibration_status_get",
         "security": [
           {
@@ -2440,7 +2440,7 @@
           "calibration"
         ],
         "summary": "Skip Calibration",
-        "description": "Mark the FAN-EXCITATION calibration skipped for this appliance.\n\nPermanent for that run — future nightlies see a `skipped`\nterminal-status row and won't try the 6-hour COOL/OFF excitation\nagain. Reverting requires hitting `/calibration/start` to insert a\nfresh `in_progress` row.\n\nIt does not skip the setpoint-step run, which is a different\nexcitation: three in-band holds a week later, no OFF phases and no\nfan commands. Skipping the disruptive one shouldn't forfeit the\ngentle one that any unit can run.",
+        "description": "Mark the FAN-EXCITATION calibration skipped for this appliance.\n\nPermanent for that run \u2014 future nightlies see a `skipped`\nterminal-status row and won't try the 6-hour COOL/OFF excitation\nagain. Reverting requires hitting `/calibration/start` to insert a\nfresh `in_progress` row.\n\nIt does not skip the setpoint-step run, which is a different\nexcitation: three in-band holds a week later, no OFF phases and no\nfan commands. Skipping the disruptive one shouldn't forfeit the\ngentle one that any unit can run.",
         "operationId": "skip_calibration_api_v1_calibration_skip_post",
         "requestBody": {
           "content": {
@@ -2661,6 +2661,60 @@
         }
       }
     },
+    "/admin/fleet/customer-review": {
+      "get": {
+        "tags": [
+          "fleet-admin"
+        ],
+        "summary": "Fleet Customer Review",
+        "operationId": "fleet_customer_review_admin_fleet_customer_review_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Last day of the window (YYYY-MM-DD); defaults to yesterday.",
+              "title": "End"
+            },
+            "description": "Last day of the window (YYYY-MM-DD); defaults to yesterday."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/fleet/feedback": {
       "get": {
         "tags": [
@@ -2762,7 +2816,7 @@
           "fleet-admin"
         ],
         "summary": "Fleet Devices",
-        "description": "Every ``devices`` row projected to its type + health columns, newest\n``last_seen_at`` first (never-seen devices — NULL last_seen_at — sort\nlast). Thin single-table scan; ``[]`` on an empty/missing table or an\nunavailable Supabase client (``_load_all`` swallows the error), never a\n500. Both device kinds are returned; the SPA tells a stoplight apart by\n``device_type``.",
+        "description": "Every ``devices`` row projected to its type + health columns, newest\n``last_seen_at`` first (never-seen devices \u2014 NULL last_seen_at \u2014 sort\nlast). Thin single-table scan; ``[]`` on an empty/missing table or an\nunavailable Supabase client (``_load_all`` swallows the error), never a\n500. Both device kinds are returned; the SPA tells a stoplight apart by\n``device_type``.",
         "operationId": "fleet_devices_admin_fleet_devices_get",
         "responses": {
           "200": {
@@ -3047,7 +3101,7 @@
           "customer-metrics"
         ],
         "summary": "Me Metrics Summary",
-        "description": "The authenticated customer's headline numbers over a trailing window.\n\nAggregation is anchored on the customer's most recent rollup date and\nreaches back `window` days. Cumulative fields (savings dollars, peak hours\nidle, override events) are summed; intensity fields (percentages, comfort\nband degree-hours) are meaned — so the meaned figures stay comparable no\nmatter how many days of data a home has. Every metric is `None` (→ em dash)\nwhen nothing contributed it; a home with no rows yet gets a 200 of nulls.",
+        "description": "The authenticated customer's headline numbers over a trailing window.\n\nAggregation is anchored on the customer's most recent rollup date and\nreaches back `window` days. Cumulative fields (savings dollars, peak hours\nidle, override events) are summed; intensity fields (percentages, comfort\nband degree-hours) are meaned \u2014 so the meaned figures stay comparable no\nmatter how many days of data a home has. Every metric is `None` (\u2192 em dash)\nwhen nothing contributed it; a home with no rows yet gets a 200 of nulls.",
         "operationId": "me_metrics_summary_api_v1_me_metrics_summary_get",
         "security": [
           {
@@ -3097,7 +3151,7 @@
           "customer-metrics"
         ],
         "summary": "Me Metrics Daily",
-        "description": "The caller's per-day metrics over a date window, for charting a trend.\n\nUnlike `/summary` this is NOT aggregated: each entry is one calendar day's\nown savings/peaks/flexibility/comfort straight off `user_metrics_daily`.\nDays with no rollup row are **omitted** (not zero-filled), so gaps read as\n\"no data that day\" rather than a fabricated zero. Ordered oldest → newest.\n\nThe window is capped at `_MAX_WINDOW_DAYS` (90) calendar days, matching\n`/summary` and `/rankings`' `window` cap; a wider span or `start > end`\nreturns `400`.",
+        "description": "The caller's per-day metrics over a date window, for charting a trend.\n\nUnlike `/summary` this is NOT aggregated: each entry is one calendar day's\nown savings/peaks/flexibility/comfort straight off `user_metrics_daily`.\nDays with no rollup row are **omitted** (not zero-filled), so gaps read as\n\"no data that day\" rather than a fabricated zero. Ordered oldest \u2192 newest.\n\nThe window is capped at `_MAX_WINDOW_DAYS` (90) calendar days, matching\n`/summary` and `/rankings`' `window` cap; a wider span or `start > end`\nreturns `400`.",
         "operationId": "me_metrics_daily_api_v1_me_metrics_daily_get",
         "security": [
           {
@@ -3170,7 +3224,7 @@
           "customer-metrics"
         ],
         "summary": "Me Metrics Day",
-        "description": "One LOCAL day's plan-vs-actual for the caller's HVAC (US-MET-007).\n\nReturns the plan the optimizer intended — the 48-slot commanded setpoints,\nthe comfort band, and the price curve — the measured indoor temperature,\nand where the plan and reality diverged, split into two SEPARATE lists:\n\n  * ``overrides`` — the customer changed the plan (we commanded it\n    correctly; the thermostat showed something else, persistently).\n  * ``conformance_defects`` — WE failed to deliver it (the commanded\n    setpoint itself diverged from the plan).\n\nKeeping them apart is the whole point: an override is the customer's\ndecision, a defect is our bug, and the UI must never conflate them.\nPer-episode detail isn't persisted (the rollup keeps only daily counts and\nthe hour histogram), so this route re-runs the detector over the day's\n``sensor_readings``. A day with no plan / no attributable readings returns\nempty lists and null arrays with a ``200`` — never a ``404``.",
+        "description": "One LOCAL day's plan-vs-actual for the caller's HVAC (US-MET-007).\n\nReturns the plan the optimizer intended \u2014 the 48-slot commanded setpoints,\nthe comfort band, and the price curve \u2014 the measured indoor temperature,\nand where the plan and reality diverged, split into two SEPARATE lists:\n\n  * ``overrides`` \u2014 the customer changed the plan (we commanded it\n    correctly; the thermostat showed something else, persistently).\n  * ``conformance_defects`` \u2014 WE failed to deliver it (the commanded\n    setpoint itself diverged from the plan).\n\nKeeping them apart is the whole point: an override is the customer's\ndecision, a defect is our bug, and the UI must never conflate them.\nPer-episode detail isn't persisted (the rollup keeps only daily counts and\nthe hour histogram), so this route re-runs the detector over the day's\n``sensor_readings``. A day with no plan / no attributable readings returns\nempty lists and null arrays with a ``200`` \u2014 never a ``404``.",
         "operationId": "me_metrics_day_api_v1_me_metrics_day__date__get",
         "security": [
           {
@@ -3236,7 +3290,7 @@
           "customer-metrics"
         ],
         "summary": "Me Rankings",
-        "description": "How the caller stacks up against comparable homes — without revealing\nanything about those homes (US-MET-009).\n\nFor each of the four ranked, higher-is-better metrics (savings percent,\noff-peak share, flexibility degree-hours, machine types connected) the route\nresolves the caller's tightest eligible cohort — ZIP code → area → rate plan\n→ fleet — then places the caller's own windowed value against that cohort's\nprecomputed distribution (`cohort_stats_daily`, materialized nightly). Only\nthe caller's **rank, percentile and own value** ship: never the cohort\npopulation count (no `n`/`count`/`total`/`size` under any key) and never\nanother home's value. A metric the caller can't be ranked on yet carries a\n`null` rank (never `0`); a home with no cohort distribution still sees its\nown value with null ranks, `200` — never a `404`.",
+        "description": "How the caller stacks up against comparable homes \u2014 without revealing\nanything about those homes (US-MET-009).\n\nFor each of the four ranked, higher-is-better metrics (savings percent,\noff-peak share, flexibility degree-hours, machine types connected) the route\nresolves the caller's tightest eligible cohort \u2014 ZIP code \u2192 area \u2192 rate plan\n\u2192 fleet \u2014 then places the caller's own windowed value against that cohort's\nprecomputed distribution (`cohort_stats_daily`, materialized nightly). Only\nthe caller's **rank, percentile and own value** ship: never the cohort\npopulation count (no `n`/`count`/`total`/`size` under any key) and never\nanother home's value. A metric the caller can't be ranked on yet carries a\n`null` rank (never `0`); a home with no cohort distribution still sees its\nown value with null ranks, `200` \u2014 never a `404`.",
         "operationId": "me_rankings_api_v1_me_rankings_get",
         "security": [
           {
@@ -3793,7 +3847,7 @@
           "version"
         ],
         "title": "ClientInfo",
-        "description": "Who sent this batch — display-only telemetry, never control input.\n\nEvery push from a release that knows about it identifies the software\non the other end: the HACS integration's manifest version, and (on a\nfleet node) the blessed bundle tag the container was started with. It\nlets a later control change be graded per home — \"the homes still on\n3.6.0 behaved like this, the ones on 3.7.0 like that\" — instead of\nguessing which fix a given day's readings were produced under.\n\nOptional on the batch: older clients omit it and nothing else about\nthe batch changes.\n\n`\"custom\"` (US-APH-006) is the honest value for any client that is\nneither of our own: pair it with `name` to say what the client is."
+        "description": "Who sent this batch \u2014 display-only telemetry, never control input.\n\nEvery push from a release that knows about it identifies the software\non the other end: the HACS integration's manifest version, and (on a\nfleet node) the blessed bundle tag the container was started with. It\nlets a later control change be graded per home \u2014 \"the homes still on\n3.6.0 behaved like this, the ones on 3.7.0 like that\" \u2014 instead of\nguessing which fix a given day's readings were produced under.\n\nOptional on the batch: older clients omit it and nothing else about\nthe batch changes.\n\n`\"custom\"` (US-APH-006) is the honest value for any client that is\nneither of our own: pair it with `name` to say what the client is."
       },
       "CreateCheckoutRequest": {
         "properties": {
@@ -4057,7 +4111,7 @@
         },
         "type": "object",
         "title": "DeviceCommand",
-        "description": "A live-control command for a satellite's HVAC appliance (US-SAT-07).\n\nEvery actionable field is optional — the command is a *partial* override\nthe device folds over its assumed state (US-SAT-13), so a user can nudge\njust the setpoint without restating mode/fan. `hold` governs how long the\noverride survives a schedule re-apply."
+        "description": "A live-control command for a satellite's HVAC appliance (US-SAT-07).\n\nEvery actionable field is optional \u2014 the command is a *partial* override\nthe device folds over its assumed state (US-SAT-13), so a user can nudge\njust the setpoint without restating mode/fan. `hold` governs how long the\noverride survives a schedule re-apply."
       },
       "DeviceState": {
         "properties": {
@@ -5422,6 +5476,18 @@
             ],
             "title": "Indoor Source"
           },
+          "thermostat_mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 20
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thermostat Mode"
+          },
           "override_active": {
             "anyOf": [
               {
@@ -5625,7 +5691,7 @@
         },
         "type": "object",
         "title": "UrdbImportRequest",
-        "description": "Scope for the URDB import — at least one of state/utility required."
+        "description": "Scope for the URDB import \u2014 at least one of state/utility required."
       },
       "ValidationError": {
         "properties": {

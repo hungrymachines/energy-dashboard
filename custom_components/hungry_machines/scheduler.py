@@ -1052,6 +1052,11 @@ def _comfort_band_override(
         return None
 
     sched_mode = str(schedule.get("mode") or "").strip().lower()
+    # An Auto plan is one direction by the day's forecast, but the day can
+    # still need the other: a cold morning on a cooling day. "auto" lets the
+    # guard answer either breach by switching the mode.
+    if schedule.get("auto_mode"):
+        sched_mode = "auto"
     # The thermostat's own setting wins a conflict, so the guard stands down
     # too: its OFF would be taken for our own and woken into the plan's mode.
     if mode_canonical is None and _overruling_mode(hass, entity_id, schedule):
@@ -1252,10 +1257,11 @@ def _overruling_mode(
 ) -> str | None:
     """The thermostat's mode when it conflicts with the plan, else None.
 
-    Only temperature-only plans can conflict. A plan carrying
-    `hvac_mode_schedule` switches the mode itself, so a mode that differs
-    from the day's may just be our own last command. Off is no conflict
-    when we were the ones who turned the unit off.
+    A plan carrying `hvac_mode_schedule` switches the mode itself, so a mode
+    that differs from the day's may just be our own last command. An
+    `auto_mode` plan may set heat or cool too, so only Off conflicts there,
+    plus a unit that can't do what the plan needs. Off is no conflict when we
+    were the ones who turned the unit off.
     """
     if schedule.get("hvac_mode_schedule") is not None:
         return None
@@ -1270,6 +1276,13 @@ def _overruling_mode(
         last = get_last_commanded(hass, entity_id) or {}
         if str(last.get("hvac_mode") or "").upper() == "OFF":
             return None
+        return mode
+    if schedule.get("auto_mode"):
+        attrs = getattr(state, "attributes", None) or {}
+        modes = attrs.get("hvac_modes")
+        if isinstance(modes, list) and plan_mode not in [str(m).lower() for m in modes]:
+            return mode
+        return None
     return mode
 
 
@@ -1324,10 +1337,19 @@ async def _hold_freeze_floor(
 
     if holding and indoor >= comfort.FREEZE_RELEASE_F:
         restore = latches.pop(entity_id)["restore_mode"]
-        if restore != "heat":
-            await _maybe_set_hvac_mode(
-                hass, entity_id, attrs, restore.upper(), _current_slot(),
-            )
+        # Directly, not through _maybe_set_hvac_mode: that only speaks the
+        # plan's modes, and the thermostat may have been in its own Auto.
+        if restore != "heat" and restore in [
+            str(m).lower() for m in attrs.get("hvac_modes") or []
+        ]:
+            try:
+                await hass.services.async_call(
+                    "climate", "set_hvac_mode",
+                    {"entity_id": entity_id, "hvac_mode": restore},
+                    blocking=False,
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("freeze floor restore failed for %s: %s", entity_id, err)
         health.report(
             hass, key, True, "%s is back to %.1f°F, so the freeze floor let go",
             name, indoor,
@@ -1418,6 +1440,16 @@ async def _apply_hvac(
         _report_thermostat_mode(
             hass, entity_id, appliance_name, overruling, raw_now, sched_mode,
         )
+        if (
+            schedule.get("auto_mode") and overruling is None
+            and raw_now not in ("", "off", "unavailable", "unknown", sched_mode)
+            and sched_mode in ("cool", "heat")
+        ):
+            mode_canonical = sched_mode.upper()
+            health.note(
+                "%s is set to %s; Auto is switching it to %s for today's plan",
+                appliance_name or entity_id, raw_now, sched_mode,
+            )
         if raw_now == "off" and overruling is None and sched_mode in ("cool", "heat"):
             mode_canonical = sched_mode.upper()
             _LOGGER.warning(

@@ -1386,6 +1386,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/fleet/customer-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fleet Customer Review */
+        get: operations["fleet_customer_review_admin_fleet_customer_review_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/fleet/feedback": {
         parameters: {
             query?: never;
@@ -2323,6 +2340,8 @@ export interface components {
             hvac_action?: string | null;
             /** Indoor Source */
             indoor_source?: ("sensor" | "entity") | null;
+            /** Thermostat Mode */
+            thermostat_mode?: string | null;
             /** Override Active */
             override_active?: boolean | null;
             /** Room Target */
@@ -4143,6 +4162,38 @@ export interface operations {
                 severity?: string | null;
                 limit?: number;
                 offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fleet_customer_review_admin_fleet_customer_review_get: {
+        parameters: {
+            query?: {
+                /** @description Last day of the window (YYYY-MM-DD); defaults to yesterday. */
+                end?: string | null;
             };
             header?: never;
             path?: never;
