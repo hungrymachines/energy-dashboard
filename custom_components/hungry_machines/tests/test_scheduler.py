@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from hungry_machines import scheduler
+from hungry_machines import scheduler, units
 from hungry_machines.const import DOMAIN
 
 
@@ -34,6 +34,7 @@ def _climate_state(
     max_temp: float | None = None,
     fan_modes: list[str] | None = None,
     hvac_modes: list[str] | None = None,
+    step: object | None = None,
 ) -> MagicMock:
     """Build a hass.states.get(...) return value matching a climate entity.
 
@@ -55,6 +56,8 @@ def _climate_state(
         attrs["fan_modes"] = fan_modes
     if hvac_modes is not None:
         attrs["hvac_modes"] = hvac_modes
+    if step is not None:
+        attrs["target_temp_step"] = step
     state.attributes = attrs
     return state
 
@@ -1932,6 +1935,9 @@ async def test_comfort_override_wins_over_wake_within_same_apply() -> None:
     entry = _entry()
     hass.data[DOMAIN] = _override_cache()
     del hass.data[DOMAIN]["schedule"]["hvac-1"]["schedule"]["hvac_mode_schedule"]
+    scheduler._record_last_commanded(
+        hass, "climate.living_room", hvac_mode="OFF", fan_mode=None, setpoint=None,
+    )
 
     with patch.object(scheduler, "_current_slot", return_value=16):
         await scheduler.apply_current_slot(hass, entry)
@@ -2425,11 +2431,9 @@ async def test_no_silent_skip_warns_when_paused_and_out_of_band(caplog) -> None:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_temperature_only_schedule_wakes_off_unit() -> None:
-    """A unit reporting `off` under a temperature-only schedule (no
-    hvac_mode_schedule, schedule mode 'cool') must be woken into COOL
-    so the plan's setpoints can act — previously it stayed off forever
-    because the payload builder skips off-mode entities."""
+async def test_user_turned_off_thermostat_stays_off() -> None:
+    """Off that we did not command is the thermostat's setting, and that
+    wins: no wake, no setpoint, and the log says why."""
     state = _climate_state("off", supports_range=False,
                            hvac_modes=["off", "cool"])
     hass = _hass(state)
@@ -2437,6 +2441,28 @@ async def test_temperature_only_schedule_wakes_off_unit() -> None:
     cache = _hvac_cache(setpoint=74.0)          # temperature-only
     cache["schedule"]["hvac-1"]["schedule"]["mode"] = "cool"
     hass.data[DOMAIN] = cache
+
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, entry)
+
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_temperature_only_schedule_wakes_a_unit_we_turned_off() -> None:
+    """Off that WE commanded (the guard's overshoot OFF, a calibration's
+    passive evening) is not a conflict: wake into the plan's mode, or the
+    unit would stay off forever."""
+    state = _climate_state("off", supports_range=False,
+                           hvac_modes=["off", "cool"])
+    hass = _hass(state)
+    entry = _entry()
+    cache = _hvac_cache(setpoint=74.0)          # temperature-only
+    cache["schedule"]["hvac-1"]["schedule"]["mode"] = "cool"
+    hass.data[DOMAIN] = cache
+    scheduler._record_last_commanded(
+        hass, "climate.living_room", hvac_mode="OFF", fan_mode=None, setpoint=None,
+    )
 
     with patch.object(scheduler, "_current_slot", return_value=28):
         await scheduler.apply_current_slot(hass, entry)
@@ -3041,3 +3067,188 @@ async def test_cross_story_a_legacy_api_body_tracks_nothing() -> None:
         c for c in hass.services.async_call.await_args_list
         if c.args[1] == "set_temperature"
     ]
+
+
+# --- Metric HA: setpoints cross the boundary in °C ---
+
+
+def _metric_hass(state: object | None = None) -> MagicMock:
+    hass = _hass(state)
+    hass.config.units.temperature_unit = "°C"
+    return hass
+
+
+async def _apply_metric(state, setpoint: float = 72.0) -> dict:
+    hass = _metric_hass(state)
+    hass.data[DOMAIN] = _hvac_cache(setpoint=setpoint)
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, _entry())
+    hass.services.async_call.assert_awaited_once()
+    return hass.services.async_call.await_args.args[2]
+
+
+@pytest.mark.asyncio
+async def test_metric_apply_sends_celsius_setpoint() -> None:
+    payload = await _apply_metric(_climate_state("cool", supports_range=False))
+    assert payload["temperature"] == 22.0
+
+
+@pytest.mark.asyncio
+async def test_metric_max_temp_in_celsius_does_not_clamp() -> None:
+    state = _climate_state("cool", supports_range=False, min_temp=16, max_temp=35)
+    payload = await _apply_metric(state)
+    assert payload["temperature"] == 22.0
+
+
+@pytest.mark.asyncio
+async def test_metric_range_converts_low_and_high() -> None:
+    payload = await _apply_metric(_climate_state("heat_cool", supports_range=True))
+    assert payload["target_temp_low"] == 22.0
+    assert payload["target_temp_high"] == 22.0
+
+
+@pytest.mark.asyncio
+async def test_metric_verify_accepts_matching_celsius_readback() -> None:
+    hass = _metric_hass(_climate_state("cool", supports_range=False))
+    hass.states.get.return_value.attributes.update({"temperature": 22.2})
+    await scheduler._verify_hvac_apply(
+        hass, entity_id="climate.living_room", expected_mode="cool",
+        expected_setpoint=72.0, expected_fan=None, slot=30,
+    )
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_metric_verify_resends_celsius_on_mismatch() -> None:
+    hass = _metric_hass(_climate_state("cool", supports_range=False))
+    hass.states.get.return_value.attributes.update({"temperature": 25.0})
+    await scheduler._verify_hvac_apply(
+        hass, entity_id="climate.living_room", expected_mode="cool",
+        expected_setpoint=72.0, expected_fan=None, slot=30,
+    )
+    args = hass.services.async_call.await_args.args
+    assert args[1] == "set_temperature"
+    assert args[2]["temperature"] == 22.22
+
+
+# --- Metric HA: snap to the device step ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("step", [0.5, 1, 1.0])
+async def test_metric_snaps_72f_to_22c(step) -> None:
+    state = _climate_state("cool", supports_range=False, step=step)
+    payload = await _apply_metric(state)
+    assert payload["temperature"] == 22.0
+
+
+@pytest.mark.asyncio
+async def test_metric_snap_stays_inside_band_edge() -> None:
+    # 73 F = 22.78 C rounds to 23.0 C = 73.4 F, past the 70-73 band.
+    state = _climate_state("cool", supports_range=False, step=1)
+    hass = _metric_hass(state)
+    cache = _hvac_cache(setpoint=73.0)
+    cache["schedule"]["hvac-1"]["schedule"]["high_temps"] = [73.0] * 48
+    cache["schedule"]["hvac-1"]["schedule"]["low_temps"] = [70.0] * 48
+    hass.data[DOMAIN] = cache
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, _entry())
+    assert hass.services.async_call.await_args.args[2]["temperature"] == 22.0
+
+
+@pytest.mark.parametrize("step", [None, 0, "x", -1])
+def test_metric_snap_bad_step_uses_half_degree(step) -> None:
+    attrs = {} if step is None else {"target_temp_step": step}
+    f = scheduler._snap_to_device_step(72.0, attrs, None)
+    assert f == units.to_f(22.0, units.CELSIUS)
+
+
+def test_metric_snap_band_narrower_than_step_keeps_nearest() -> None:
+    # Band 71.9-72.0 F sits between 22.0 C (71.6 F) and 22.5 C (72.5 F).
+    f = scheduler._snap_to_device_step(72.0, {"target_temp_step": 1}, (71.9, 72.0))
+    assert f == 71.6
+
+
+def test_fahrenheit_ha_does_not_snap() -> None:
+    state = _climate_state("cool", supports_range=False, step=1)
+    payload = scheduler._build_hvac_payload(
+        "climate.x", state, 72.4, band=(70.0, 74.0),
+    )
+    assert payload["temperature"] == 72.4
+
+
+@pytest.mark.asyncio
+async def test_metric_last_commanded_keeps_unsnapped_f() -> None:
+    state = _climate_state("cool", supports_range=False, step=1)
+    hass = _metric_hass(state)
+    hass.data[DOMAIN] = _hvac_cache(setpoint=72.4)
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, _entry())
+    assert hass.services.async_call.await_args.args[2]["temperature"] == 22.0
+    last = hass.data[DOMAIN][scheduler._LAST_COMMANDED_KEY]["climate.living_room"]
+    assert last["setpoint"] == 72.4
+
+
+def test_metric_one_degree_tracking_steps_change_sent_value() -> None:
+    sent = {
+        round(scheduler._snap_to_device_step(f, {"target_temp_step": 1}, None), 2)
+        for f in (72.0, 71.0, 70.0, 69.0)
+    }
+    # 1 F tracking steps repeat a value on a 1 C device, then move on.
+    assert len(sent) >= 2
+
+
+# --- Metric HA: inbound temperatures convert to °F ---
+
+
+def _celsius_sensor(value: str, unit: str = "°C") -> MagicMock:
+    s = MagicMock()
+    s.state = value
+    s.attributes = {"unit_of_measurement": unit}
+    return s
+
+
+@pytest.mark.asyncio
+async def test_metric_watchdog_in_band_celsius_room_latches_nothing() -> None:
+    state = _climate_state("cool", supports_range=False, hvac_modes=["off", "cool"])
+    state.attributes["current_temperature"] = 22.2  # 71.96 °F, inside 70-74
+    hass = _metric_hass(state)
+    hass.data[DOMAIN] = _override_cache(hvac_mode_schedule=["COOL"] * 48)
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.comfort_watchdog(hass, _entry())
+
+    assert not hass.services.async_call.await_args_list
+    assert not hass.data[DOMAIN].get("comfort_latch", {}).get(
+        "climate.living_room", {}
+    ).get("active")
+
+
+@pytest.mark.asyncio
+async def test_metric_watchdog_overcooled_celsius_room_latches_off() -> None:
+    state = _climate_state("cool", supports_range=False, hvac_modes=["off", "cool"])
+    state.attributes["current_temperature"] = 16.0  # 60.8 °F, below the 70 °F low
+    hass = _metric_hass(state)
+    hass.data[DOMAIN] = _override_cache(hvac_mode_schedule=["COOL"] * 48)
+
+    with patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.comfort_watchdog(hass, _entry())
+
+    latch = hass.data[DOMAIN]["comfort_latch"]["climate.living_room"]
+    assert latch["active"] is True and latch["direction"] == "off_overcool"
+
+
+def test_metric_resolve_indoor_temp_converts_climate_and_aux() -> None:
+    state = _climate_state("cool", supports_range=False)
+    state.attributes["current_temperature"] = 22.2
+    hass = _metric_hass(state)
+    indoor, _aux, used = scheduler._resolve_indoor_temp(hass, "climate.living_room")
+    assert indoor == 71.96 and used is False
+
+    hass = _hass(state)  # °F HA with a °C aux sensor
+    hass.data[DOMAIN] = _override_cache(indoor_temp_entity_id="sensor.room")
+    hass.states.get = MagicMock(
+        side_effect=lambda eid: _celsius_sensor("22.2") if eid == "sensor.room" else state
+    )
+    indoor, _aux, used = scheduler._resolve_indoor_temp(hass, "climate.living_room")
+    assert indoor == 71.96 and used is True

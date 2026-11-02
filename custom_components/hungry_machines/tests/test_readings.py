@@ -1513,3 +1513,159 @@ async def test_hvac_reading_omits_room_target_for_a_legacy_schedule() -> None:
     ):
         await readings.capture_readings(hass2, entry2)
     assert "room_target" not in hass2.data[DOMAIN]["readings_buffer"]["home"][0]
+
+
+# --- Metric HA: readings post in °F ---
+
+
+def _metric(hass: MagicMock) -> MagicMock:
+    hass.config.units.temperature_unit = "°C"
+    return hass
+
+
+@pytest.mark.asyncio
+async def test_capture_hvac_metric_posts_fahrenheit() -> None:
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    state = _state("cool", {"current_temperature": 22.2, "temperature": 22.0})
+    hass = _metric(_hass({"climate.living_room": state}))
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, _entry())
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["indoor_temp"] == 71.96
+    assert posted["target_temp"] == 71.6
+
+
+@pytest.mark.asyncio
+async def test_capture_hvac_celsius_aux_sensor_on_fahrenheit_ha() -> None:
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {
+            "entity_id": "climate.living_room",
+            "indoor_temp_entity_id": "sensor.room",
+        },
+    }
+    sensor = MagicMock()
+    sensor.state = "22.2"
+    sensor.attributes = {"unit_of_measurement": "°C"}
+    state = _state("cool", {"current_temperature": 72.0, "temperature": 72.0})
+    hass = _hass({"climate.living_room": state, "sensor.room": sensor})
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, _entry())
+    assert hass.data[DOMAIN]["readings_buffer"]["home"][0]["indoor_temp"] == 71.96
+
+
+def test_water_heater_metric_converts_before_clamp() -> None:
+    tank = MagicMock()
+    tank.state = "50"
+    tank.attributes = {}
+    control = MagicMock()
+    control.state = "on"
+    hass = _metric(_hass({"sensor.tank": tank}))
+    reading = readings._build_water_heater_reading(hass, control, "sensor.tank")
+    assert reading["value"] == 122.0
+
+
+# --- out-of-range indoor temperature --------------------------
+
+
+async def _capture_hvac_at(hass, temp: float) -> None:
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    hass.states.get = MagicMock(
+        return_value=_state("cool", {"current_temperature": temp})
+    )
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, _entry())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("temp,kept", [(29.9, False), (120.1, False), (30.0, True), (120.0, True)])
+async def test_capture_hvac_range_bounds_are_inclusive(temp: float, kept: bool) -> None:
+    hass = _hass({})
+    await _capture_hvac_at(hass, temp)
+    buf = hass.data[DOMAIN].get("readings_buffer", {})
+    assert len(buf.get("home", [])) == (1 if kept else 0)
+
+
+@pytest.mark.asyncio
+async def test_capture_hvac_out_of_range_warns_once(caplog) -> None:
+    hass = _hass({})
+    with caplog.at_level("WARNING", logger=readings.__name__):
+        await _capture_hvac_at(hass, 200.0)
+        await _capture_hvac_at(hass, 200.0)
+        await _capture_hvac_at(hass, 200.0)
+    msgs = [r for r in caplog.records if "dropping reading" in r.getMessage()]
+    assert len(msgs) == 1
+    assert "climate.test" in msgs[0].getMessage()
+    assert "200.0" in msgs[0].getMessage()
+    # Back in range, then out again: warns again.
+    with caplog.at_level("WARNING", logger=readings.__name__):
+        await _capture_hvac_at(hass, 72.0)
+        await _capture_hvac_at(hass, 200.0)
+    msgs = [r for r in caplog.records if "dropping reading" in r.getMessage()]
+    assert len(msgs) == 2
+
+
+def test_dehumidifier_out_of_range_dropped() -> None:
+    ts = _state("21000")
+    ts.entity_id = "sensor.t"
+    hass = _hass({"sensor.t": ts})
+    dh = _state("on")
+    dh.entity_id = "humidifier.d"
+    dh.attributes = {}
+    assert readings._build_dehumidifier_reading(
+        hass, dh, indoor_temp_entity_id="sensor.t"
+    ) is None
+    ts.state = "30.0"
+    assert readings._build_dehumidifier_reading(
+        hass, dh, indoor_temp_entity_id="sensor.t"
+    )["indoor_temp"] == 30.0
+
+
+# --- setpoint_step_f ---
+
+
+def _step_reading(celsius: bool, attrs_extra: dict) -> dict:
+    hass = _hass({})
+    if celsius:
+        _metric(hass)
+    state = _state("cool", {"current_temperature": 22.0 if celsius else 72.0, "temperature": 22.0 if celsius else 72.0, **attrs_extra})
+    return readings._build_hvac_home_reading(hass, state)
+
+
+@pytest.mark.parametrize("step,expected", [(1, 1.8), (0.5, 0.9)])
+def test_setpoint_step_f_on_celsius(step, expected) -> None:
+    assert _step_reading(True, {"target_temp_step": step})["setpoint_step_f"] == expected
+
+
+def test_setpoint_step_f_sends_the_largest_step_the_api_accepts() -> None:
+    assert _step_reading(True, {"target_temp_step": 2.5})["setpoint_step_f"] == 4.5
+
+
+@pytest.mark.parametrize("step", [3, 5, 0.001, float("inf")])
+def test_setpoint_step_f_omitted_when_the_api_would_reject_it(step) -> None:
+    # the API  validates 0 < step <= 5 and rejects the whole batch,
+    # and flush_readings retries a rejected bucket forever.
+    assert "setpoint_step_f" not in _step_reading(True, {"target_temp_step": step})
+
+
+def test_setpoint_step_f_omitted_without_step() -> None:
+    assert "setpoint_step_f" not in _step_reading(True, {})
+
+
+def test_setpoint_step_f_omitted_on_fahrenheit() -> None:
+    assert "setpoint_step_f" not in _step_reading(False, {"target_temp_step": 1})

@@ -354,4 +354,82 @@ describe('hm-optimization-chart', () => {
     await flush(el);
     expect(viewBoxOf(el)).toEqual({ width: 600, height: 198 });
   });
+
+  describe('displayUnit', () => {
+    const HIGH = Array<number>(48).fill(76);
+    const LOW = Array<number>(48).fill(68);
+    const TARGET = Array.from({ length: 48 }, (_, i) => 70 + (i % 6));
+
+    async function draw(displayUnit?: 'F' | 'C', extra: Partial<HmOptimizationChart> = {}) {
+      const el = mount();
+      el.rates = RATES_48;
+      el.highLimits = HIGH;
+      el.lowLimits = LOW;
+      el.targetValues = TARGET;
+      el.yMin = 40;
+      el.yMax = 100;
+      Object.assign(el, extra);
+      if (displayUnit) el.displayUnit = displayUnit;
+      await flush(el);
+      return el.shadowRoot!;
+    }
+
+    const yPoints = (root: ShadowRoot, series: string): number[] =>
+      root
+        .querySelector(`polyline[data-series="${series}"]`)!
+        .getAttribute('points')!
+        .split(' ')
+        .map((p) => Number(p.split(',')[1]));
+
+    it('defaults to byte-identical °F output', async () => {
+      const a = await draw();
+      const b = await draw('F');
+      expect(a.innerHTML).toBe(b.innerHTML);
+      expect(a.querySelector('.axis-title')!.textContent).toBe('°F');
+    });
+
+    it('uses a °C axis title and whole-degree outward bounds', async () => {
+      const root = await draw('C');
+      expect(root.querySelector('.axis-title')!.textContent).toBe('°C');
+      const labels = Array.from(root.querySelectorAll('.axis-label')).map((n) => n.textContent);
+      expect(labels).toContain('4');
+      expect(labels).toContain('38');
+      expect(labels).not.toContain('40');
+    });
+
+    it('draws the same line shape in both units', async () => {
+      const f = yPoints(await draw('F'), 'target');
+      const c = yPoints(await draw('C'), 'target');
+      // 40-100 F maps to 4-38 C, which is a slightly different span, so compare
+      // normalised position within the plot: same shape within rounding.
+      for (let i = 0; i < f.length; i++) expect(Math.abs(f[i] - c[i])).toBeLessThan(12);
+      expect(c.indexOf(Math.min(...c))).toBe(f.indexOf(Math.min(...f)));
+    });
+
+    it('converts the default marker label', async () => {
+      const root = await draw('C', { targetMarker: { interval: 16, value: 77 } });
+      expect(root.querySelector('.marker-label')!.textContent).toBe('25° by 08:00');
+    });
+
+    it('pads auto-range by about 2 F in C', async () => {
+      const root = await draw('C', { yMin: undefined, yMax: undefined });
+      const labels = Array.from(root.querySelectorAll('.axis-label')).map((n) => n.textContent);
+      // data spans 68..76 F = 20.0..24.4 C, padded 1.1 C each side
+      expect(labels).toContain('19');
+      expect(labels).toContain('26');
+    });
+
+    it('ignores displayUnit for percent charts', async () => {
+      const mk = async (du: 'F' | 'C') => {
+        const el = mount();
+        el.rates = RATES_48;
+        el.targetValues = Array<number>(48).fill(50);
+        el.unit = 'percent';
+        el.displayUnit = du;
+        await flush(el);
+        return el.shadowRoot!.innerHTML;
+      };
+      expect(await mk('C')).toBe(await mk('F'));
+    });
+  });
 });

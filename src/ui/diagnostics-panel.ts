@@ -4,6 +4,7 @@ import type {
   DivergenceReport,
   ConfiguredSensor,
 } from '../api/diagnostics.js';
+import { formatDelta, temperatureUnitStore } from '../utils/temperature.js';
 import { getIntegrationVersion } from '../utils/version.js';
 
 /**
@@ -488,7 +489,7 @@ function _fmtPct(v: number | null): string {
 }
 
 function _fmtOffset(v: number | null): string {
-  return v === null ? '—' : `${v.toFixed(1)} °F`;
+  return v === null ? '—' : formatDelta(v, temperatureUnitStore.state.unit);
 }
 
 function _pctClass(v: number | null, threshold = 50): string {

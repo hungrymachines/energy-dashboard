@@ -1,5 +1,6 @@
 import { LitElement, html, css, type TemplateResult } from 'lit';
 import { authStore, type AuthState } from '../store.js';
+import { haUnitFrom, liveTemp, temperatureUnitStore } from '../utils/temperature.js';
 import {
   getAllSchedules,
   type ApplianceScheduleEntry,
@@ -39,7 +40,10 @@ type HassStateLike = {
   state?: unknown;
   attributes?: Record<string, unknown>;
 };
-type HassLike = { states?: Record<string, HassStateLike> };
+type HassLike = {
+  states?: Record<string, HassStateLike>;
+  config?: { unit_system?: { temperature?: string } };
+};
 
 const SCHEDULE_TTL_MS = 5 * 60 * 1000;
 const PREFERENCES_DEBOUNCE_MS = 500;
@@ -275,6 +279,7 @@ export class HmThermostatCard extends LitElement {
 
   private _config: HmThermostatCardConfig = {};
   private _unsubscribe: (() => void) | null = null;
+  private _unsubscribeUnit: (() => void) | null = null;
   private _scheduleFetchedAt = 0;
   private _preferencesTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -301,12 +306,21 @@ export class HmThermostatCard extends LitElement {
         this._schedules = null;
       }
     });
+    this._unsubscribeUnit = temperatureUnitStore.subscribe(() => this.requestUpdate());
     void authStore.hydrate();
     void this._loadIfAuthed();
   }
 
+  override willUpdate(changed: Map<PropertyKey, unknown>): void {
+    if (changed.has('hass')) temperatureUnitStore.setHaUnit(haUnitFrom(this.hass));
+  }
+
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    if (this._unsubscribeUnit) {
+      this._unsubscribeUnit();
+      this._unsubscribeUnit = null;
+    }
     if (this._unsubscribe) {
       this._unsubscribe();
       this._unsubscribe = null;
@@ -333,6 +347,7 @@ export class HmThermostatCard extends LitElement {
       ]);
       this._schedules = schedules;
       this._rates = rates;
+      temperatureUnitStore.setPreference(preferences?.temperature_unit ?? null);
       if (preferences && typeof preferences.savings_level === 'number') {
         this._savingsLevel = this._clampLevel(preferences.savings_level);
       }
@@ -445,13 +460,14 @@ export class HmThermostatCard extends LitElement {
     return null;
   }
 
-  private _formatTemp(raw: string | null, unit = '°'): string {
+  private _formatTemp(entityId: string | undefined, raw: string | null): string {
     if (raw === null) return '—';
     const n = Number(raw);
-    if (Number.isFinite(n)) {
-      return `${Math.round(n)}${unit}`;
-    }
-    return `${raw}${unit}`;
+    if (!Number.isFinite(n)) return `${raw}°`;
+    const attrUnit = this.hass?.states?.[entityId ?? '']?.attributes?.unit_of_measurement;
+    const source =
+      attrUnit === '°C' ? 'C' : attrUnit === '°F' ? 'F' : temperatureUnitStore.state.haUnit ?? 'F';
+    return `${liveTemp(n, source, temperatureUnitStore.state.unit)}°`;
   }
 
   override render(): TemplateResult {
@@ -530,14 +546,14 @@ export class HmThermostatCard extends LitElement {
         <div class="metrics">
           <div class="indoor-wrap">
             ${indoorConfigured
-              ? html`<span class="indoor">${this._formatTemp(indoorRaw)}</span>`
+              ? html`<span class="indoor">${this._formatTemp(entities.indoor_temp, indoorRaw)}</span>`
               : html`<span class="missing-entity">
                   Indoor temperature entity not set.
                   <a href="#hm-panel">Configure in HM panel</a>
                 </span>`}
             ${entities.outdoor_temp
               ? html`<span class="outdoor">
-                  Outside ${this._formatTemp(outdoorRaw)}
+                  Outside ${this._formatTemp(entities.outdoor_temp, outdoorRaw)}
                 </span>`
               : null}
           </div>
@@ -553,6 +569,7 @@ export class HmThermostatCard extends LitElement {
               .lowLimits=${lowLimits}
               .targetValues=${targetValues}
               .unit=${'fahrenheit'}
+              .displayUnit=${temperatureUnitStore.state.unit}
               .yMin=${40}
               .yMax=${100}
               .size=${'medium'}

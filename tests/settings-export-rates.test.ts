@@ -50,9 +50,19 @@ function ratesResponse(overrides: Record<string, unknown> = {}): unknown {
       { slug: 'comed', label: 'ComEd (Northern Illinois)' },
     ],
     export_rates_cents_per_kwh: null,
+    export_rate_mode: 'retail',
+    export_supply_available: false,
+    export_supply_basis: null,
+    effective_export_rates_cents_per_kwh: ZONE_RATES_48,
     ...overrides,
   };
 }
+
+const STORED_CURVE = {
+  export_rates_cents_per_kwh: EXPORT_RATES_48,
+  export_rate_mode: 'custom',
+  effective_export_rates_cents_per_kwh: EXPORT_RATES_48,
+};
 
 const SCHEDULES_EMPTY = {
   date: '2025-11-18',
@@ -178,7 +188,7 @@ describe('settings export rates', () => {
       if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
       if (url.includes('/api/v1/appliances')) return [];
       if (url.includes('/api/v1/rates')) {
-        return ratesResponse({ export_rates_cents_per_kwh: EXPORT_RATES_48 });
+        return ratesResponse(STORED_CURVE);
       }
       return null;
     });
@@ -192,14 +202,15 @@ describe('settings export rates', () => {
     findButtonByText(section, 'Edit / Clear export rates').click();
     await flush(el);
 
-    // slot 0 = 10 cents -> "0.100"; slot 1 = 11 cents -> "0.110".
+    // Hour 0 = slot 0 = 10 cents; hour 1 = slot 2 = 12 cents.
     const input0 = section.querySelector<HTMLInputElement>('input[name="export_rate_0"]');
     const input1 = section.querySelector<HTMLInputElement>('input[name="export_rate_1"]');
     expect(input0!.value).toBe('0.100');
-    expect(input1!.value).toBe('0.110');
+    expect(input1!.value).toBe('0.120');
+    expect(section.querySelectorAll('input[name^="export_rate_"][type="number"]').length).toBe(24);
   });
 
-  it('PUT body has 48 cents values, slot 1 = 36.8 for input 0.368', async () => {
+  it('an edited hour sets both half-hours and the rest stay as stored', async () => {
     const { calls } = installFetchStub((url, init) => {
       if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
       if (url.includes('/api/v1/appliances')) return [];
@@ -208,9 +219,9 @@ describe('settings export rates', () => {
           const body = JSON.parse(String(init.body)) as {
             export_rates_cents_per_kwh: number[] | null;
           };
-          return ratesResponse({ export_rates_cents_per_kwh: body.export_rates_cents_per_kwh });
+          return ratesResponse({ ...STORED_CURVE, export_rates_cents_per_kwh: body.export_rates_cents_per_kwh });
         }
-        return ratesResponse({ export_rates_cents_per_kwh: EXPORT_RATES_48 });
+        return ratesResponse(STORED_CURVE);
       }
       return null;
     });
@@ -239,10 +250,13 @@ describe('settings export rates', () => {
     const body = JSON.parse(put!.body!) as { export_rates_cents_per_kwh: number[] };
     expect(Array.isArray(body.export_rates_cents_per_kwh)).toBe(true);
     expect(body.export_rates_cents_per_kwh.length).toBe(48);
-    expect(body.export_rates_cents_per_kwh[1]).toBe(36.8);
-    // Untouched slots keep their imported seed values.
+    expect(body.export_rates_cents_per_kwh[2]).toBe(36.8);
+    expect(body.export_rates_cents_per_kwh[3]).toBe(36.8);
+    // Hours left alone keep their stored half-hour values.
     expect(body.export_rates_cents_per_kwh[0]).toBe(10);
+    expect(body.export_rates_cents_per_kwh[1]).toBe(11);
     expect(body.export_rates_cents_per_kwh[47]).toBe(57);
+    expect((JSON.parse(put!.body!) as { export_rate_mode: string }).export_rate_mode).toBe('custom');
   });
 
   it('an invalid row disables Save', async () => {
@@ -250,7 +264,7 @@ describe('settings export rates', () => {
       if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
       if (url.includes('/api/v1/appliances')) return [];
       if (url.includes('/api/v1/rates')) {
-        return ratesResponse({ export_rates_cents_per_kwh: EXPORT_RATES_48 });
+        return ratesResponse(STORED_CURVE);
       }
       return null;
     });
@@ -286,7 +300,7 @@ describe('settings export rates', () => {
             return ratesResponse({ export_rates_cents_per_kwh: null });
           }
         }
-        return ratesResponse({ export_rates_cents_per_kwh: EXPORT_RATES_48 });
+        return ratesResponse(STORED_CURVE);
       }
       return null;
     });
@@ -307,6 +321,158 @@ describe('settings export rates', () => {
     expect(put).toBeDefined();
     const body = JSON.parse(put!.body!) as { export_rates_cents_per_kwh: number[] | null };
     expect(body.export_rates_cents_per_kwh).toBeNull();
+  });
+
+  function modeRadios(section: Element): Record<string, HTMLInputElement> {
+    const out: Record<string, HTMLInputElement> = {};
+    section
+      .querySelectorAll<HTMLInputElement>('input[name="export_rate_mode"]')
+      .forEach((r) => {
+        out[r.value] = r;
+      });
+    return out;
+  }
+
+  async function settingsWith(el: PanelEl): Promise<HTMLElement> {
+    await flush(el);
+    clickSettings(el.shadowRoot!);
+    await flush(el);
+    return exportSection(el.shadowRoot!);
+  }
+
+  it('a fixed plan offers its regular rates, not a generation price', async () => {
+    installFetchStub((url) => {
+      if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
+      if (url.includes('/api/v1/appliances')) return [];
+      if (url.includes('/api/v1/rates')) return ratesResponse();
+      return null;
+    });
+
+    const section = await settingsWith(mountPanel());
+    const radios = modeRadios(section);
+
+    expect(Object.keys(radios)).toEqual(['retail', 'custom', 'none']);
+    expect(radios['retail']!.checked).toBe(true);
+    expect(section.textContent).toContain('Same as my regular rates');
+  });
+
+  it('a known Illinois plan offers the supply credit or full price, by start date', async () => {
+    installFetchStub((url) => {
+      if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
+      if (url.includes('/api/v1/appliances')) return [];
+      if (url.includes('/api/v1/rates')) {
+        return ratesResponse({
+          pricing_source: 'dynamic',
+          dynamic_zone: 'comed',
+          export_rate_mode: 'supply',
+          export_supply_available: true,
+          export_supply_basis: 'tariff',
+        });
+      }
+      return null;
+    });
+
+    const section = await settingsWith(mountPanel());
+    const radios = modeRadios(section);
+
+    expect(Object.keys(radios)).toEqual(['supply', 'retail', 'custom', 'none']);
+    expect(radios['supply']!.checked).toBe(true);
+    expect(section.textContent).toContain('Supply and transmission credit');
+    expect(section.textContent).toContain('started in 2025 or later');
+    expect(section.textContent).toContain('Full price, with delivery');
+    expect(section.textContent).toContain('started before 2025 with no solar rebate');
+  });
+
+  it('a live price elsewhere offers the market price or full price', async () => {
+    installFetchStub((url) => {
+      if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
+      if (url.includes('/api/v1/appliances')) return [];
+      if (url.includes('/api/v1/rates')) {
+        return ratesResponse({
+          pricing_source: 'dynamic',
+          dynamic_zone: 'entsoe-nl',
+          export_rate_mode: 'supply',
+          export_supply_available: true,
+          export_supply_basis: 'market',
+        });
+      }
+      return null;
+    });
+
+    const section = await settingsWith(mountPanel());
+
+    expect(Object.keys(modeRadios(section))).toEqual(['supply', 'retail', 'custom', 'none']);
+    expect(section.textContent).toContain('Market price only');
+    expect(section.textContent).not.toContain('started in 2025');
+  });
+
+  it('choosing a mode PUTs it and the preview follows the response', async () => {
+    const { calls } = installFetchStub((url, init) => {
+      if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
+      if (url.includes('/api/v1/appliances')) return [];
+      if (url.includes('/api/v1/rates')) {
+        return init?.method === 'PUT'
+          ? ratesResponse({ export_rate_mode: 'none', effective_export_rates_cents_per_kwh: null })
+          : ratesResponse();
+      }
+      return null;
+    });
+
+    const el = mountPanel();
+    const section = await settingsWith(el);
+    expect(section.querySelector('hm-export-rate-chart')).not.toBeNull();
+
+    modeRadios(section)['none']!.click();
+    await flush(el);
+
+    const put = calls.find((c) => c.method === 'PUT' && c.url.includes('/api/v1/rates'));
+    expect(JSON.parse(put!.body!)).toEqual({ export_rate_mode: 'none' });
+    expect(section.querySelector('hm-export-rate-chart')).toBeNull();
+  });
+
+  it('own rates with none saved waits for Save and seeds from the current curve', async () => {
+    const { calls } = installFetchStub((url) => {
+      if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
+      if (url.includes('/api/v1/appliances')) return [];
+      if (url.includes('/api/v1/rates')) return ratesResponse();
+      return null;
+    });
+
+    const el = mountPanel();
+    const section = await settingsWith(el);
+    modeRadios(section)['custom']!.click();
+    await flush(el);
+
+    expect(calls.some((c) => c.method === 'PUT')).toBe(false);
+    expect(modeRadios(section)['custom']!.checked).toBe(true);
+    const input0 = section.querySelector<HTMLInputElement>('input[name="export_rate_0"]')!;
+    expect(input0.value).toBe('0.368');
+
+    findButtonByText(section, 'Cancel').click();
+    await flush(el);
+    expect(modeRadios(section)['retail']!.checked).toBe(true);
+  });
+
+  it('own rates with a curve saved reselects it without opening the editor', async () => {
+    const { calls } = installFetchStub((url, init) => {
+      if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
+      if (url.includes('/api/v1/appliances')) return [];
+      if (url.includes('/api/v1/rates')) {
+        return init?.method === 'PUT'
+          ? ratesResponse(STORED_CURVE)
+          : ratesResponse({ ...STORED_CURVE, export_rate_mode: 'retail' });
+      }
+      return null;
+    });
+
+    const el = mountPanel();
+    const section = await settingsWith(el);
+    modeRadios(section)['custom']!.click();
+    await flush(el);
+
+    const put = calls.find((c) => c.method === 'PUT');
+    expect(JSON.parse(put!.body!)).toEqual({ export_rate_mode: 'custom' });
+    expect(section.querySelector('input[name="export_rate_0"]')).toBeNull();
   });
 
   it('the export-fields block is present under the dynamic source too', async () => {
@@ -330,6 +496,6 @@ describe('settings export rates', () => {
     expect(pricingSourceSelect.value).toBe('dynamic');
     const section = exportSection(el.shadowRoot!);
     expect(section.textContent).toContain('What your utility pays');
-    expect(findButtonByText(section, 'Edit export rates')).toBeDefined();
+    expect(section.querySelector('input[name="export_rate_mode"]')).not.toBeNull();
   });
 });

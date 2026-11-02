@@ -36,7 +36,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from . import api
+from . import api, health, units
 from .const import DOMAIN
 from .scheduler import (
     _cache_age_seconds,
@@ -147,6 +147,32 @@ def _record_aux_status(
     }
 
 
+_RANGE_KEY = "reading_out_of_range"
+
+
+def _indoor_in_range(hass: HomeAssistant, entity_id: str, indoor_f: float) -> bool:
+    """True when the °F indoor value is inside the API's accepted range.
+
+    Bounds are inclusive and match the backend, so one bad sample is
+    dropped here instead of failing the whole hourly batch. Warns once
+    when an entity goes out of range, and again only after it has been
+    back in range."""
+    flagged = hass.data.setdefault(DOMAIN, {}).setdefault(_RANGE_KEY, set())
+    if units.READING_MIN_F <= indoor_f <= units.READING_MAX_F:
+        flagged.discard(entity_id)
+        return True
+    if entity_id not in flagged:
+        flagged.add(entity_id)
+        unit = units.ha_unit(hass)
+        _LOGGER.warning(
+            "Hungry Machines: dropping reading for '%s': indoor temperature "
+            "%.1f \u00b0F (HA unit %s) is outside %.0f-%.0f \u00b0F",
+            entity_id, indoor_f, unit,
+            units.READING_MIN_F, units.READING_MAX_F,
+        )
+    return False
+
+
 def get_aux_sensor_health(hass: HomeAssistant) -> dict[str, dict[str, Any]]:
     """Public read of the aux-sensor health snapshot. The HACS `/api/v1/readings`
     POST handler embeds this in the request so the backend can render
@@ -239,6 +265,12 @@ def _resolve_hvac_state(state: Any) -> str:
     return "OFF"
 _HOME_BUCKET = "home"
 _BUFFER_KEY = "readings_buffer"
+# The API rejects a POST over 100 readings, so a bucket that outgrew one
+# hourly flush must go up in pieces or it can never leave.
+_MAX_BATCH_READINGS = 100
+# About 3.5 days for two HVAC units. A bucket stuck behind a batch the API
+# keeps rejecting drains from the oldest end instead of growing forever.
+_MAX_BUFFERED_READINGS = 2000
 
 # ---------------------------------------------------------------------------
 # Appliance-list cache — survives a slow/failing API call
@@ -475,7 +507,7 @@ def _build_hvac_home_reading(
         sensor_state = hass.states.get(indoor_temp_entity_id) if hass.states else None
         if sensor_state is not None:
             raw = getattr(sensor_state, "state", None)
-            indoor_temp = _coerce_float(raw)
+            indoor_temp = units.sensor_state_f(hass, sensor_state)
             if indoor_temp is None:
                 _record_aux_status(
                     hass, indoor_temp_entity_id,
@@ -498,7 +530,9 @@ def _build_hvac_home_reading(
                 purpose="indoor temperature",
             )
     if indoor_temp is None:
-        indoor_temp = state.attributes.get("current_temperature")
+        indoor_temp = units.climate_attr_f(
+            hass, state.attributes.get("current_temperature")
+        )
         if indoor_temp is not None:
             indoor_source = "entity"
     if indoor_temp is None:
@@ -512,6 +546,8 @@ def _build_hvac_home_reading(
             sorted(state.attributes.keys()) if state.attributes else [],
             state.state,
         )
+        return None
+    if not _indoor_in_range(hass, indoor_temp_entity_id or state.entity_id, indoor_temp):
         return None
     reading: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -532,7 +568,7 @@ def _build_hvac_home_reading(
     # appliances missing an id) omit this and the backend stores NULL.
     if appliance_id:
         reading["appliance_id"] = appliance_id
-    target_temp = state.attributes.get("temperature")
+    target_temp = units.climate_attr_f(hass, state.attributes.get("temperature"))
     if target_temp is not None:
         reading["target_temp"] = target_temp
     # The slot's ROOM target beside the unit's own setpoint.
@@ -544,6 +580,19 @@ def _build_hvac_home_reading(
     room_target = get_room_target(hass, state.entity_id)
     if room_target is not None:
         reading["room_target"] = room_target
+    # The device's setpoint resolution in °F, so the backend can grade a
+    # 1 °C thermostat against its own step. °F installs omit it,
+    # and so does a step the API would refuse: a rejected batch retries forever.
+    if units.ha_unit(hass) == units.CELSIUS:
+        step = state.attributes.get("target_temp_step")
+        if (
+            isinstance(step, (int, float))
+            and not isinstance(step, bool)
+            and step > 0
+        ):
+            step_f = round(step * 1.8, 2)
+            if 0 < step_f <= units.SETPOINT_STEP_MAX_F:
+                reading["setpoint_step_f"] = step_f
     indoor_humidity = _read_indoor_humidity(
         hass, state, indoor_humidity_entity_id,
     )
@@ -644,7 +693,7 @@ def _build_dehumidifier_reading(
             )
         else:
             raw = getattr(ts, "state", None)
-            indoor_temp = _coerce_float(raw)
+            indoor_temp = units.sensor_state_f(hass, ts)
             _record_aux_status(
                 hass, indoor_temp_entity_id,
                 status="ok" if indoor_temp is not None else "invalid_state",
@@ -658,6 +707,8 @@ def _build_dehumidifier_reading(
             "sensor is required to record dehumidifier readings.",
             state.entity_id, indoor_temp_entity_id,
         )
+        return None
+    if not _indoor_in_range(hass, indoor_temp_entity_id or state.entity_id, indoor_temp):
         return None
 
     reading: dict[str, Any] = {
@@ -720,7 +771,7 @@ def _build_water_heater_reading(
     if temp_entity_id:
         temp_state = _read_state(hass, temp_entity_id)
         if temp_state is not None:
-            tank_temp = _coerce_float(temp_state.state)
+            tank_temp = units.sensor_state_f(hass, temp_state)
     if tank_temp is None:
         tank_temp = 120.0
     return {
@@ -736,7 +787,28 @@ def _buffer(hass: HomeAssistant) -> dict[str, list[dict]]:
 
 def _append(hass: HomeAssistant, key: str, reading: dict) -> None:
     buf = _buffer(hass)
-    buf.setdefault(key, []).append(reading)
+    bucket = buf.setdefault(key, [])
+    bucket.append(reading)
+    if len(bucket) > _MAX_BUFFERED_READINGS:
+        del bucket[0]
+        health.report(
+            hass, f"buffer:{key}", False,
+            "%s has been unable to upload for days; the oldest readings are "
+            "being dropped",
+            _bucket_label(hass, key),
+        )
+
+
+def _bucket_label(hass: HomeAssistant, key: str) -> str:
+    """The buffer key in words: HVAC readings, or the appliance's name."""
+    if key == _HOME_BUCKET:
+        return "HVAC readings"
+    cache = hass.data.get(DOMAIN, {}).get(_APPLIANCES_CACHE_KEY)
+    appliances = cache.get("appliances") if isinstance(cache, dict) else None
+    for appliance in appliances or []:
+        if appliance.get("id") == key and appliance.get("name"):
+            return str(appliance["name"])
+    return f"Appliance {key}"
 
 
 async def capture_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
@@ -774,10 +846,24 @@ async def capture_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
                 not isinstance(production_sensor_entity_id, str)
                 or not production_sensor_entity_id
             ):
+                health.report(
+                    hass, f"solar:{aid}", True,
+                    "%s has no production sensor selected; its forecast stays "
+                    "on tilt and azimuth",
+                    appliance.get("name") or "Solar",
+                )
                 continue
             watts = _read_power_watts(hass, production_sensor_entity_id)
             if watts is None:
+                # _read_power_watts already warned; log again on recovery.
+                health.forget(hass, f"solar:{aid}")
                 continue
+            health.report(
+                hass, f"solar:{aid}", True,
+                "%s production sensor %s is connected (%.0f W now)",
+                appliance.get("name") or "Solar",
+                production_sensor_entity_id, abs(watts),
+            )
             # Plug-in (balcony) solar pushes current BACKWARD through
             # the outlet, and some metering smart plugs report that
             # reverse flow as a negative number. Production has no
@@ -889,24 +975,37 @@ async def flush_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
         return 0
 
     sent = 0
+    uploaded: list[str] = []
     for key in list(buf.keys()):
         readings = buf.get(key) or []
         if not readings:
             continue
-        if key == _HOME_BUCKET:
-            ok = await api.post_home_readings(hass, entry, readings)
-        else:
-            ok = await api.post_appliance_readings(hass, entry, key, readings)
-        if ok:
-            sent += len(readings)
-            buf[key] = []
-        else:
-            _LOGGER.info(
-                "Hungry Machines: flush of %d readings to bucket=%s failed; "
-                "retaining for next flush",
-                len(readings),
-                key,
+        label = _bucket_label(hass, key)
+        bucket_sent = 0
+        while readings:
+            batch = readings[:_MAX_BATCH_READINGS]
+            if key == _HOME_BUCKET:
+                ok = await api.post_home_readings(hass, entry, batch)
+            else:
+                ok = await api.post_appliance_readings(hass, entry, key, batch)
+            if not ok:
+                break
+            bucket_sent += len(batch)
+            del readings[:len(batch)]
+        sent += bucket_sent
+        if readings:
+            health.report(
+                hass, f"upload:{key}", False,
+                "%s upload failed; %d readings are waiting to retry at the "
+                "next hourly upload",
+                label, len(readings),
             )
+            continue
+        uploaded.append(f"{label} {bucket_sent}")
+        health.report(hass, f"upload:{key}", True, "%s upload is working", label)
+        health.forget(hass, f"buffer:{key}")
+    if uploaded:
+        health.note("uploaded readings this hour: %s", ", ".join(uploaded))
     return sent
 
 

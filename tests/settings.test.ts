@@ -416,3 +416,117 @@ describe('hungry-machines-panel settings (v2.0)', () => {
     expect(account!.textContent).toContain('info@hungrymachines.io');
   });
 });
+
+describe('Settings time zone', () => {
+  const ZONE_USER = { ...SAMPLE_USER, timezone: 'America/New_York' };
+  const CHICAGO_HASS = { ...HASS, config: { time_zone: 'America/Chicago' } };
+  let patches: Array<Record<string, unknown>>;
+
+  beforeEach(() => {
+    localStorage.clear();
+    setApiBase('https://api.example.test');
+    setTokens({ access: 'ACCESS', refresh: 'REFRESH' });
+    vi.spyOn(authStore, 'hydrate').mockImplementation(async () => {});
+    patches = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('/auth/me') && init?.method === 'PATCH') {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        patches.push(body);
+        return jsonResponse({ ...ZONE_USER, ...body });
+      }
+      if (String(url).includes('/api/v1/rates')) return jsonResponse(ratesResponse());
+      return jsonResponse(null);
+    }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    document.body.innerHTML = '';
+    localStorage.clear();
+    clearTokens();
+    setAuthState({});
+  });
+
+  it("moves an account on the API default to Home Assistant's zone", async () => {
+    setAuthState({ status: 'authed', user: ZONE_USER, access: 'ACCESS', refresh: 'REFRESH' });
+    const el = mountPanel({ hass: CHICAGO_HASS });
+    await flush(el);
+    expect(patches).toEqual([{ timezone: 'America/Chicago' }]);
+    expect(authStore.state.user?.timezone).toBe('America/Chicago');
+  });
+
+  it('leaves a zone someone chose alone', async () => {
+    setAuthState({
+      status: 'authed',
+      user: { ...ZONE_USER, timezone: 'America/Denver' },
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+    });
+    const el = mountPanel({ hass: CHICAGO_HASS });
+    await flush(el);
+    expect(patches).toEqual([]);
+  });
+
+  it('does not move the account again once a zone was saved here', async () => {
+    localStorage.setItem('hm-panel-time-zone-set', JSON.stringify([ZONE_USER.user_id]));
+    setAuthState({ status: 'authed', user: ZONE_USER, access: 'ACCESS', refresh: 'REFRESH' });
+    const el = mountPanel({ hass: CHICAGO_HASS });
+    await flush(el);
+    expect(patches).toEqual([]);
+  });
+
+  it('shows the zone, saves a change, and offers Home Assistant\'s zone', async () => {
+    setAuthState({
+      status: 'authed',
+      user: { ...ZONE_USER, timezone: 'America/Denver' },
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+    });
+    const el = mountPanel({ hass: CHICAGO_HASS });
+    await flush(el);
+    clickSettings(el.shadowRoot!);
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const select = selectByName(root, 'timezone');
+    expect(select.querySelector<HTMLOptionElement>('option[selected]')?.value).toBe('America/Denver');
+    expect(Array.from(select.options).map((o) => o.value)).toContain('America/Chicago');
+
+    root.querySelector<HTMLButtonElement>('[data-action="use-hass-time-zone"]')!.click();
+    await flush(el);
+    expect(patches).toEqual([{ timezone: 'America/Chicago' }]);
+    expect(root.querySelector('[data-action="use-hass-time-zone"]')).toBeNull();
+
+    select.value = 'America/New_York';
+    select.dispatchEvent(new Event('change'));
+    await flush(el);
+    expect(patches.at(-1)).toEqual({ timezone: 'America/New_York' });
+    expect(JSON.parse(localStorage.getItem('hm-panel-time-zone-set')!)).toContain(ZONE_USER.user_id);
+  });
+
+  it('shows an error when the save fails', async () => {
+    setAuthState({
+      status: 'authed',
+      user: { ...ZONE_USER, timezone: 'America/Denver' },
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+    });
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('/auth/me') && init?.method === 'PATCH') {
+        return jsonResponse({ detail: 'nope' }, 422);
+      }
+      if (String(url).includes('/api/v1/rates')) return jsonResponse(ratesResponse());
+      return jsonResponse(null);
+    }));
+    const el = mountPanel({ hass: CHICAGO_HASS });
+    await flush(el);
+    clickSettings(el.shadowRoot!);
+    await flush(el);
+
+    el.shadowRoot!.querySelector<HTMLButtonElement>('[data-action="use-hass-time-zone"]')!.click();
+    await flush(el);
+    expect(el.shadowRoot!.querySelector('.zone-error')?.textContent).toContain('time zone');
+    expect(localStorage.getItem('hm-panel-time-zone-set')).toBeNull();
+  });
+});

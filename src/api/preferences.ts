@@ -33,6 +33,8 @@ export interface Preferences {
   demand_window_start: string | null;
   /** Demand window end, HH:MM. null with start null = all day. */
   demand_window_end: string | null;
+  /** Display unit for temperatures. null = not chosen yet (the panel follows Home Assistant). */
+  temperature_unit: 'F' | 'C' | null;
 }
 
 export interface UpdatePreferencesBody {
@@ -53,6 +55,7 @@ export interface UpdatePreferencesBody {
   demand_charge_usd_per_kw?: number | null;
   demand_window_start?: string | null;
   demand_window_end?: string | null;
+  temperature_unit?: 'F' | 'C' | null;
 }
 
 export function get(): Promise<Preferences> {

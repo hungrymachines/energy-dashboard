@@ -523,3 +523,175 @@ describe('hm-constraint-editor hourly bands (table is the primary control)', () 
     ).toBe('66');
   });
 });
+
+describe('hm-constraint-editor hourly bands in °C', () => {
+  const storedHigh: number[] = Array.from({ length: 24 }, (_, i) => (i === 3 ? 90 : 73.4));
+  const storedLow: number[] = Array.from({ length: 24 }, (_, i) => (i === 3 ? 50 : 69.8));
+  const constraints = {
+    base_temperature: 72,
+    savings_level: 1,
+    time_away: '08:00',
+    time_home: '17:00',
+    optimization_mode: 'auto',
+    hourly_high_temps_f: storedHigh,
+    hourly_low_temps_f: storedLow,
+  };
+
+  beforeEach(() => {
+    setApiBase('https://api.example.test');
+    setTokens({ access: 'ACCESS', refresh: 'REFRESH' });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    document.body.innerHTML = '';
+    clearTokens();
+  });
+
+  async function saveAndGetBody(el: EditorEl, calls: FetchCall[]) {
+    saveButton(el.shadowRoot!).click();
+    await flush(el);
+    const put = calls.filter(([, init]) => init?.method === 'PUT');
+    expect(put.length).toBe(1);
+    return JSON.parse(String(put[0]![1]?.body)) as {
+      hourly_high_temps_f: number[];
+      hourly_low_temps_f: number[];
+    };
+  }
+
+  it('opens in °C and saving untouched sends the stored °F arrays exactly', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: constraints,
+      temperatureUnit: 'C',
+      open: true,
+    });
+    await flush(el);
+    const root = el.shadowRoot!;
+    expect(root.querySelector<HTMLInputElement>('input[name="hourly_low_0"]')!.value).toBe('21');
+    expect(root.querySelector<HTMLInputElement>('input[name="hourly_high_0"]')!.value).toBe('23');
+    expect(root.textContent).toContain('Hourly comfort limits (°C)');
+    const body = await saveAndGetBody(el, calls);
+    expect(body.hourly_high_temps_f).toEqual(storedHigh);
+    expect(body.hourly_low_temps_f).toEqual(storedLow);
+  });
+
+  it('editing one cell changes only that value, to the exact °F', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: constraints,
+      temperatureUnit: 'C',
+      open: true,
+    });
+    await flush(el);
+    setRowInput(el.shadowRoot!, 'high', 5, '24');
+    await flush(el);
+    const body = await saveAndGetBody(el, calls);
+    const expectedHigh = [...storedHigh];
+    expectedHigh[5] = 75.2;
+    expect(body.hourly_high_temps_f).toEqual(expectedHigh);
+    expect(body.hourly_low_temps_f).toEqual(storedLow);
+  });
+
+  it('stored 50 °F and 90 °F do not block save, but an edited cell outside the range does', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: constraints,
+      temperatureUnit: 'C',
+      open: true,
+    });
+    await flush(el);
+    const root = el.shadowRoot!;
+    expect(root.querySelector<HTMLInputElement>('input[name="hourly_low_3"]')!.value).toBe('10');
+    setRowInput(root, 'high', 7, '40');
+    await flush(el);
+    expect(saveButton(root).disabled).toBe(true);
+    expect(root.textContent).toContain('Must be 10–32 °C');
+    setRowInput(root, 'high', 7, '23');
+    await flush(el);
+    const body = await saveAndGetBody(el, calls);
+    expect(body.hourly_high_temps_f[3]).toBe(90);
+    expect(body.hourly_low_temps_f[3]).toBe(50);
+  });
+
+  it('°F behaves as before', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: constraints,
+      open: true,
+    });
+    await flush(el);
+    const root = el.shadowRoot!;
+    expect(root.querySelector<HTMLInputElement>('input[name="hourly_low_0"]')!.value).toBe('69.8');
+    setRowInput(root, 'low', 0, '68');
+    await flush(el);
+    const body = await saveAndGetBody(el, calls);
+    expect(body.hourly_low_temps_f[0]).toBe(68);
+    expect(body.hourly_high_temps_f).toEqual(storedHigh);
+  });
+
+  it('Reset to defaults shows °C and saves the server °F', async () => {
+    const serverHigh = Array.from({ length: 24 }, () => 73);
+    const serverLow = Array.from({ length: 24 }, () => 70);
+    const { calls } = routeFetch([
+      {
+        match: '/preferences/default-bands',
+        response: jsonResponse({ hourly_high_temps_f: serverHigh, hourly_low_temps_f: serverLow }),
+      },
+      { match: '/preferences', response: jsonResponse({}) },
+    ]);
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: constraints,
+      temperatureUnit: 'C',
+      open: true,
+    });
+    await flush(el);
+    resetButton(el.shadowRoot!).click();
+    await flush(el);
+    expect(
+      el.shadowRoot!.querySelector<HTMLInputElement>('input[name="hourly_high_0"]')!.value,
+    ).toBe('23');
+    const body = await saveAndGetBody(el, calls);
+    expect(body.hourly_high_temps_f).toEqual(serverHigh);
+    expect(body.hourly_low_temps_f).toEqual(serverLow);
+  });
+
+  it('a unit change with no edits reseeds; with an edit it converts the edited cell', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: constraints,
+      temperatureUnit: 'C',
+      open: true,
+    });
+    await flush(el);
+    const root = el.shadowRoot!;
+    el.temperatureUnit = 'F';
+    await flush(el);
+    expect(root.querySelector<HTMLInputElement>('input[name="hourly_low_0"]')!.value).toBe('69.8');
+
+    el.temperatureUnit = 'C';
+    await flush(el);
+    setRowInput(root, 'high', 5, '24');
+    await flush(el);
+    el.temperatureUnit = 'F';
+    await flush(el);
+    expect(root.querySelector<HTMLInputElement>('input[name="hourly_high_5"]')!.value).toBe('75.2');
+    expect(root.querySelector<HTMLInputElement>('input[name="hourly_high_6"]')!.value).toBe('73.4');
+    const body = await saveAndGetBody(el, calls);
+    expect(body.hourly_high_temps_f[5]).toBe(75.2);
+    expect(body.hourly_high_temps_f[6]).toBe(73.4);
+  });
+});

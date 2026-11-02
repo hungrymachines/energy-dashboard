@@ -1,5 +1,13 @@
 import { LitElement, html, css, type TemplateResult } from 'lit';
+import { live } from 'lit/directives/live.js';
 import { authStore, type AuthState } from '../store.js';
+import {
+  formatDelta,
+  haUnitFrom,
+  temperatureUnitStore,
+  unitLabel,
+  type TempUnit,
+} from '../utils/temperature.js';
 import {
   getAllSchedules,
   recomputeSchedule,
@@ -12,6 +20,7 @@ import {
   update as updateRates,
   type RatesResponse,
   type DeliveryTodCents,
+  type ExportRateMode,
 } from '../api/rates.js';
 import {
   list as listAppliances,
@@ -50,6 +59,7 @@ import {
 type HassStateLike = { entity_id?: string; state?: unknown; attributes?: Record<string, unknown> };
 type HassLike = {
   states?: Record<string, HassStateLike>;
+  config?: { unit_system?: { temperature?: string } };
   callService?: (domain: string, service: string, data?: Record<string, unknown>) => Promise<unknown> | unknown;
 };
 
@@ -151,6 +161,11 @@ type ChartSize = 'small' | 'medium' | 'large';
 const CHART_SIZES: ReadonlyArray<ChartSize> = ['small', 'medium', 'large'];
 const CHART_SIZE_STORAGE_KEY = 'hm-panel-chart-size';
 
+/** A °F/hr rate in the chosen unit; a rate is a delta, so no 32 offset. */
+function _perHour(rateF: number): string {
+  return `${formatDelta(rateF, temperatureUnitStore.state.unit)}/hr`;
+}
+
 function _loadChartSize(): ChartSize {
   try {
     const raw = globalThis.localStorage?.getItem(CHART_SIZE_STORAGE_KEY);
@@ -169,6 +184,48 @@ function _saveChartSize(size: ChartSize): void {
   } catch {
     // best-effort persistence
   }
+}
+
+// An account still on the API's default zone was never chosen by anyone, so
+// the panel moves it to Home Assistant's zone once. The per-account marker
+// stops that repeating after someone picks a zone in Settings.
+const API_DEFAULT_TIME_ZONE = 'America/New_York';
+const TIME_ZONE_SET_STORAGE_KEY = 'hm-panel-time-zone-set';
+
+function _timeZoneIsSet(userId: string): boolean {
+  try {
+    const raw = globalThis.localStorage?.getItem(TIME_ZONE_SET_STORAGE_KEY);
+    const ids: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(ids) && ids.includes(userId);
+  } catch {
+    return false;
+  }
+}
+
+function _markTimeZoneSet(userId: string): void {
+  try {
+    const raw = globalThis.localStorage?.getItem(TIME_ZONE_SET_STORAGE_KEY);
+    const ids: unknown = raw ? JSON.parse(raw) : [];
+    const next = Array.isArray(ids) ? ids.filter((id) => id !== userId) : [];
+    globalThis.localStorage?.setItem(
+      TIME_ZONE_SET_STORAGE_KEY,
+      JSON.stringify([...next, userId]),
+    );
+  } catch {
+    // happy-dom + private browsing both throw on localStorage.
+  }
+}
+
+// Every zone the browser knows, plus the two we must always be able to show.
+function _timeZoneOptions(...known: string[]): string[] {
+  let zones: string[] = [];
+  try {
+    const intl = Intl as unknown as { supportedValuesOf?: (key: string) => string[] };
+    zones = intl.supportedValuesOf?.('timeZone') ?? [];
+  } catch {
+    zones = [];
+  }
+  return [...new Set([...zones, ...known.filter(Boolean)])].sort();
 }
 
 // Completed-calibration banners are informational — once the user has
@@ -1332,6 +1389,40 @@ export class HungryMachinesPanel extends LitElement {
       font-size: 14px;
       color: var(--hm-text, #0F172A);
     }
+    .export-body {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .export-modes {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .settings .export-mode {
+      display: flex;
+      flex-direction: row;
+      align-items: flex-start;
+      gap: 8px;
+      cursor: pointer;
+    }
+    .settings .export-mode input {
+      flex: none;
+      width: auto;
+      margin: 3px 0 0;
+    }
+    .export-mode-title,
+    .export-mode-hint {
+      display: block;
+    }
+    .export-mode-title {
+      font-size: 14px;
+      color: var(--hm-text, #0F172A);
+    }
+    .export-mode-hint {
+      font-size: 13px;
+      color: var(--hm-muted, #64748B);
+    }
     .delivery-tod-fields {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -1440,6 +1531,7 @@ export class HungryMachinesPanel extends LitElement {
     _exportRatesInputs: { state: true },
     _exportRatesSaving: { state: true },
     _exportRatesSaveError: { state: true },
+    _exportCustomPending: { state: true },
     _pricingSourceDraft: { state: true },
     _dynamicZoneDraft: { state: true },
     _pricingAdderDraft: { state: true },
@@ -1454,6 +1546,10 @@ export class HungryMachinesPanel extends LitElement {
     _optToggleBusy: { state: true },
     _deviceOptToggleBusy: { state: true },
     _spikeGuardToggleBusy: { state: true },
+    _unitBusy: { state: true },
+    _unitError: { state: true },
+    _timeZoneBusy: { state: true },
+    _timeZoneError: { state: true },
     _powerLimitsBusy: { state: true },
     _feedbackCategory: { state: true },
     _feedbackMessage: { state: true },
@@ -1482,6 +1578,12 @@ export class HungryMachinesPanel extends LitElement {
   // appliance_id, so one card's toggle spinner doesn't block the others.
   _deviceOptToggleBusy: Record<string, boolean> = {};
   _spikeGuardToggleBusy = false;
+  _unitBusy = false;
+  _unitError: string | null = null;
+  _timeZoneBusy = false;
+  _timeZoneError: string | null = null;
+  private _timeZoneChecked = false;
+  private _unsubscribeUnit: (() => void) | null = null;
   // Per-field busy guard for the "Home power limits" settings section
   //, keyed by UpdatePreferencesBody field name.
   _powerLimitsBusy: Partial<Record<keyof UpdatePreferencesBody, boolean>> = {};
@@ -1522,7 +1624,13 @@ export class HungryMachinesPanel extends LitElement {
   _customRatesSaving = false;
   _customRatesSaveError: string | null = null;
   _exportRatesEditorOpen = false;
-  _exportRatesInputs: string[] = Array.from({ length: 48 }, () => '');
+  _exportRatesInputs: string[] = Array.from({ length: 24 }, () => '');
+  // The hourly strings as opened. An hour left alone keeps both stored
+  // half-hour values, which the 24-row editor can't show.
+  _exportRatesOpened: string[] = [];
+  // "My own hourly rates" chosen with no curve saved yet: nothing to PUT
+  // until the editor is saved.
+  _exportCustomPending = false;
   _exportRatesSaving = false;
   _exportRatesSaveError: string | null = null;
   _pricingSourceDraft: 'zone' | 'custom' | 'dynamic' = 'zone';
@@ -1587,14 +1695,54 @@ export class HungryMachinesPanel extends LitElement {
       }
       if (s.status !== 'authed') {
         this._schedulesFetched = false;
+        this._timeZoneChecked = false;
       }
     });
+    this._unsubscribeUnit = temperatureUnitStore.subscribe(() => this.requestUpdate());
     void authStore.hydrate();
     void this._loadSchedulesIfNeeded();
   }
 
+  override willUpdate(changed: Map<PropertyKey, unknown>): void {
+    if (changed.has('hass')) temperatureUnitStore.setHaUnit(haUnitFrom(this.hass));
+    if (changed.has('_preferences')) {
+      temperatureUnitStore.setPreference(this._preferences?.temperature_unit ?? null);
+    }
+    if (changed.has('hass') || changed.has('_auth')) this._adoptHassTimeZone();
+  }
+
+  private _adoptHassTimeZone(): void {
+    const user = this._auth.user;
+    const zone = this._hassTimeZone();
+    if (this._timeZoneChecked || this._auth.status !== 'authed' || !user || !zone) return;
+    this._timeZoneChecked = true;
+    if (user.timezone !== API_DEFAULT_TIME_ZONE || zone === user.timezone) return;
+    if (_timeZoneIsSet(user.user_id)) return;
+    void this._saveTimeZone(zone);
+  }
+
+  private async _saveTimeZone(zone: string): Promise<void> {
+    const userId = this._auth.user?.user_id;
+    if (!userId || !zone || this._timeZoneBusy) return;
+    this._timeZoneBusy = true;
+    this._timeZoneError = null;
+    try {
+      const updated = await patchMe({ timezone: zone });
+      authStore.patchUser({ timezone: updated.timezone });
+      _markTimeZoneSet(userId);
+    } catch {
+      this._timeZoneError = 'Could not save the time zone. Try again.';
+    } finally {
+      this._timeZoneBusy = false;
+    }
+  }
+
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    if (this._unsubscribeUnit) {
+      this._unsubscribeUnit();
+      this._unsubscribeUnit = null;
+    }
     if (this._unsubscribe) {
       this._unsubscribe();
       this._unsubscribe = null;
@@ -1998,23 +2146,56 @@ export class HungryMachinesPanel extends LitElement {
   // export credit is independent of how the user prices their imports.
   private _openExportRatesEditor(): void {
     const rates = this._rates;
-    const inputs: string[] = Array.from({ length: 48 }, () => '');
-    if (rates && Array.isArray(rates.export_rates_cents_per_kwh)) {
-      for (let i = 0; i < 48; i++) {
-        const cents = rates.export_rates_cents_per_kwh[i];
-        if (typeof cents === 'number' && Number.isFinite(cents)) {
-          inputs[i] = (cents / 100).toFixed(3);
-        }
-      }
-    }
+    const seed =
+      rates?.export_rates_cents_per_kwh ??
+      rates?.effective_export_rates_cents_per_kwh ??
+      rates?.rates_cents_per_kwh;
+    const inputs = Array.from({ length: 24 }, (_, h) => {
+      const cents = seed?.[h * 2];
+      return typeof cents === 'number' && Number.isFinite(cents)
+        ? (Math.max(0, cents) / 100).toFixed(3)
+        : '';
+    });
     this._exportRatesInputs = inputs;
+    this._exportRatesOpened = inputs.slice();
     this._exportRatesEditorOpen = true;
     this._exportRatesSaveError = null;
   }
 
   private _closeExportRatesEditor(): void {
     this._exportRatesEditorOpen = false;
+    this._exportCustomPending = false;
     this._exportRatesSaveError = null;
+  }
+
+  private async _onExportModeChange(mode: ExportRateMode): Promise<void> {
+    if (mode === 'custom' && !this._rates?.export_rates_cents_per_kwh) {
+      this._exportCustomPending = true;
+      this._openExportRatesEditor();
+      return;
+    }
+    this._exportRatesSaving = true;
+    this._exportRatesSaveError = null;
+    try {
+      this._rates = await updateRates({ export_rate_mode: mode });
+      this._closeExportRatesEditor();
+    } catch (err) {
+      this._exportRatesSaveError =
+        err instanceof Error && err.message ? err.message : 'Could not save export rate';
+    } finally {
+      this._exportRatesSaving = false;
+    }
+  }
+
+  private _exportCurveFromInputs(): number[] {
+    const stored = this._rates?.export_rates_cents_per_kwh;
+    return this._exportRatesInputs.flatMap((s, h) => {
+      const a = stored?.[h * 2];
+      const b = stored?.[h * 2 + 1];
+      if (a !== undefined && b !== undefined && s === this._exportRatesOpened[h]) return [a, b];
+      const cents = Math.round(Number(s.trim()) * 100 * 10000) / 10000;
+      return [cents, cents];
+    });
   }
 
   private _onExportRateInput(i: number, val: string): void {
@@ -2037,14 +2218,15 @@ export class HungryMachinesPanel extends LitElement {
   private async _saveExportRates(): Promise<void> {
     const errors = this._validateExportRateInputs(this._exportRatesInputs);
     if (errors.some((e) => e !== null)) return;
-    const cents = this._exportRatesInputs.map(
-      (s) => Math.round(Number(s.trim()) * 100 * 10000) / 10000,
-    );
+    const cents = this._exportCurveFromInputs();
     this._exportRatesSaving = true;
     this._exportRatesSaveError = null;
     try {
-      this._rates = await updateRates({ export_rates_cents_per_kwh: cents });
-      this._exportRatesEditorOpen = false;
+      this._rates = await updateRates({
+        export_rates_cents_per_kwh: cents,
+        export_rate_mode: 'custom',
+      });
+      this._closeExportRatesEditor();
     } catch (err) {
       this._exportRatesSaveError =
         err instanceof Error && err.message ? err.message : 'Could not save export rates';
@@ -2058,7 +2240,7 @@ export class HungryMachinesPanel extends LitElement {
     this._exportRatesSaveError = null;
     try {
       this._rates = await updateRates({ export_rates_cents_per_kwh: null });
-      this._exportRatesEditorOpen = false;
+      this._closeExportRatesEditor();
     } catch (err) {
       this._exportRatesSaveError =
         err instanceof Error && err.message ? err.message : 'Could not clear export rates';
@@ -2615,6 +2797,7 @@ export class HungryMachinesPanel extends LitElement {
         .applianceId=${this._editorApplianceId}
         .applianceType=${this._editorApplianceType}
         .currentConstraints=${this._editorConstraints}
+        .temperatureUnit=${temperatureUnitStore.state.unit}
         .open=${this._editorOpen}
         @constraints-saved=${(e: CustomEvent) => this._onConstraintsSaved(e)}
         @constraints-cancelled=${() => this._onEditorClosed()}
@@ -2818,6 +3001,134 @@ export class HungryMachinesPanel extends LitElement {
           Dodge real-time price spikes automatically. Your comfort range
           always applies. Turn off any time.
         </p>
+      </div>
+    `;
+  }
+
+  private async _onUnitChange(value: string): Promise<void> {
+    if (this._unitBusy) return;
+    const next: TempUnit | null = value === 'F' || value === 'C' ? value : null;
+    this._unitBusy = true;
+    this._unitError = null;
+    try {
+      this._preferences = await updatePreferences({ temperature_unit: next });
+      this._persistUserPrefs();
+    } catch {
+      // PUT failed — _preferences is untouched, so the select reverts.
+      this._unitError = 'Could not save the unit. Try again.';
+    } finally {
+      this._unitBusy = false;
+      this.requestUpdate();
+    }
+  }
+
+  private _exportModeOptions(
+    rates: RatesResponse,
+  ): { mode: ExportRateMode; title: string; hint: string }[] {
+    const basis = rates.export_supply_basis;
+    return [
+      ...(basis
+        ? [
+            {
+              mode: 'supply' as const,
+              title: basis === 'tariff' ? 'Supply and transmission credit' : 'Market price only',
+              hint:
+                basis === 'tariff'
+                  ? 'For net metering that started in 2025 or later, or that took a solar rebate. Exports earn supply and transmission, not delivery.'
+                  : 'The hourly market price, without delivery charges. Choose this if your bill credits supply only.',
+            },
+          ]
+        : []),
+      {
+        mode: 'retail',
+        title: basis ? 'Full price, with delivery' : 'Same as my regular rates',
+        hint:
+          basis === 'tariff'
+            ? 'For net metering that started before 2025 with no solar rebate. Exports earn what you pay for power.'
+            : basis
+              ? 'The price you pay for power, delivery charges included.'
+              : 'The prices we use to plan your devices.',
+      },
+      {
+        mode: 'custom',
+        title: 'My own hourly rates',
+        hint: 'Enter what your utility pays for each hour.',
+      },
+      {
+        mode: 'none',
+        title: "I'm not paid for exports",
+        hint: 'Common for plug-in solar. Power you use yourself counts as free.',
+      },
+    ];
+  }
+
+  private _renderUnitSection(): TemplateResult {
+    const pref = this._preferences?.temperature_unit ?? null;
+    const ha = temperatureUnitStore.state.haUnit;
+    const haText = ha ? ` (${unitLabel(ha)})` : '';
+    const current = pref ?? '';
+    return html`
+      <div class="settings-section" data-section="temperature-units">
+        <h3>Temperature units</h3>
+        <p class="hint">Choose how temperatures appear here. Your comfort range is unchanged.</p>
+        <label>
+          <span class="label-text">Show temperatures in</span>
+          <select
+            name="temperature_unit"
+            ?disabled=${this._unitBusy}
+            .value=${live(current)}
+            @change=${(e: Event) => void this._onUnitChange((e.target as HTMLSelectElement).value)}
+          >
+            <option value="" ?selected=${current === ''}>Use Home Assistant's setting${haText}</option>
+            <option value="F" ?selected=${current === 'F'}>°F</option>
+            <option value="C" ?selected=${current === 'C'}>°C</option>
+          </select>
+        </label>
+        ${this._unitError ? html`<p class="zone-error">${this._unitError}</p>` : ''}
+      </div>
+    `;
+  }
+
+  private _renderTimeZoneSection(): TemplateResult {
+    const current = this._auth.user?.timezone ?? '';
+    const hassZone = this._hassTimeZone();
+    return html`
+      <div class="settings-section" data-section="time-zone">
+        <h3>Time zone</h3>
+        <p class="hint">
+          Your plans and prices line up with this time zone, so it should match
+          where your home is. A change applies from your next nightly plan.
+        </p>
+        <label>
+          <span class="label-text">Home time zone</span>
+          <select
+            name="timezone"
+            ?disabled=${this._timeZoneBusy}
+            .value=${live(current)}
+            @change=${(e: Event) => void this._saveTimeZone((e.target as HTMLSelectElement).value)}
+          >
+            ${_timeZoneOptions(current, hassZone).map(
+              (zone) => html`<option value=${zone} ?selected=${zone === current}>${zone}</option>`,
+            )}
+          </select>
+        </label>
+        ${hassZone && hassZone !== current
+          ? html`
+              <p class="hint">Home Assistant is set to ${hassZone}.</p>
+              <div class="settings-actions">
+                <button
+                  class="reset-btn"
+                  type="button"
+                  data-action="use-hass-time-zone"
+                  ?disabled=${this._timeZoneBusy}
+                  @click=${() => void this._saveTimeZone(hassZone)}
+                >
+                  Use ${hassZone}
+                </button>
+              </div>
+            `
+          : ''}
+        ${this._timeZoneError ? html`<p class="zone-error">${this._timeZoneError}</p>` : ''}
       </div>
     `;
   }
@@ -3040,7 +3351,7 @@ export class HungryMachinesPanel extends LitElement {
         !Number.isFinite(high as number);
       const summary = isSetpointStep
         ? `Setpoint test: ${rates.phases_observed ?? 3} holds observed; the model learns from them directly.`
-        : `Measured cooling: ${((low as number) * 2).toFixed(1)} °F/hr on Low fan, ${((high as number) * 2).toFixed(1)} °F/hr on High fan.`;
+        : `Measured cooling: ${_perHour((low as number) * 2)} on Low fan, ${_perHour((high as number) * 2)} on High fan.`;
       return html`
         <div class="banner calibration complete" role="status">
           <div class="banner-text">
@@ -3280,6 +3591,7 @@ export class HungryMachinesPanel extends LitElement {
           .targetValues=${targetValues}
           .targetMarker=${marker}
           .unit=${chartUnit}
+          .displayUnit=${temperatureUnitStore.state.unit}
           .yMin=${yMin}
           .yMax=${yMax}
           .size=${this._chartSize}
@@ -3326,6 +3638,12 @@ export class HungryMachinesPanel extends LitElement {
    * first nightly run, or the `_renderExampleApplianceCard` placeholder,
    * whose seeded entry carries an empty `schedule`).
    */
+  private _solarChartRates(): number[] {
+    const rates = this._rates;
+    if (!rates) return [];
+    return rates.effective_export_rates_cents_per_kwh ?? Array<number>(48).fill(0);
+  }
+
   private _renderSolarCard(
     appliance: ApplianceScheduleEntry,
     label: string,
@@ -3380,7 +3698,8 @@ export class HungryMachinesPanel extends LitElement {
           ? html`
               <hm-optimization-chart
                 .targetValues=${generationKw48}
-                .rates=${this._rates?.rates_cents_per_kwh ?? []}
+                .rates=${this._solarChartRates()}
+                .priceLabel=${'Export Price'}
                 .unit=${'kw'}
                 .yMin=${0}
                 .yMax=${sizeKw ?? undefined}
@@ -3697,11 +4016,15 @@ export class HungryMachinesPanel extends LitElement {
     const exportSaving = this._exportRatesSaving;
     const exportSaveError = this._exportRatesSaveError;
     const exportHasStored = Array.isArray(rates?.export_rates_cents_per_kwh);
-    const exportToggleLabel = exportHasStored ? 'Edit / Clear export rates' : 'Edit export rates';
+    const exportMode = this._exportCustomPending ? 'custom' : rates?.export_rate_mode;
+    const exportCurve = rates?.effective_export_rates_cents_per_kwh;
+    const exportUnit = rates?.currency === 'GBP' ? 'p/kWh' : '¢/kWh';
 
     return html`
       <h2>Settings</h2>
       <div class="settings">
+        ${this._renderUnitSection()}
+        ${this._renderTimeZoneSection()}
         <div class="settings-section">
           <h3>Weather entity</h3>
           <p class="hint">
@@ -4038,24 +4361,59 @@ export class HungryMachinesPanel extends LitElement {
               : null}
           </div>
           <div class="export-fields">
-            <h4>Export rate (optional)</h4>
+            <h4>Export rate</h4>
             <p class="hint">
-              What your utility pays for power you send back. Leave empty if
-              you are not paid for exports.
+              What your utility pays for power you send back. This sets how
+              we value your solar. You choose the price that matches your bill.
             </p>
             ${rates
               ? html`
-                  <div class="rates-actions">
-                    <button
-                      type="button"
-                      name="toggle_export_rates"
-                      @click=${() =>
-                        exportEditorOpen
-                          ? this._closeExportRatesEditor()
-                          : this._openExportRatesEditor()}
-                    >
-                      ${exportEditorOpen ? 'Close' : exportToggleLabel}
-                    </button>
+                  <div class="export-body">
+                    <div class="export-modes" role="radiogroup" aria-label="Export rate">
+                      ${this._exportModeOptions(rates).map(
+                        (option) => html`
+                          <label class="export-mode">
+                            <input
+                              type="radio"
+                              name="export_rate_mode"
+                              .value=${option.mode}
+                              .checked=${live(exportMode === option.mode)}
+                              ?disabled=${exportSaving}
+                              @change=${() => void this._onExportModeChange(option.mode)}
+                            />
+                            <span>
+                              <span class="export-mode-title">${option.title}</span>
+                              <span class="export-mode-hint">${option.hint}</span>
+                            </span>
+                          </label>
+                        `,
+                      )}
+                    </div>
+                    ${exportMode === 'custom' && exportHasStored && !exportEditorOpen
+                      ? html`
+                          <div class="rates-actions">
+                            <button
+                              type="button"
+                              name="toggle_export_rates"
+                              @click=${() => this._openExportRatesEditor()}
+                            >
+                              Edit / Clear export rates
+                            </button>
+                          </div>
+                        `
+                      : null}
+                    ${exportCurve
+                      ? html`
+                          <hm-export-rate-chart
+                            .exportRates=${exportCurve}
+                            .buyRates=${rates.rates_cents_per_kwh}
+                            .unitLabel=${exportUnit}
+                          ></hm-export-rate-chart>
+                        `
+                      : null}
+                    ${exportSaveError && !exportEditorOpen
+                      ? html`<p class="rates-api-error" role="alert">${exportSaveError}</p>`
+                      : null}
                   </div>
                 `
               : null}
@@ -4075,7 +4433,7 @@ export class HungryMachinesPanel extends LitElement {
                       <tbody>
                         ${exportInputs.map((val, i) => {
                           const err = exportRowErrors[i];
-                          const hourLabel = `${String(Math.floor(i / 2)).padStart(2, '0')}:${i % 2 ? '30' : '00'}`;
+                          const hourLabel = `${String(i).padStart(2, '0')}:00`;
                           return html`
                             <tr data-row=${i}>
                               <td>${hourLabel}</td>
@@ -4118,6 +4476,13 @@ export class HungryMachinesPanel extends LitElement {
                         @click=${() => void this._saveExportRates()}
                       >
                         Save
+                      </button>
+                      <button
+                        type="button"
+                        name="close_export_rates"
+                        @click=${() => this._closeExportRatesEditor()}
+                      >
+                        Cancel
                       </button>
                       ${exportHasStored
                         ? html`
