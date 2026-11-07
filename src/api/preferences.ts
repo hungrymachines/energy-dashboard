@@ -35,6 +35,10 @@ export interface Preferences {
   demand_window_end: string | null;
   /** Display unit for temperatures. null = not chosen yet (the panel follows Home Assistant). */
   temperature_unit: 'F' | 'C' | null;
+  /** Temperature chart y-axis. null = 'standard' (fixed per-appliance range). */
+  chart_scale: 'standard' | 'dynamic' | null;
+  /** Solar chart y-axis. null = 'max' (system size). */
+  solar_chart_scale: 'max' | 'dynamic' | null;
 }
 
 export interface UpdatePreferencesBody {
@@ -56,6 +60,8 @@ export interface UpdatePreferencesBody {
   demand_window_start?: string | null;
   demand_window_end?: string | null;
   temperature_unit?: 'F' | 'C' | null;
+  chart_scale?: 'standard' | 'dynamic' | null;
+  solar_chart_scale?: 'max' | 'dynamic' | null;
 }
 
 export function get(): Promise<Preferences> {

@@ -1,6 +1,7 @@
 """Tests for custom_components.hungry_machines.scheduler (v2.0)."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -1860,6 +1861,37 @@ async def test_comfort_override_stops_active_heating_that_overshot_high_edge() -
 
 
 @pytest.mark.asyncio
+async def test_heat_evening_off_latch_does_not_block_a_cool_plan(caplog) -> None:
+    """2026-11-03: a heat evening latched OFF over the ceiling, the night's
+    plan turned to cool, and the stale latch held the unit OFF all night.
+    The cool plan's first apply must cool, and log the new engagement."""
+    state = _climate_state("off", supports_range=False,
+                           hvac_modes=["off", "heat", "cool"])
+    state.attributes["current_temperature"] = 80.0  # above the 74°F high band
+    hass = _hass(state)
+    entry = _entry()
+    hass.data[DOMAIN] = _override_cache(sched_mode="cool")
+    hass.data[DOMAIN]["comfort_latch"] = {
+        "climate.living_room": {
+            "active": True, "direction": "off_overheat",
+            "since": datetime.now(timezone.utc),
+        },
+    }
+
+    with caplog.at_level(logging.WARNING), \
+         patch.object(scheduler, "_current_slot", return_value=16):
+        await scheduler.apply_current_slot(hass, entry)
+
+    calls = hass.services.async_call.await_args_list
+    mode_calls = [c for c in calls if c.args[1] == "set_hvac_mode"]
+    assert mode_calls and mode_calls[0].args[2]["hvac_mode"] == "cool"
+    latch = hass.data[DOMAIN]["comfort_latch"]["climate.living_room"]
+    assert latch["direction"] == "cool"
+    assert any("comfort override" in r.message and "COOL" in r.message
+               for r in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_off_override_arms_a_mode_only_verification() -> None:
     """An OFF override must be verified like any other command.
 
@@ -3252,3 +3284,214 @@ def test_metric_resolve_indoor_temp_converts_climate_and_aux() -> None:
     )
     indoor, _aux, used = scheduler._resolve_indoor_temp(hass, "climate.living_room")
     assert indoor == 71.96 and used is True
+
+
+# --- Timed pause -------------------------------------------
+
+
+def _paused_body(paused: bool) -> dict:
+    body = _schedules_body()
+    hvac = body["appliances"][0]
+    hvac["optimization_enabled"] = not paused
+    hvac["pause_state"] = "timed" if paused else "active"
+    hvac["paused_until"] = "2026-05-07T18:00:00+00:00" if paused else None
+    return body
+
+
+async def _fetch_with(hass, body) -> None:
+    with patch.object(scheduler.api, "get_schedules", AsyncMock(return_value=body)), \
+            patch.object(scheduler.api, "get_schedules_updated_at", AsyncMock(return_value=None)):
+        await scheduler.fetch_today_schedule(hass, _entry())
+
+
+@pytest.mark.asyncio
+async def test_pause_transition_releases_control_but_not_freeze_latch(caplog) -> None:
+    hass = _hass()
+    await _fetch_with(hass, _paused_body(False))
+    cache = hass.data[DOMAIN]["schedule"]["hvac-1"]
+    assert cache["pause_state"] == "active" and cache["paused_until"] is None
+
+    cancel = MagicMock()
+    hass.data[DOMAIN]["verify_timers"] = {"climate.living_room": cancel}
+    hass.data[DOMAIN]["last_commanded"] = {"climate.living_room": {"hvac_mode": "cool"}}
+    hass.data[DOMAIN]["comfort_latch"] = {"climate.living_room": {"active": True}}
+    hass.data[DOMAIN]["freeze_latch"] = {"climate.living_room": {"active": True}}
+
+    with caplog.at_level(logging.INFO):
+        await _fetch_with(hass, _paused_body(True))
+
+    cancel.assert_called_once()
+    assert "climate.living_room" not in hass.data[DOMAIN]["verify_timers"]
+    assert "climate.living_room" not in hass.data[DOMAIN]["last_commanded"]
+    assert "climate.living_room" not in hass.data[DOMAIN]["comfort_latch"]
+    assert "climate.living_room" in hass.data[DOMAIN]["freeze_latch"]
+    assert hass.data[DOMAIN]["schedule"]["hvac-1"]["pause_state"] == "timed"
+    assert any("released climate.living_room" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_first_sight_of_paused_hvac_releases_control() -> None:
+    hass = _hass()
+    hass.data[DOMAIN] = {"last_commanded": {"climate.living_room": {"hvac_mode": "cool"}}}
+    await _fetch_with(hass, _paused_body(True))
+    assert "climate.living_room" not in hass.data[DOMAIN]["last_commanded"]
+
+
+@pytest.mark.asyncio
+async def test_refetch_while_paused_does_not_release_again() -> None:
+    hass = _hass()
+    await _fetch_with(hass, _paused_body(True))
+    hass.data[DOMAIN]["last_commanded"] = {"climate.living_room": {"hvac_mode": "heat"}}
+    await _fetch_with(hass, _paused_body(True))
+    assert "climate.living_room" in hass.data[DOMAIN]["last_commanded"]
+
+
+@pytest.mark.asyncio
+async def test_verify_makes_no_call_while_paused_or_master_off() -> None:
+    for patch_cache in (
+        lambda c: c["hvac-1"].update(optimization_enabled=False),
+        lambda c: c.update(optimization_enabled=False),
+    ):
+        hass = _hass(_climate_state("off", supports_range=False, hvac_modes=["off", "cool"]))
+        cache = _hvac_cache()["schedule"]
+        patch_cache(cache)
+        hass.data[DOMAIN] = {"schedule": cache}
+        await scheduler._verify_hvac_apply(
+            hass, entity_id="climate.living_room", expected_mode="COOL",
+            expected_setpoint=68.0, expected_fan=None, slot=30,
+        )
+        hass.services.async_call.assert_not_awaited()
+
+
+def test_schedule_verification_stores_and_replaces_timer_handle() -> None:
+    hass = _hass()
+    first, second = MagicMock(), MagicMock()
+    with patch.object(scheduler, "async_call_later", side_effect=[first, second]):
+        for _ in range(2):
+            scheduler._schedule_apply_verification(
+                hass, entity_id="climate.a", expected_mode="cool",
+                expected_setpoint=70.0, expected_fan=None, slot=3,
+            )
+    first.assert_called_once()
+    assert hass.data[DOMAIN]["verify_timers"]["climate.a"] is second
+
+
+# --- Timed pause: resume timer + attributes -----------------
+
+
+def _timed_body(seconds_ahead: float) -> dict:
+    from datetime import datetime, timedelta, timezone
+    body = _paused_body(True)
+    until = datetime.now(timezone.utc) + timedelta(seconds=seconds_ahead)
+    body["appliances"][0]["paused_until"] = until.isoformat()
+    return body
+
+
+@pytest.mark.asyncio
+async def test_timed_pause_arms_resume_timer_and_fires() -> None:
+    hass = _hass()
+    handle = MagicMock()
+    with patch.object(scheduler, "async_call_later", return_value=handle) as later:
+        await _fetch_with(hass, _timed_body(90))
+    later.assert_called_once()
+    assert 90 <= later.call_args.args[1] <= 95.5
+    assert hass.data[DOMAIN]["resume_timers"]["hvac-1"] is handle
+
+    callback = later.call_args.args[2]
+    with patch.object(scheduler, "fetch_today_schedule", AsyncMock()) as fetch, \
+            patch.object(scheduler, "apply_current_slot", AsyncMock()) as apply:
+        await callback(None)
+    fetch.assert_awaited_once()
+    apply.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_refetch_replaces_resume_timer_and_unpaused_arms_none() -> None:
+    hass = _hass()
+    first, second = MagicMock(), MagicMock()
+    with patch.object(scheduler, "async_call_later", side_effect=[first, second]):
+        await _fetch_with(hass, _timed_body(90))
+        await _fetch_with(hass, _timed_body(60))
+    first.assert_called_once()
+    assert hass.data[DOMAIN]["resume_timers"]["hvac-1"] is second
+    with patch.object(scheduler, "async_call_later") as later:
+        await _fetch_with(hass, _paused_body(False))
+    second.assert_called_once()
+    later.assert_not_called()
+    assert hass.data[DOMAIN]["resume_timers"] == {}
+
+
+@pytest.mark.asyncio
+async def test_unload_cancels_resume_timers() -> None:
+    from custom_components.hungry_machines import async_unload_entry
+    hass = MagicMock()
+    handle = MagicMock()
+    hass.data = {DOMAIN: {"resume_timers": {"hvac-1": handle}}}
+    hass.services.has_service = MagicMock(return_value=False)
+    with patch("custom_components.hungry_machines.async_remove_panel"):
+        await async_unload_entry(hass, _entry())
+    handle.assert_called_once()
+    assert "resume_timers" not in hass.data[DOMAIN]
+
+
+@pytest.mark.asyncio
+async def test_schedule_sensor_carries_pause_attributes() -> None:
+    hass = _hass()
+    with patch.object(scheduler, "async_call_later", return_value=MagicMock()):
+        await _fetch_with(hass, _timed_body(600))
+    attrs = next(
+        c.args[2] for c in hass.states.async_set.call_args_list
+        if c.args[0].endswith("_ac_schedule")
+    )
+    assert attrs["optimization_enabled"] is False
+    assert attrs["pause_state"] == "timed"
+    assert attrs["paused_until"]
+
+
+def _resume_hass(mode: str, plan: dict, *, last: str | None = None) -> MagicMock:
+    hass = _hass(_climate_state(mode, supports_range=False, hvac_modes=["off", "heat", "cool"]))
+    if last:
+        hass.data[DOMAIN] = {"last_commanded": {"climate.living_room": {"hvac_mode": last}}}
+    return hass
+
+
+def _modes_sent(hass: MagicMock) -> list[str]:
+    return [
+        c.args[2].get("hvac_mode") for c in hass.services.async_call.await_args_list
+        if c.args[:2] == ("climate", "set_hvac_mode")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resume_heat_only_plan_with_thermostat_in_cool_sends_nothing() -> None:
+    plan = {"mode": "heat", "setpoint_temps": [68.0] * 48, "low_temps": [66.0] * 48, "high_temps": [72.0] * 48}
+    hass = _resume_hass("cool", plan)
+    await scheduler._apply_hvac(hass, "climate.living_room", plan, 30)
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resume_auto_plan_switches_cool_to_heat() -> None:
+    plan = {"mode": "heat", "auto_mode": True, "setpoint_temps": [68.0] * 48,
+            "low_temps": [66.0] * 48, "high_temps": [72.0] * 48}
+    hass = _resume_hass("cool", plan)
+    await scheduler._apply_hvac(hass, "climate.living_room", plan, 30)
+    assert _modes_sent(hass) == ["heat"]
+
+
+@pytest.mark.asyncio
+async def test_resume_auto_plan_leaves_user_off_unit_off() -> None:
+    plan = {"mode": "heat", "auto_mode": True, "setpoint_temps": [68.0] * 48,
+            "low_temps": [66.0] * 48, "high_temps": [72.0] * 48}
+    hass = _resume_hass("off", plan)
+    await scheduler._apply_hvac(hass, "climate.living_room", plan, 30)
+    assert _modes_sent(hass) == []
+
+
+@pytest.mark.asyncio
+async def test_resume_mode_schedule_plan_is_redriven() -> None:
+    plan = {"mode": "cool", "setpoint_temps": [70.0] * 48, "low_temps": [66.0] * 48,
+            "high_temps": [74.0] * 48, "hvac_mode_schedule": ["COOL"] * 48}
+    hass = _resume_hass("heat", plan)
+    await scheduler._apply_hvac(hass, "climate.living_room", plan, 30)
+    assert _modes_sent(hass) == ["cool"]

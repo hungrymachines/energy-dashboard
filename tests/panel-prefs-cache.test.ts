@@ -135,6 +135,29 @@ describe('preferences cache persistence', () => {
     expect(applBlob.prefs['hvac-1'].base_temperature).toBe(66);
   });
 
+  it('keeps weekday_bands through a constraints-saved event into the persisted cache', async () => {
+    const el = mountAuthedPanel();
+    await flush(el);
+    await openEditor(el, 'hvac-1');
+    await flush(el);
+
+    const weekday_bands = {
+      sat: {
+        hourly_high_temps_f: Array<number>(24).fill(80),
+        hourly_low_temps_f: Array<number>(24).fill(64),
+      },
+    };
+    (el as unknown as { _onConstraintsSaved(e: CustomEvent): void })._onConstraintsSaved(
+      new CustomEvent('constraints-saved', {
+        detail: { applianceId: 'hvac-1', payload: { weekday_bands } },
+      }),
+    );
+
+    const applBlob = JSON.parse(localStorage.getItem('hm-panel-appliance-prefs') ?? 'null');
+    expect(applBlob.prefs['hvac-1'].weekday_bands).toEqual(weekday_bands);
+    expect(applBlob.prefs['hvac-1'].base_temperature).toBe(66);
+  });
+
   it('seeds the editor from the persisted per-appliance row on a fresh mount, before the GET lands', async () => {
     // First panel populates the cache, then goes away.
     const first = mountAuthedPanel();

@@ -8,3 +8,42 @@ apply_now:
     after a constraint save so the AC sees the new schedule without
     waiting for the next :00/:30 boundary; it is also safe to call
     manually from Developer Tools → Services.
+
+pause:
+  name: Pause optimization
+  description: >-
+    Hand an HVAC unit back to you for a while. The plan stops driving the
+    thermostat, then resumes by itself when the time is up. The 50 F
+    freeze floor stays on during a pause.
+  fields:
+    appliance_id:
+      name: Appliance
+      description: >-
+        The Hungry Machines appliance id of the HVAC unit. Leave empty to
+        pause every HVAC unit.
+      required: false
+      selector:
+        text:
+    minutes:
+      name: Minutes
+      description: How long to pause, from 1 to 1440. The panel buttons send 120, 240 or 360.
+      required: false
+      default: 120
+      selector:
+        number:
+          min: 1
+          max: 1440
+          unit_of_measurement: min
+
+resume:
+  name: Resume optimization
+  description: End a pause early and apply the current slot of the plan right away.
+  fields:
+    appliance_id:
+      name: Appliance
+      description: >-
+        The Hungry Machines appliance id of the HVAC unit. Leave empty to
+        resume every HVAC unit.
+      required: false
+      selector:
+        text:

@@ -270,6 +270,8 @@ async def test_freeze_floor_stays_quiet_above_the_floor() -> None:
     [
         {"optimization_enabled": False},
         {"a1": {"optimization_enabled": False}},
+        {"a1": {"optimization_enabled": False, "pause_state": "timed",
+                "paused_until": "2099-01-01T00:00:00+00:00"}},
     ],
 )
 @pytest.mark.asyncio

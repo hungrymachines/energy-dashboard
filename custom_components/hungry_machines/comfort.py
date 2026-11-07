@@ -106,6 +106,18 @@ Override = Optional[Tuple[str, float]]
 # band edge and was stopped; they carry no "command_f".
 Latch = Optional[dict]
 
+# The modes under which each latch direction could have fired. A latch held
+# into a mode outside its set is dropped and the breach judged afresh: an
+# OFF latched on a heat evening ("too warm, keep the heat off") must not
+# block a cool plan that night, and a cool day's OFF must not keep the heat
+# off once the plan turns to heat.
+_LATCH_MODES = {
+    "cool": ("cool", "auto"),
+    "heat": ("heat", "auto"),
+    "off_overcool": ("cool",),
+    "off_overheat": ("heat",),
+}
+
 
 def decide(
     *,
@@ -143,9 +155,16 @@ def decide(
     The caller decides eligibility up front (e.g. pause flags); every slot
     is otherwise a candidate. ``new_latch`` is what the caller must persist
     back — None means "clear the latch."
+
+    A latch whose direction ``sched_mode`` could not have produced (see
+    ``_LATCH_MODES``) is dropped before anything else, without waiting out
+    ``MIN_ON_SECONDS``: the mode changed under it, so the breach is judged
+    again as if fresh.
     """
     active = bool(latch and latch.get("active"))
     direction = latch.get("direction") if latch else None
+    if active and sched_mode not in _LATCH_MODES.get(direction, ()):
+        latch, active, direction = None, False, None
     since = latch.get("since") if (latch and active) else None
     elapsed = (now - since).total_seconds() if isinstance(since, datetime) else 0.0
     held_long_enough = elapsed >= MIN_ON_SECONDS

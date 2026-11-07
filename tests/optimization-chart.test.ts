@@ -355,6 +355,144 @@ describe('hm-optimization-chart', () => {
     expect(viewBoxOf(el)).toEqual({ width: 600, height: 198 });
   });
 
+  describe('scale', () => {
+    // Left-axis ticks, bottom to top: end-anchored labels at the smallest x
+    // (the x-axis "24" label is end-anchored too, but at the right edge).
+    const leftTicks = (el: ChartEl): string[] => {
+      const ends = Array.from(el.shadowRoot!.querySelectorAll('text.axis-label')).filter(
+        (t) => t.getAttribute('text-anchor') === 'end',
+      );
+      const x = Math.min(...ends.map((t) => Number(t.getAttribute('x'))));
+      return ends
+        .filter((t) => Number(t.getAttribute('x')) === x)
+        .map((n) => n.textContent || '');
+    };
+
+    async function drawHvac(extra: Partial<HmOptimizationChart> = {}): Promise<ChartEl> {
+      const el = mount();
+      el.rates = RATES_48;
+      el.targetValues = Array<number>(48).fill(72);
+      el.highLimits = Array<number>(48).fill(74);
+      el.lowLimits = Array.from({ length: 48 }, (_, i) => (i < 24 ? 70 : 68));
+      el.yMin = 40;
+      el.yMax = 100;
+      Object.assign(el, extra);
+      await flush(el);
+      return el;
+    }
+
+    it('standard keeps the caller range', async () => {
+      const el = await drawHvac();
+      expect(leftTicks(el)).toEqual(['40', '60', '80', '100']);
+    });
+
+    it('dynamic fits the lowest and highest values with a 10 F standoff', async () => {
+      // 68..74 F → 58..84 F
+      const el = await drawHvac({ scale: 'dynamic' });
+      const ticks = leftTicks(el);
+      expect(ticks[0]).toBe('58');
+      expect(ticks[ticks.length - 1]).toBe('84');
+    });
+
+    it('dynamic uses a 6 C standoff, rounded outward', async () => {
+      // 68..74 F = 20.0..23.3 C → floor(14.0)=14 .. ceil(29.3)=30
+      const el = await drawHvac({ scale: 'dynamic', displayUnit: 'C' });
+      const ticks = leftTicks(el);
+      expect(ticks[0]).toBe('14');
+      expect(ticks[ticks.length - 1]).toBe('30');
+    });
+
+    it('dynamic covers a setpoint that leaves the band', async () => {
+      const el = await drawHvac({ scale: 'dynamic', targetValues: Array<number>(48).fill(80) });
+      const ticks = leftTicks(el);
+      expect(ticks[0]).toBe('58');
+      expect(ticks[ticks.length - 1]).toBe('90');
+    });
+
+    async function drawSolar(extra: Partial<HmOptimizationChart> = {}): Promise<ChartEl> {
+      const el = mount();
+      el.rates = RATES_48;
+      el.unit = 'kw';
+      el.targetValues = Array.from({ length: 48 }, (_, i) => (i >= 16 && i < 36 ? 3.2 : 0));
+      el.yMin = 0;
+      el.yMax = 8;
+      Object.assign(el, extra);
+      await flush(el);
+      return el;
+    }
+
+    it('solar max keeps the system size as the top', async () => {
+      const ticks = leftTicks(await drawSolar({ scale: 'max' }));
+      expect(ticks[0]).toBe('0.0');
+      expect(ticks[ticks.length - 1]).toBe('8.0');
+    });
+
+    it('solar dynamic tops out at the day peak plus 25%', async () => {
+      // 3.2 kW × 1.25 = 4.0 kW
+      const ticks = leftTicks(await drawSolar({ scale: 'dynamic' }));
+      expect(ticks[0]).toBe('0.0');
+      expect(ticks[ticks.length - 1]).toBe('4.0');
+    });
+
+    it('solar dynamic on a zero-generation day falls back to the system size', async () => {
+      const ticks = leftTicks(await drawSolar({ scale: 'dynamic', targetValues: Array<number>(48).fill(0) }));
+      expect(ticks[ticks.length - 1]).toBe('8.0');
+    });
+
+    it('solar axes of 10 kW or more keep whole numbers', async () => {
+      const ticks = leftTicks(await drawSolar({ scale: 'max', yMax: 12 }));
+      expect(ticks).toEqual(['0', '4', '8', '12']);
+    });
+
+    it('draws actuals as separate runs around gaps and relabels the forecast', async () => {
+      const actual = Array<number | null>(48).fill(null);
+      actual[16] = 1;
+      actual[17] = 1.5;
+      actual[20] = 2;
+      const el = await drawSolar({ actualValues: actual });
+      const root = el.shadowRoot!;
+      expect(root.querySelectorAll('polyline[data-series="actual"]')).toHaveLength(2);
+      const legend = root.querySelector('.legend')!.textContent!;
+      expect(legend).toContain('Forecast Generation');
+      expect(legend).toContain('Actual Generation');
+    });
+
+    it('without actuals keeps the Solar Generation label and no actual line', async () => {
+      const el = await drawSolar();
+      const root = el.shadowRoot!;
+      expect(root.querySelector('polyline[data-series="actual"]')).toBeNull();
+      expect(root.querySelector('.legend')!.textContent).toContain('Solar Generation');
+    });
+
+    it('raises the max scale when a measured peak beats the system size', async () => {
+      const actual = Array<number | null>(48).fill(null);
+      actual[24] = 9;
+      const ticks = leftTicks(await drawSolar({ scale: 'max', actualValues: actual }));
+      expect(ticks[ticks.length - 1]).toBe('9.0');
+    });
+
+    it('dynamic scale counts the measured peak', async () => {
+      const actual = Array<number | null>(48).fill(null);
+      actual[24] = 4;
+      // max(3.2, 4) × 1.25 = 5.0
+      const ticks = leftTicks(await drawSolar({ scale: 'dynamic', actualValues: actual }));
+      expect(ticks[ticks.length - 1]).toBe('5.0');
+    });
+
+    it('percent charts ignore dynamic', async () => {
+      const mk = async (scale: 'standard' | 'dynamic') => {
+        const el = mount();
+        el.rates = RATES_48;
+        el.targetValues = Array<number>(48).fill(50);
+        el.unit = 'percent';
+        el.scale = scale;
+        await flush(el);
+        return el.shadowRoot!.innerHTML;
+      };
+      expect(await mk('dynamic')).toBe(await mk('standard'));
+    });
+  });
+
   describe('displayUnit', () => {
     const HIGH = Array<number>(48).fill(76);
     const LOW = Array<number>(48).fill(68);

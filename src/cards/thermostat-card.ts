@@ -1,6 +1,7 @@
 import { LitElement, html, css, type TemplateResult } from 'lit';
 import { authStore, type AuthState } from '../store.js';
 import { haUnitFrom, liveTemp, temperatureUnitStore } from '../utils/temperature.js';
+import { chartScaleStore } from '../utils/chart-scale.js';
 import {
   getAllSchedules,
   type ApplianceScheduleEntry,
@@ -15,6 +16,8 @@ import {
 import {
   get as getAppliancePreferences,
   update as updateAppliancePreferences,
+  pause as pauseUnit,
+  resume as resumeUnit,
   type AppliancePreferences,
 } from '../api/appliance-preferences.js';
 import { get as getRates, type RatesResponse } from '../api/rates.js';
@@ -43,6 +46,7 @@ type HassStateLike = {
 type HassLike = {
   states?: Record<string, HassStateLike>;
   config?: { unit_system?: { temperature?: string } };
+  callService?: (domain: string, service: string, data?: Record<string, unknown>) => Promise<unknown>;
 };
 
 const SCHEDULE_TTL_MS = 5 * 60 * 1000;
@@ -208,6 +212,33 @@ export class HmThermostatCard extends LitElement {
       background: rgba(245, 158, 11, 0.12);
       color: var(--hm-accent, #B45309);
     }
+    .pause-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+    }
+    .pause-row button {
+      padding: 3px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(100, 116, 139, 0.25);
+      background: var(--hm-bg, #F8FAFC);
+      color: var(--hm-text, #0F172A);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .pause-row button:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+    .pause-row .paused-until {
+      color: var(--hm-muted, #64748B);
+    }
+    .pause-row .pause-error {
+      color: var(--hm-error, #DC2626);
+    }
     .multi-hvac-stub {
       padding: 12px;
       border-radius: 8px;
@@ -258,6 +289,8 @@ export class HmThermostatCard extends LitElement {
     _scheduleError: { state: true },
     _savingsLevel: { state: true },
     _appliancePrefs: { state: true },
+    _pauseBusy: { state: true },
+    _pauseError: { state: true },
   };
 
   hass: HassLike | undefined = undefined;
@@ -273,6 +306,8 @@ export class HmThermostatCard extends LitElement {
    * write and the "custom hourly limits active" hint key off this.
    */
   _appliancePrefs: AppliancePreferences | null = null;
+  _pauseBusy = false;
+  _pauseError = '';
 
   /** Which appliance `_appliancePrefs` belongs to (guards stale fetches). */
   private _appliancePrefsFor: string | null = null;
@@ -280,6 +315,7 @@ export class HmThermostatCard extends LitElement {
   private _config: HmThermostatCardConfig = {};
   private _unsubscribe: (() => void) | null = null;
   private _unsubscribeUnit: (() => void) | null = null;
+  private _unsubscribeChartScale: (() => void) | null = null;
   private _scheduleFetchedAt = 0;
   private _preferencesTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -307,6 +343,7 @@ export class HmThermostatCard extends LitElement {
       }
     });
     this._unsubscribeUnit = temperatureUnitStore.subscribe(() => this.requestUpdate());
+    this._unsubscribeChartScale = chartScaleStore.subscribe(() => this.requestUpdate());
     void authStore.hydrate();
     void this._loadIfAuthed();
   }
@@ -320,6 +357,10 @@ export class HmThermostatCard extends LitElement {
     if (this._unsubscribeUnit) {
       this._unsubscribeUnit();
       this._unsubscribeUnit = null;
+    }
+    if (this._unsubscribeChartScale) {
+      this._unsubscribeChartScale();
+      this._unsubscribeChartScale = null;
     }
     if (this._unsubscribe) {
       this._unsubscribe();
@@ -348,6 +389,7 @@ export class HmThermostatCard extends LitElement {
       this._schedules = schedules;
       this._rates = rates;
       temperatureUnitStore.setPreference(preferences?.temperature_unit ?? null);
+      chartScaleStore.setFromPreferences(preferences);
       if (preferences && typeof preferences.savings_level === 'number') {
         this._savingsLevel = this._clampLevel(preferences.savings_level);
       }
@@ -401,6 +443,78 @@ export class HmThermostatCard extends LitElement {
     }
     if (hvacs.length === 1) return hvacs[0];
     return null;
+  }
+
+  /** POST a pause or resume, reload the schedules entry, and nudge the
+   * integration so the thermostat follows without waiting for :00/:30. */
+  private async _postPause(
+    appliance: ApplianceScheduleEntry,
+    minutes: number | null,
+  ): Promise<void> {
+    if (this._pauseBusy) return;
+    this._pauseBusy = true;
+    this._pauseError = '';
+    try {
+      if (minutes === null) await resumeUnit(appliance.appliance_id);
+      else await pauseUnit(appliance.appliance_id, minutes);
+      this._scheduleFetchedAt = 0;
+      await this._loadIfAuthed();
+      const hass = this.hass;
+      if (hass && typeof hass.callService === 'function') {
+        try {
+          await hass.callService('hungry_machines', 'apply_now', {});
+        } catch {
+          // Older integration without the service: next :00/:30 tick applies it.
+        }
+      }
+    } catch {
+      this._pauseError =
+        minutes === null ? 'Could not resume. Try again.' : 'Could not pause. Try again.';
+    } finally {
+      this._pauseBusy = false;
+    }
+  }
+
+  private _renderPauseRow(entry: ApplianceScheduleEntry | null): TemplateResult | null {
+    if (!entry || entry.appliance_type !== 'hvac') return null;
+    const state = entry.pause_state;
+    if (state !== 'active' && state !== 'timed') return null;
+    const busy = this._pauseBusy;
+    const error = this._pauseError;
+    if (state === 'timed') {
+      const until = entry.paused_until ? new Date(entry.paused_until) : null;
+      const label =
+        until && !Number.isNaN(until.getTime())
+          ? `Paused until ${until.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+          : 'Paused';
+      return html`
+        <div class="pause-row">
+          <span class="paused-until">${label}</span>
+          <button
+            type="button"
+            name="resume_now"
+            ?disabled=${busy}
+            @click=${() => this._postPause(entry, null)}
+          >Resume now</button>
+          <span class="pause-error">${error}</span>
+        </div>
+      `;
+    }
+    const button = (hours: number) => html`
+      <button
+        type="button"
+        name=${`pause_${hours}h`}
+        ?disabled=${busy}
+        title=${`Leave this unit to you for ${hours} hours, then the plan takes it back.`}
+        @click=${() => this._postPause(entry, hours * 60)}
+      >Pause ${hours} h</button>
+    `;
+    return html`
+      <div class="pause-row">
+        ${button(2)}${button(4)}${button(6)}
+        <span class="pause-error">${error}</span>
+      </div>
+    `;
   }
 
   private _isMultiHvacUnresolved(): boolean {
@@ -521,6 +635,10 @@ export class HmThermostatCard extends LitElement {
       this._appliancePrefsFor === entry.appliance_id &&
       !!this._appliancePrefs &&
       hasHourlyComfortBands(this._appliancePrefs);
+    const dayBandsActive =
+      !!entry &&
+      this._appliancePrefsFor === entry.appliance_id &&
+      Object.keys(this._appliancePrefs?.weekday_bands ?? {}).length > 0;
 
     return html`
       <div class="card" data-appliance-type="hvac">
@@ -536,6 +654,7 @@ export class HmThermostatCard extends LitElement {
         >
           ${this._healthLabel(health)}
         </div>
+        ${this._renderPauseRow(entry ?? null)}
         ${multiHvacUnresolved
           ? html`<div class="multi-hvac-stub">
               You have multiple HVAC appliances. Add
@@ -572,6 +691,7 @@ export class HmThermostatCard extends LitElement {
               .displayUnit=${temperatureUnitStore.state.unit}
               .yMin=${40}
               .yMax=${100}
+              .scale=${chartScaleStore.state.temperature}
               .size=${'medium'}
             ></hm-optimization-chart>`}
         <div class="slider-row">
@@ -589,11 +709,12 @@ export class HmThermostatCard extends LitElement {
           />
           <span class="slider-value">${this._savingsLevel}</span>
         </div>
-        ${customBandsActive
+        ${customBandsActive || dayBandsActive
           ? html`<div class="bands-hint">
               Custom hourly limits are active for this device, so the
               savings level doesn't apply. Switch back to the simple
               schedule in the Hungry Machines panel to use it.
+              ${dayBandsActive ? 'Some days have their own.' : ''}
             </div>`
           : null}
       </div>

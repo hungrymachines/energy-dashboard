@@ -1,4 +1,5 @@
 import { apiFetch } from './client.js';
+import type { WeekdayBands } from '../utils/day-bands.js';
 
 export interface AppliancePreferences {
   base_temperature: number;
@@ -8,11 +9,17 @@ export interface AppliancePreferences {
   optimization_mode: string;
   hourly_high_temps_f?: number[] | null;
   hourly_low_temps_f?: number[] | null;
+  /** Per-weekday band overrides (°F, hour 0 = local midnight); a missing
+   * day inherits the hourly arrays. null/absent = no overrides. */
+  weekday_bands?: WeekdayBands | null;
   optimize_hvac_fan?: boolean;
   optimize_hvac_mode?: boolean;
   /** Per-appliance pause switch — ANDed server-side with the
    * user-level user_preferences.optimization_enabled master flag. */
   optimization_enabled?: boolean;
+  /** UTC ISO timestamp the timed pause ends; absent/null when not paused.
+   * Written only by `pause()` / `resume()`, never by `update()`. */
+  paused_until?: string | null;
 }
 
 export interface UpdateAppliancePreferencesBody {
@@ -23,6 +30,9 @@ export interface UpdateAppliancePreferencesBody {
   optimization_mode?: string;
   hourly_high_temps_f?: number[] | null;
   hourly_low_temps_f?: number[] | null;
+  /** Per-weekday band overrides (°F, hour 0 = local midnight); a missing
+   * day inherits the hourly arrays. null/absent = no overrides. */
+  weekday_bands?: WeekdayBands | null;
   optimize_hvac_fan?: boolean;
   optimize_hvac_mode?: boolean;
   optimization_enabled?: boolean;
@@ -83,5 +93,31 @@ export function defaultBands(
 ): Promise<DefaultBandsResponse> {
   return apiFetch<DefaultBandsResponse>(
     `/api/v1/appliances/${encodeURIComponent(applianceId)}/preferences/default-bands${buildDefaultBandsQuery(params)}`,
+  );
+}
+
+export type PauseState = 'active' | 'timed' | 'manual' | 'master';
+
+export interface PauseResponse {
+  appliance_id: string;
+  paused_until: string | null;
+  optimization_enabled: boolean;
+  pause_state: PauseState;
+}
+
+/** Hand one HVAC unit to the user for `minutes` (1-1440); the plan takes
+ * it back on its own when the time is up. */
+export function pause(applianceId: string, minutes: number): Promise<PauseResponse> {
+  return apiFetch<PauseResponse>(
+    `/api/v1/appliances/${encodeURIComponent(applianceId)}/pause`,
+    { method: 'POST', body: JSON.stringify({ minutes }) },
+  );
+}
+
+/** End a timed pause now. Never touches `optimization_enabled`. */
+export function resume(applianceId: string): Promise<PauseResponse> {
+  return apiFetch<PauseResponse>(
+    `/api/v1/appliances/${encodeURIComponent(applianceId)}/resume`,
+    { method: 'POST' },
   );
 }

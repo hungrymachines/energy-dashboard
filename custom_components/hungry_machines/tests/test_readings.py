@@ -1669,3 +1669,29 @@ def test_setpoint_step_f_omitted_without_step() -> None:
 
 def test_setpoint_step_f_omitted_on_fahrenheit() -> None:
     assert "setpoint_step_f" not in _step_reading(False, {"target_temp_step": 1})
+
+
+@pytest.mark.asyncio
+async def test_reading_after_pause_release_omits_commanded_and_override() -> None:
+    """once a timed pause drops last_commanded and the
+    comfort latch, the next reading carries no commanded_* and reports
+    override_active False."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.test"},
+    }
+    hass = _hass({"climate.test": _state("cool", {"current_temperature": 80.0})})
+    hass.data[DOMAIN] = {
+        "last_commanded": {"climate.test": {"hvac_mode": "COOL", "setpoint": 68.0}},
+        scheduler._COMFORT_LATCH_KEY: {"climate.test": {"active": True}},
+    }
+    scheduler._release_control_on_pause(hass, "climate.test", "2026-05-07T18:00:00+00:00")
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, _entry())
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert "commanded_hvac_mode" not in posted
+    assert "commanded_setpoint" not in posted
+    assert posted["override_active"] is False

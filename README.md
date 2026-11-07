@@ -75,7 +75,7 @@ Click the **Hungry Machines** entry in the sidebar and enter the same hungrymach
 - For EV charger / battery / water heater, choose the switch and any state-of-charge or tank-temperature sensor.
 - For solar, enter your system size, tilt, and azimuth, and optionally pick a **production sensor** — a `sensor.*` reporting your inverter's or plug's instantaneous output in W or kW (not an energy `kWh` sensor). Solar has no switch to control; the sensor is what lets Hungry Machines learn your array's real output and shading instead of estimating from the nameplate rating.
 
-Each appliance card then shows today's optimized schedule, an **Edit constraints** button, and a per-appliance pause toggle. You can edit or delete an appliance at any time.
+Each appliance card then shows today's optimized schedule, an **Edit constraints** button, and a per-appliance pause toggle. HVAC cards also carry **Pause 2 h**, **Pause 4 h** and **Pause 6 h** buttons, which hand that one unit to you for a while and let the plan take it back when the time is up (see [Pausing a unit](#pausing-a-unit)). You can edit or delete an appliance at any time.
 
 ### Step 5 — Add the cards (optional)
 
@@ -119,9 +119,9 @@ Everything you'd expect to tune lives inside the panel's **Settings** tab:
 - **Send feedback** — a short form to send a comment, bug report, or feature request to the team without leaving Home Assistant.
 - **Account** — sign out, or email info@hungrymachines.io if you want your account deleted.
 
-Comfort and charge constraints are edited per-appliance from the **Dashboard** — each appliance card has an **Edit constraints** button that opens a per-type editor, plus a **pause toggle** that excludes that one appliance from optimization without deleting it (there's also a master optimization switch that pauses everything):
+Comfort and charge constraints are edited per-appliance from the **Dashboard** — each appliance card has an **Edit constraints** button that opens a per-type editor, plus a **pause toggle** that excludes that one appliance from optimization without deleting it until you switch it back on (there's also a master optimization switch that pauses everything). HVAC cards add a timed pause that ends by itself; [Pausing a unit](#pausing-a-unit) covers both kinds:
 
-- **HVAC** — a low/high comfort limit for every one of the 24 hours, in your chosen unit. That table is what the panel edits and what every save sends. Beneath it a **Defaults** group holds base temperature, savings level (1 = tight ±2°F, 2 = moderate ±6°F, 3 = aggressive ±12°F), optimization mode (`cool`, `heat`, `auto`, `off`), and `time_away` / `time_home` (HH:MM, the times you typically leave and return). Those four shape the table whenever you press **Reset to defaults**, and the backend derives the same shape for any home that has never edited an hour.
+- **HVAC** — a low/high comfort limit for every one of the 24 hours, in your chosen unit. That table is what the panel edits and what every save sends. Above it, **Days** sets how many bands the unit keeps: **Every day** keeps one; **Weekdays and weekends** keeps one for Monday to Friday and one for Saturday and Sunday, each behind its own chip; **Each day** shows seven chips, M to S, and lets any day have its own band. A dashed chip has the same band as the day you are looking at, and **Copy this day to…** copies the shown band to the days you tick. Days run midnight to midnight in your home's time zone. Moving to a preset with fewer bands warns you when a day's own band would be replaced, and nothing changes until you save. **Reset to defaults** fills only the band on screen. The dashboard chart and the thermostat card show today's band. Beneath the table a **Defaults** group holds base temperature, savings level (1 = tight ±2°F, 2 = moderate ±6°F, 3 = aggressive ±12°F), optimization mode (`cool`, `heat`, `auto`, `off`), and `time_away` / `time_home` (HH:MM, the times you typically leave and return). Those four shape the table whenever you press **Reset to defaults**, and the backend derives the same shape for any home that has never edited an hour.
 - **EV charger** — target charge %, minimum charge %, current charge %, deadline time (HH:MM by which the target must be reached).
 - **Home battery** — target charge %, minimum charge %, deadline time.
 - **Water heater** — minimum and maximum tank temperature.
@@ -162,6 +162,40 @@ If you turned on letting Hungry Machines control the mode, and on window units, 
 **The one exception is the freeze floor.** If a room falls below 50 °F, Hungry Machines heats it to 52 °F, then puts the thermostat back the way it found it. This overrides the plan, a pause, and the thermostat's own setting, because pipes can freeze. It needs a unit with a heat mode, and it checks every 5 minutes while Home Assistant is running and has an appliance list from us. Hungry Machines never commands a setpoint below 50 °F.
 
 Hungry Machines plans around electricity prices only. It does not price natural gas or choose a fuel: your thermostat still decides when to use a gas furnace or auxiliary heat.
+
+## Pausing a unit
+
+There are two ways to take an HVAC unit away from the plan:
+
+- **The pause toggle** on each appliance card stops optimization for that appliance until you switch it back on. The master optimization switch in Settings does the same for every appliance at once.
+- **Pause 2 h, Pause 4 h or Pause 6 h** on an HVAC card hands that one unit to you for that long. The card then reads "Paused until 3:45 PM" with a **Resume now** button, and the Hungry Machines thermostat card on your dashboards shows the same row. When the time is up, the integration picks the plan up again within a few seconds; you don't have to do anything.
+
+During either pause Hungry Machines sends the unit nothing: no setpoints, no comfort corrections, no retries of an earlier command. Change the thermostat however you like. The freeze floor is the one exception and still acts during a timed pause: below 50 °F it heats the room to 52 °F, then puts the thermostat back the way you left it.
+
+When a pause ends, the plan's current half hour is applied as usual and the [Thermostat modes](#thermostat-modes) rules decide what happens to a mode you changed. On Auto, Hungry Machines switches heating or cooling back to the plan's choice, but a unit you turned off stays off. On Heating only or Cooling only, a thermostat you left in another mode keeps your mode, and the log records the conflict. Hungry Machines forgets what it commanded before the pause, so an Off it set earlier counts as yours after it.
+
+### Automations
+
+The integration adds two services, `hungry_machines.pause` and `hungry_machines.resume`. `appliance_id` picks one HVAC unit; leave it out to pause or resume every HVAC unit. `minutes` runs from 1 to 1440 and defaults to 120. This automation gives you two hours whenever the front door opens after 10 PM:
+
+```yaml
+automation:
+  - alias: Leave the AC to me after a late arrival
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.front_door
+        to: "on"
+    condition:
+      - condition: time
+        after: "22:00:00"
+    action:
+      - service: hungry_machines.pause
+        data:
+          appliance_id: 11111111-2222-3333-4444-555555555555
+          minutes: 120
+```
+
+`hungry_machines.resume` takes the same `appliance_id` and ends the pause straight away. Each schedule sensor also carries `optimization_enabled`, `paused_until` and `pause_state` attributes for your own conditions.
 
 ## Support
 

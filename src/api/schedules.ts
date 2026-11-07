@@ -16,6 +16,10 @@ export interface HvacScheduleResponse {
   generated_at: string;
   stale: boolean;
   source: 'optimization' | 'defaults';
+  /** Effective flag for the resolved HVAC: master AND unit AND no timed pause. */
+  optimization_enabled: boolean;
+  paused_until?: string | null;
+  pause_state: 'active' | 'timed' | 'manual' | 'master';
 }
 
 export type IntegrationHealthStatus =
@@ -44,6 +48,11 @@ export interface ApplianceScheduleEntry {
   savings_pct: number;
   source: 'optimization' | 'defaults';
   optimization_enabled?: boolean;
+  /** HVAC only: when the timed pause ends (UTC ISO), else null/absent. */
+  paused_until?: string | null;
+  /** HVAC only: 'active' = plan running, 'timed' = user pause, 'manual' =
+   * unit switched off, 'master' = account-wide pause. */
+  pause_state?: 'active' | 'timed' | 'manual' | 'master';
   integration_health?: InlineIntegrationHealth;
 }
 

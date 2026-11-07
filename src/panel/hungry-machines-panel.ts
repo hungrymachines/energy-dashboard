@@ -22,6 +22,7 @@ import {
   type DeliveryTodCents,
   type ExportRateMode,
 } from '../api/rates.js';
+import { pause as pauseUnit, resume as resumeUnit } from '../api/appliance-preferences.js';
 import {
   list as listAppliances,
   remove as appliancesApiRemove,
@@ -49,7 +50,10 @@ import {
   type AppliancePreferences,
 } from '../api/appliance-preferences.js';
 import { expandHourlyTo48, hasCustomRates, hasHourlyComfortBands } from '../utils/hourly.js';
+import { resolveDayBand, todayIsoLocal, weekdayKeyOf } from '../utils/day-bands.js';
 import { formatSavingsEstimate, savingsEstimateTitle } from '../utils/savings.js';
+import { chartScaleStore } from '../utils/chart-scale.js';
+import { comparedKwh, fetchSolarActuals, type SolarActuals } from '../utils/solar-actuals.js';
 import {
   groupPricingZones,
   pricingZoneFullLabel,
@@ -61,7 +65,11 @@ type HassLike = {
   states?: Record<string, HassStateLike>;
   config?: { unit_system?: { temperature?: string } };
   callService?: (domain: string, service: string, data?: Record<string, unknown>) => Promise<unknown> | unknown;
+  callWS?: (msg: Record<string, unknown>) => Promise<unknown>;
 };
+
+// How often the solar card re-reads its production sensor's history.
+const SOLAR_ACTUALS_REFRESH_MS = 5 * 60 * 1000;
 
 type View = 'dashboard' | 'settings';
 
@@ -668,6 +676,34 @@ export class HungryMachinesPanel extends LitElement {
     }
     .device-opt-toggle.paused {
       color: var(--hm-muted, #64748B);
+    }
+    .pause-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      margin: 6px 0 0;
+      font-size: 12px;
+    }
+    .pause-row button {
+      padding: 3px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(100, 116, 139, 0.25);
+      background: var(--hm-bg, #F8FAFC);
+      color: var(--hm-text, #0F172A);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .pause-row button:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+    .pause-row .paused-until {
+      color: var(--hm-muted, #64748B);
+    }
+    .pause-row .pause-error {
+      color: #B91C1C;
     }
     .paused-banner {
       background: rgba(245, 158, 11, 0.12);
@@ -1545,9 +1581,14 @@ export class HungryMachinesPanel extends LitElement {
     _chartSize: { state: true },
     _optToggleBusy: { state: true },
     _deviceOptToggleBusy: { state: true },
+    _pauseBusy: { state: true },
+    _pauseError: { state: true },
     _spikeGuardToggleBusy: { state: true },
     _unitBusy: { state: true },
     _unitError: { state: true },
+    _chartScaleBusy: { state: true },
+    _solarActualsById: { state: true },
+    _chartScaleError: { state: true },
     _timeZoneBusy: { state: true },
     _timeZoneError: { state: true },
     _powerLimitsBusy: { state: true },
@@ -1577,13 +1618,22 @@ export class HungryMachinesPanel extends LitElement {
   // Per-appliance optimization toggle in-flight guards, keyed by
   // appliance_id, so one card's toggle spinner doesn't block the others.
   _deviceOptToggleBusy: Record<string, boolean> = {};
+  _pauseBusy: Record<string, boolean> = {};
+  _pauseError: Record<string, string> = {};
   _spikeGuardToggleBusy = false;
   _unitBusy = false;
   _unitError: string | null = null;
+  _chartScaleBusy = false;
+  // Today's measured output per solar appliance with a production sensor,
+  // 48 local slots (null = no reading yet). Read from HA's own history.
+  _solarActualsById: Record<string, SolarActuals> = {};
+  private _solarActualsTimer: ReturnType<typeof setInterval> | null = null;
+  _chartScaleError: string | null = null;
   _timeZoneBusy = false;
   _timeZoneError: string | null = null;
   private _timeZoneChecked = false;
   private _unsubscribeUnit: (() => void) | null = null;
+  private _unsubscribeChartScale: (() => void) | null = null;
   // Per-field busy guard for the "Home power limits" settings section
   //, keyed by UpdatePreferencesBody field name.
   _powerLimitsBusy: Partial<Record<keyof UpdatePreferencesBody, boolean>> = {};
@@ -1699,6 +1749,10 @@ export class HungryMachinesPanel extends LitElement {
       }
     });
     this._unsubscribeUnit = temperatureUnitStore.subscribe(() => this.requestUpdate());
+    this._unsubscribeChartScale = chartScaleStore.subscribe(() => this.requestUpdate());
+    this._solarActualsTimer = setInterval(() => {
+      if (this._view === 'dashboard') void this._refreshSolarActuals();
+    }, SOLAR_ACTUALS_REFRESH_MS);
     void authStore.hydrate();
     void this._loadSchedulesIfNeeded();
   }
@@ -1707,6 +1761,7 @@ export class HungryMachinesPanel extends LitElement {
     if (changed.has('hass')) temperatureUnitStore.setHaUnit(haUnitFrom(this.hass));
     if (changed.has('_preferences')) {
       temperatureUnitStore.setPreference(this._preferences?.temperature_unit ?? null);
+      chartScaleStore.setFromPreferences(this._preferences);
     }
     if (changed.has('hass') || changed.has('_auth')) this._adoptHassTimeZone();
   }
@@ -1742,6 +1797,14 @@ export class HungryMachinesPanel extends LitElement {
     if (this._unsubscribeUnit) {
       this._unsubscribeUnit();
       this._unsubscribeUnit = null;
+    }
+    if (this._unsubscribeChartScale) {
+      this._unsubscribeChartScale();
+      this._unsubscribeChartScale = null;
+    }
+    if (this._solarActualsTimer !== null) {
+      clearInterval(this._solarActualsTimer);
+      this._solarActualsTimer = null;
     }
     if (this._unsubscribe) {
       this._unsubscribe();
@@ -1854,6 +1917,7 @@ export class HungryMachinesPanel extends LitElement {
       // a failed fetch leaves the card on the band baked into its
       // schedule row (or the persisted cache from a prior session).
       void this._refreshAppliancePrefs();
+      void this._refreshSolarActuals();
     } catch (err) {
       this._schedulesError =
         err instanceof Error && err.message
@@ -1885,6 +1949,32 @@ export class HungryMachinesPanel extends LitElement {
       }),
     );
     this._calibrationByAppliance = next;
+  }
+
+  /**
+   * Re-read today's production for every solar appliance that names a
+   * production sensor. Best-effort: a failed read leaves the card on the
+   * forecast alone.
+   */
+  private async _refreshSolarActuals(): Promise<void> {
+    const date = this._schedules?.date;
+    const zone = this._auth.user?.timezone || this._hassTimeZone();
+    const hass = this.hass as HassLike | undefined;
+    if (!date || !zone || !hass?.callWS) return;
+    const solar = Object.values(this._appliancesById).filter((a) => {
+      const id = ((a.config ?? {}) as Record<string, unknown>)['production_sensor_entity_id'];
+      return a.appliance_type === 'solar' && typeof id === 'string' && id !== '';
+    });
+    if (solar.length === 0) return;
+    const next: Record<string, SolarActuals> = {};
+    await Promise.all(
+      solar.map(async (a) => {
+        const entityId = ((a.config ?? {}) as Record<string, unknown>)['production_sensor_entity_id'] as string;
+        const actuals = await fetchSolarActuals(hass, entityId, date, zone);
+        if (actuals) next[a.id] = actuals;
+      }),
+    );
+    this._solarActualsById = next;
   }
 
   private async _refreshAppliancePrefs(): Promise<void> {
@@ -3089,6 +3179,73 @@ export class HungryMachinesPanel extends LitElement {
     `;
   }
 
+  private async _onChartScaleChange(
+    field: 'chart_scale' | 'solar_chart_scale',
+    value: string,
+  ): Promise<void> {
+    if (this._chartScaleBusy) return;
+    this._chartScaleBusy = true;
+    this._chartScaleError = null;
+    try {
+      this._preferences =
+        field === 'chart_scale'
+          ? await updatePreferences({ chart_scale: value === 'dynamic' ? 'dynamic' : 'standard' })
+          : await updatePreferences({ solar_chart_scale: value === 'dynamic' ? 'dynamic' : 'max' });
+      this._persistUserPrefs();
+    } catch {
+      // PUT failed — _preferences is untouched, so the select reverts.
+      this._chartScaleError = 'Could not save the chart scale. Try again.';
+    } finally {
+      this._chartScaleBusy = false;
+      this.requestUpdate();
+    }
+  }
+
+  private _renderChartScaleSection(): TemplateResult {
+    const { temperature, solar } = chartScaleStore.state;
+    const onChange = (field: 'chart_scale' | 'solar_chart_scale') => (e: Event) =>
+      void this._onChartScaleChange(field, (e.target as HTMLSelectElement).value);
+    return html`
+      <div class="settings-section" data-section="chart-scale">
+        <h3>Chart scale</h3>
+        <p class="hint">
+          Standard gives every temperature chart the same range, so you can
+          compare devices at a glance. Dynamic zooms each chart to its comfort
+          range, with 10 °F (6 °C) of room above and below.
+        </p>
+        <label>
+          <span class="label-text">Temperature charts</span>
+          <select
+            name="chart_scale"
+            ?disabled=${this._chartScaleBusy}
+            .value=${live(temperature)}
+            @change=${onChange('chart_scale')}
+          >
+            <option value="standard" ?selected=${temperature === 'standard'}>Standard</option>
+            <option value="dynamic" ?selected=${temperature === 'dynamic'}>Dynamic</option>
+          </select>
+        </label>
+        <p class="hint">
+          Max tops the solar chart at your system's size. Dynamic tops it at
+          the day's expected peak plus 25%, so cloudy days stay readable.
+        </p>
+        <label>
+          <span class="label-text">Solar chart</span>
+          <select
+            name="solar_chart_scale"
+            ?disabled=${this._chartScaleBusy}
+            .value=${live(solar)}
+            @change=${onChange('solar_chart_scale')}
+          >
+            <option value="max" ?selected=${solar === 'max'}>Max</option>
+            <option value="dynamic" ?selected=${solar === 'dynamic'}>Dynamic</option>
+          </select>
+        </label>
+        ${this._chartScaleError ? html`<p class="zone-error">${this._chartScaleError}</p>` : ''}
+      </div>
+    `;
+  }
+
   private _renderTimeZoneSection(): TemplateResult {
     const current = this._auth.user?.timezone ?? '';
     const hassZone = this._hassTimeZone();
@@ -3244,6 +3401,81 @@ export class HungryMachinesPanel extends LitElement {
       delete nextBusy[id];
       this._deviceOptToggleBusy = nextBusy;
     }
+  }
+
+  /** POST a pause or resume, then refresh schedules and nudge the
+   * integration so the thermostat follows without waiting for :00/:30. */
+  private async _postPause(
+    appliance: ApplianceScheduleEntry,
+    minutes: number | null,
+  ): Promise<void> {
+    const id = appliance.appliance_id;
+    if (this._pauseBusy[id]) return;
+    this._pauseBusy = { ...this._pauseBusy, [id]: true };
+    const { [id]: _drop, ...restErrors } = this._pauseError;
+    this._pauseError = restErrors;
+    try {
+      if (minutes === null) await resumeUnit(id);
+      else await pauseUnit(id, minutes);
+      this._schedules = await getAllSchedules();
+      await this._triggerImmediateApply();
+    } catch {
+      this._pauseError = {
+        ...this._pauseError,
+        [id]: minutes === null ? 'Could not resume. Try again.' : 'Could not pause. Try again.',
+      };
+    } finally {
+      const nextBusy = { ...this._pauseBusy };
+      delete nextBusy[id];
+      this._pauseBusy = nextBusy;
+    }
+  }
+
+  /** Timed-pause row on an HVAC card: three buttons while the plan runs,
+   * a "Paused until" label and Resume while a timed pause is on, nothing
+   * for a unit switched off or under the master pause. */
+  private _renderPauseRow(appliance: ApplianceScheduleEntry): TemplateResult | null {
+    if (appliance.appliance_type !== 'hvac') return null;
+    if (appliance.appliance_id.startsWith('__example_')) return null;
+    const state = appliance.pause_state;
+    if (state !== 'active' && state !== 'timed') return null;
+    const id = appliance.appliance_id;
+    const busy = !!this._pauseBusy[id];
+    const error = this._pauseError[id] ?? '';
+    if (state === 'timed') {
+      const until = appliance.paused_until ? new Date(appliance.paused_until) : null;
+      const label =
+        until && !Number.isNaN(until.getTime())
+          ? `Paused until ${until.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+          : 'Paused';
+      return html`
+        <div class="pause-row">
+          <span class="paused-until">${label}</span>
+          <button
+            type="button"
+            name="resume_now"
+            ?disabled=${busy}
+            @click=${() => this._postPause(appliance, null)}
+          >Resume now</button>
+          <span class="pause-error">${error}</span>
+        </div>
+      `;
+    }
+    const button = (hours: number) => html`
+      <button
+        type="button"
+        name=${`pause_${hours}h`}
+        ?disabled=${busy}
+        title=${`Leave this unit to you for ${hours} hours, then the plan takes it back.`}
+        @click=${() => this._postPause(appliance, hours * 60)}
+      >Pause ${hours} h</button>
+    `;
+    return html`
+      <div class="pause-row">
+        ${button(2)}${button(4)}${button(6)}
+        <span class="pause-error">${error}</span>
+      </div>
+    `;
   }
 
   /** Compact per-device optimization toggle rendered in each controllable
@@ -3524,14 +3756,14 @@ export class HungryMachinesPanel extends LitElement {
       // only a seed default and must NOT paint over every HVAC card, or
       // two machines with different bands look identical (US-MHVAC).
       const prefs = this._appliancePrefsById[appliance.appliance_id];
-      highLimits =
+      // The /schedules entry carries no date, so "today" is the browser's
+      // local calendar day; a weekday override paints only on its day.
+      const dayBand =
         prefs && hasHourlyComfortBands(prefs)
-          ? expandHourlyTo48(prefs.hourly_high_temps_f as number[])
-          : highTemps;
-      lowLimits =
-        prefs && hasHourlyComfortBands(prefs)
-          ? expandHourlyTo48(prefs.hourly_low_temps_f as number[])
-          : lowTemps;
+          ? resolveDayBand(prefs, weekdayKeyOf(todayIsoLocal()))
+          : null;
+      highLimits = dayBand ? expandHourlyTo48(dayBand.high) : highTemps;
+      lowLimits = dayBand ? expandHourlyTo48(dayBand.low) : lowTemps;
       chartUnit = 'fahrenheit';
       yMin = 40;
       yMax = 100;
@@ -3583,6 +3815,7 @@ export class HungryMachinesPanel extends LitElement {
           ${this._renderDeviceOptimizationToggle(appliance)}
         </div>
         <div class="entity-binding" ?hidden=${!boundEntityId}>${boundEntityId ?? ''}</div>
+        ${this._renderPauseRow(appliance)}
         <div class="savings" title=${savingsTitle}>${savings}</div>
         <hm-optimization-chart
           .rates=${rates}
@@ -3594,6 +3827,7 @@ export class HungryMachinesPanel extends LitElement {
           .displayUnit=${temperatureUnitStore.state.unit}
           .yMin=${yMin}
           .yMax=${yMax}
+          .scale=${chartScaleStore.state.temperature}
           .size=${this._chartSize}
         ></hm-optimization-chart>
         <div class="card-actions">
@@ -3661,6 +3895,8 @@ export class HungryMachinesPanel extends LitElement {
     let sourceLine = '';
     let generationLine = '';
     let exportLine: string | null = null;
+    let actualLine: string | null = null;
+    const actuals = hasCurve ? this._solarActualsById[appliance.appliance_id] : undefined;
     if (hasCurve) {
       const source = sched['source'];
       // GROUND TRUTH: the schedule entry `/api/v1/schedules`
@@ -3677,6 +3913,12 @@ export class HungryMachinesPanel extends LitElement {
       const generationKwh = asFiniteNumber(sched['generation_kwh']);
       if (generationKwh !== undefined) {
         generationLine = `Expected generation ${generationKwh.toFixed(1)} kWh`;
+      }
+      if (actuals) {
+        const { actualKwh, forecastKwh } = comparedKwh(actuals, generationKw48 as number[]);
+        actualLine =
+          `Measured so far ${actualKwh.toFixed(1)} kWh, ` +
+          `forecast ${forecastKwh.toFixed(1)} kWh for the same hours`;
       }
       const exportValueCents = asFiniteNumber(sched['export_value_cents']);
       const surplusKwh = asFiniteNumber(sched['surplus_kwh']);
@@ -3698,11 +3940,13 @@ export class HungryMachinesPanel extends LitElement {
           ? html`
               <hm-optimization-chart
                 .targetValues=${generationKw48}
+                .actualValues=${actuals}
                 .rates=${this._solarChartRates()}
                 .priceLabel=${'Export Price'}
                 .unit=${'kw'}
                 .yMin=${0}
                 .yMax=${sizeKw ?? undefined}
+                .scale=${chartScaleStore.state.solar}
                 .size=${this._chartSize}
               ></hm-optimization-chart>
             `
@@ -3711,6 +3955,7 @@ export class HungryMachinesPanel extends LitElement {
         ${hasCurve && generationLine
           ? html`<p class="solar-fact">${generationLine}</p>`
           : null}
+        ${actualLine ? html`<p class="solar-fact" data-fact="actual">${actualLine}</p>` : null}
         ${hasCurve && exportLine
           ? html`<p class="solar-fact">${exportLine}</p>`
           : null}
@@ -4024,6 +4269,7 @@ export class HungryMachinesPanel extends LitElement {
       <h2>Settings</h2>
       <div class="settings">
         ${this._renderUnitSection()}
+        ${this._renderChartScaleSection()}
         ${this._renderTimeZoneSection()}
         <div class="settings-section">
           <h3>Weather entity</h3>

@@ -1,5 +1,12 @@
 import { LitElement, html, css, type PropertyValues } from 'lit';
 import { fToC, type TempUnit } from '../utils/temperature.js';
+import type { ChartScale, SolarChartScale } from '../utils/chart-scale.js';
+
+// Dynamic scale: space kept above the highest and below the lowest plotted
+// temperature, per display unit.
+const DYNAMIC_STANDOFF = { F: 10, C: 6 } as const;
+// Dynamic solar scale: headroom above the day's expected peak.
+const DYNAMIC_KW_HEADROOM = 1.25;
 
 /**
  * `<hm-optimization-chart>`
@@ -14,6 +21,11 @@ import { fToC, type TempUnit } from '../utils/temperature.js';
  *                      indoor temp for HVAC, tank temp for water heater,
  *                      state-of-charge % for EV / battery
  *
+ * Optional `actualValues` (48 slots, null = no measurement) draws what was
+ * measured as a solid teal line that breaks at gaps — the solar card's
+ * actual-vs-forecast overlay. With it, a kW chart labels `targetValues`
+ * "Forecast Generation".
+ *
  * Optional `targetMarker` annotates a single (interval, value) point — used
  * for EV/battery to draw "70% by 08:00" at the user's deadline.
  *
@@ -27,6 +39,12 @@ import { fToC, type TempUnit } from '../utils/temperature.js';
  * the data's kind (°F for `'fahrenheit'`); with `displayUnit = 'C'` the chart
  * converts lines, range, ticks, axis title and marker label. Percent and kW
  * charts ignore it.
+ *
+ * `scale` picks the y-axis. Temperature charts: `'standard'` (default)
+ * honours `yMin`/`yMax`; `'dynamic'` ignores them and fits the plotted band
+ * and setpoints with a 10 °F (6 °C) standoff each side. kW charts: `'max'`
+ * honours `yMax` (the system size); `'dynamic'` tops out at the day's peak
+ * plus 25 %. Percent charts ignore it.
  *
  * Inputs are 48-element half-hourly arrays (matching the API schedule shape).
  * The rate bars are decimated to 24 hourly bars for visual clarity. Built
@@ -133,6 +151,18 @@ export class HmOptimizationChart extends LitElement {
     :host([size='small']) .target {
       stroke-width: 2;
     }
+    .actual {
+      fill: none;
+      stroke: var(--hm-secondary, #0F766E);
+      stroke-width: 3.5;
+      stroke-linecap: round;
+    }
+    :host([size='medium']) .actual {
+      stroke-width: 2.6;
+    }
+    :host([size='small']) .actual {
+      stroke-width: 2;
+    }
     .marker-dot {
       fill: var(--hm-primary, #1E3A8A);
       stroke: var(--hm-bg, #FFFFFF);
@@ -197,6 +227,9 @@ export class HmOptimizationChart extends LitElement {
     .swatch-target {
       background: var(--hm-primary, #1E3A8A);
     }
+    .swatch-actual {
+      background: var(--hm-secondary, #0F766E);
+    }
     .swatch-high {
       background: repeating-linear-gradient(
         to right,
@@ -230,12 +263,14 @@ export class HmOptimizationChart extends LitElement {
     highLimits: { attribute: false },
     lowLimits: { attribute: false },
     targetValues: { attribute: false },
+    actualValues: { attribute: false },
     targetMarker: { attribute: false },
     unit: { attribute: false },
     priceLabel: { attribute: false },
     displayUnit: { attribute: false },
     yMin: { attribute: false },
     yMax: { attribute: false },
+    scale: { attribute: false },
     // `size` reflects to the host attribute so CSS attribute-selectors
     // can switch font / stroke scales without re-rendering the SVG.
     size: { type: String, reflect: true },
@@ -245,6 +280,7 @@ export class HmOptimizationChart extends LitElement {
   highLimits: number[] | undefined = undefined;
   lowLimits: number[] | undefined = undefined;
   targetValues: number[] | undefined = undefined;
+  actualValues: (number | null)[] | undefined = undefined;
   targetMarker: OptimizationChartMarker | undefined = undefined;
   unit: OptimizationChartUnit = 'fahrenheit';
   priceLabel = 'Electricity Price';
@@ -256,6 +292,7 @@ export class HmOptimizationChart extends LitElement {
   // of the day's actual data range.
   yMin: number | undefined = undefined;
   yMax: number | undefined = undefined;
+  scale: ChartScale | SolarChartScale = 'standard';
   size: 'small' | 'medium' | 'large' = 'large';
 
   /**
@@ -290,11 +327,15 @@ export class HmOptimizationChart extends LitElement {
   override render() {
     const isPercent = this.unit === 'percent';
     const isKw = this.unit === 'kw';
+    const actualShown = this._hasActuals();
     const targetLabel = isPercent
       ? 'Optimized Charge'
       : isKw
-        ? 'Solar Generation'
+        ? actualShown
+          ? 'Forecast Generation'
+          : 'Solar Generation'
         : 'Optimized Temperature';
+    const actualLabel = isKw ? 'Actual Generation' : 'Actual';
     const highShown = this._isFiniteArray(this.highLimits);
     const lowShown = this._isFiniteArray(this.lowLimits);
     const highLabel = isPercent ? 'Maximum' : 'High Limit';
@@ -306,6 +347,12 @@ export class HmOptimizationChart extends LitElement {
           <span class="legend-swatch swatch-target" aria-hidden="true"></span>
           ${targetLabel}
         </span>
+        ${actualShown
+          ? html`<span class="legend-item">
+              <span class="legend-swatch swatch-actual" aria-hidden="true"></span>
+              ${actualLabel}
+            </span>`
+          : ''}
         ${highShown
           ? html`<span class="legend-item">
               <span class="legend-swatch swatch-high" aria-hidden="true"></span>
@@ -393,6 +440,10 @@ export class HmOptimizationChart extends LitElement {
 
     // --- Y-axis ranges --------------------------------------------------
     // Resolution order, most specific first:
+    //   0. `scale = 'dynamic'` on a temperature chart — fit the union of
+    //      plotted values with a fixed standoff, rounded outward to whole
+    //      degrees. Overrides any caller range. On a kW chart, 0 to the
+    //      day's peak × 1.25 (a zero-generation day falls through).
     //   1. Caller-supplied `yMin` / `yMax` — used verbatim for per-
     //      appliance fixed scales (HVAC 40–100 °F, water heater 50–150
     //      °F). Both must be finite numbers AND yMax > yMin.
@@ -400,9 +451,27 @@ export class HmOptimizationChart extends LitElement {
     //      interpretable across appliances.
     //   3. `'fahrenheit'` default — derive from the union of all
     //      plotted line values, padded ±2 °F.
+    const tempValues: number[] = [];
+    for (const arr of [this.highLimits, this.lowLimits, this.targetValues]) {
+      if (this._isFiniteArray(arr)) tempValues.push(...arr.map(conv));
+    }
+    const actuals = this._hasActuals()
+      ? (this.actualValues as (number | null)[])
+          .filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
+          .map(conv)
+      : [];
+    if (this.unit === 'kw') tempValues.push(...actuals);
+    const peak = tempValues.length > 0 ? Math.max(...tempValues) : 0;
     let yMin: number;
     let yMax: number;
-    if (
+    if (this.unit === 'fahrenheit' && this.scale === 'dynamic' && tempValues.length > 0) {
+      const standoff = DYNAMIC_STANDOFF[toC ? 'C' : 'F'];
+      yMin = Math.floor(Math.min(...tempValues) - standoff);
+      yMax = Math.ceil(peak + standoff);
+    } else if (this.unit === 'kw' && this.scale === 'dynamic' && peak > 0) {
+      yMin = 0;
+      yMax = peak * DYNAMIC_KW_HEADROOM;
+    } else if (
       typeof this.yMin === 'number' &&
       typeof this.yMax === 'number' &&
       Number.isFinite(this.yMin) &&
@@ -411,14 +480,12 @@ export class HmOptimizationChart extends LitElement {
     ) {
       yMin = toC ? Math.floor(fToC(this.yMin)) : this.yMin;
       yMax = toC ? Math.ceil(fToC(this.yMax)) : this.yMax;
+      // A measured kW peak above the system size still has to fit.
+      if (this.unit === 'kw') yMax = Math.max(yMax, peak);
     } else if (this.unit === 'percent') {
       yMin = 0;
       yMax = 100;
     } else {
-      const tempValues: number[] = [];
-      for (const arr of [this.highLimits, this.lowLimits, this.targetValues]) {
-        if (this._isFiniteArray(arr)) tempValues.push(...arr.map(conv));
-      }
       yMin = Math.min(...tempValues);
       yMax = Math.max(...tempValues);
       if (yMax - yMin < 4 * degScale) {
@@ -501,6 +568,32 @@ export class HmOptimizationChart extends LitElement {
     drawLine(this.lowLimits, 'low-limit');
     drawLine(this.targetValues, 'target');
 
+    // Measured series: one polyline per unbroken run, so a gap or the
+    // not-yet-happened part of the day shows as no line, not a drop to 0.
+    if (this._hasActuals()) {
+      const values = this.actualValues as (number | null)[];
+      let run: string[] = [];
+      const flush = (): void => {
+        if (run.length === 0) return;
+        const polyline = document.createElementNS(SVG_NS, 'polyline');
+        polyline.setAttribute('class', 'actual');
+        polyline.setAttribute('data-series', 'actual');
+        // A lone point still needs two to draw; extend it across its slot.
+        polyline.setAttribute('points', run.length === 1 ? `${run[0]} ${run[0]}` : run.join(' '));
+        svg.appendChild(polyline);
+        run = [];
+      };
+      for (let i = 0; i < HALF_HOUR_SLOTS; i++) {
+        const v = values[i];
+        if (typeof v === 'number' && Number.isFinite(v)) {
+          run.push(`${slotX(i)},${valueY(conv(v))}`);
+        } else {
+          flush();
+        }
+      }
+      flush();
+    }
+
     // --- Optional target marker (e.g. "70% at 08:00") -------------------
     if (this._isMarkerValid(this.targetMarker)) {
       const m = this.targetMarker as OptimizationChartMarker;
@@ -560,7 +653,13 @@ export class HmOptimizationChart extends LitElement {
       lbl.setAttribute('x', String(padLeft - 4));
       lbl.setAttribute('y', String(y + 3));
       lbl.setAttribute('text-anchor', 'end');
-      lbl.textContent = this.unit === 'percent' ? `${Math.round(v)}%` : `${Math.round(v)}`;
+      // Small solar ranges need a decimal, or a 0.8 kW axis reads 0, 0, 1, 1.
+      lbl.textContent =
+        this.unit === 'percent'
+          ? `${Math.round(v)}%`
+          : this.unit === 'kw' && yMax - yMin < 10
+            ? v.toFixed(1)
+            : `${Math.round(v)}`;
       svg.appendChild(lbl);
     }
 
@@ -602,6 +701,15 @@ export class HmOptimizationChart extends LitElement {
     svg.appendChild(priceTitle);
 
     container.appendChild(svg);
+  }
+
+  private _hasActuals(): boolean {
+    const v = this.actualValues;
+    return (
+      Array.isArray(v) &&
+      v.length === HALF_HOUR_SLOTS &&
+      v.some((x) => typeof x === 'number' && Number.isFinite(x))
+    );
   }
 
   private _isFiniteArray(v: unknown): v is number[] {

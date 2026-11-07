@@ -5,6 +5,7 @@ import { HmConstraintEditor } from '../src/ui/constraint-editor.js';
 import { HmScheduleChart } from '../src/ui/schedule-chart.js';
 import { authStore, type AuthState } from '../src/store.js';
 import { temperatureUnitStore } from '../src/utils/temperature.js';
+import { chartScaleStore } from '../src/utils/chart-scale.js';
 import { clearTokens, setApiBase, setTokens } from '../src/api/client.js';
 
 if (!customElements.get('hm-login-form')) {
@@ -234,5 +235,96 @@ describe('temperature unit selector', () => {
     expect(temperatureUnitStore.state.haUnit).toBe('C');
     expect(temperatureUnitStore.state.unit).toBe('F');
     expect(unitSelect(el).value).toBe('F');
+  });
+});
+
+describe('chart scale selectors', () => {
+  beforeEach(() => {
+    setApiBase('https://api.example.test');
+    localStorage.clear();
+    chartScaleStore.reset();
+    clearTokens();
+    setTokens({ access: 'ACCESS', refresh: 'REFRESH' });
+    setAuthState({ access: 'ACCESS', refresh: 'REFRESH', status: 'authed', user: { ...SAMPLE_USER } });
+    vi.spyOn(authStore, 'hydrate').mockImplementation(async () => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    document.body.innerHTML = '';
+    localStorage.clear();
+    chartScaleStore.reset();
+    clearTokens();
+    setAuthState({});
+  });
+
+  async function openSettings(prefs: Record<string, unknown> = {}, putStatus = 200) {
+    const stub = installFetchStub((url, init) => {
+      if (url.includes('/api/v1/schedules')) return SCHEDULES_EMPTY;
+      if (url.includes('/api/v1/appliances')) return [];
+      if (url.includes('/api/v1/preferences')) {
+        if (init?.method === 'PUT') {
+          if (putStatus !== 200) return jsonResponse({ detail: 'no' }, putStatus);
+          return preferencesResponse({ ...prefs, ...JSON.parse(String(init.body)) });
+        }
+        return preferencesResponse(prefs);
+      }
+      if (url.includes('/api/v1/rates')) return ratesResponse();
+      return null;
+    });
+    const el = mountPanel();
+    await flush(el);
+    clickSettings(el.shadowRoot!);
+    await flush(el);
+    return { el, stub };
+  }
+
+  const select = (el: PanelEl, name: string): HTMLSelectElement => {
+    const s = el.shadowRoot!.querySelector<HTMLSelectElement>(`select[name="${name}"]`);
+    if (!s) throw new Error(`${name} select not found`);
+    return s;
+  };
+
+  async function choose(el: PanelEl, name: string, value: string): Promise<void> {
+    const s = select(el, name);
+    s.value = value;
+    s.dispatchEvent(new Event('change'));
+    await flush(el);
+  }
+
+  it('defaults to Standard and Max when the account has no choice', async () => {
+    const { el } = await openSettings({ chart_scale: null, solar_chart_scale: null });
+    expect(select(el, 'chart_scale').value).toBe('standard');
+    expect(select(el, 'solar_chart_scale').value).toBe('max');
+  });
+
+  it("shows the account's saved choices", async () => {
+    const { el } = await openSettings({ chart_scale: 'dynamic', solar_chart_scale: 'dynamic' });
+    expect(select(el, 'chart_scale').value).toBe('dynamic');
+    expect(select(el, 'solar_chart_scale').value).toBe('dynamic');
+    expect(chartScaleStore.state).toEqual({ temperature: 'dynamic', solar: 'dynamic' });
+  });
+
+  it.each([
+    ['chart_scale', 'dynamic', { temperature: 'dynamic', solar: 'max' }],
+    ['solar_chart_scale', 'dynamic', { temperature: 'standard', solar: 'dynamic' }],
+  ] as const)('saves %s to the account', async (name, value, state) => {
+    const { el, stub } = await openSettings();
+    await choose(el, name, value);
+    const puts = stub.calls.filter((c) => c.method === 'PUT' && c.url.includes('/api/v1/preferences'));
+    expect(puts).toHaveLength(1);
+    expect(JSON.parse(puts[0].body!)).toEqual({ [name]: value });
+    expect(chartScaleStore.state).toEqual(state);
+    expect(select(el, name).value).toBe(value);
+  });
+
+  it('reverts and shows an error when the save fails', async () => {
+    const { el } = await openSettings({}, 500);
+    await choose(el, 'chart_scale', 'dynamic');
+    expect(chartScaleStore.state.temperature).toBe('standard');
+    expect(el.shadowRoot!.querySelector('[data-section="chart-scale"] .zone-error')?.textContent).toContain(
+      'Could not save the chart scale',
+    );
   });
 });

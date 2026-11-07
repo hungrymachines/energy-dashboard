@@ -75,11 +75,28 @@ function installFetch(opts: {
   applianceRows: Record<string, unknown>[];
   appliancePrefs?: Record<string, unknown>;
   puts: Array<{ url: string; body: unknown }>;
+  posts?: Array<{ url: string; body: unknown }>;
+  /** Mutates scheduleEntries after a POST so the refetch shows the new state. */
+  onPost?: (url: string, body: unknown) => void;
+  postStatus?: number;
 }): void {
   vi.stubGlobal('fetch', vi.fn(async (input: string | Request, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.url;
     const method = init?.method ?? (typeof input === 'string' ? 'GET' : input.method) ?? 'GET';
 
+    if (method === 'POST' && /\/(pause|resume)$/.test(url)) {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      opts.posts?.push({ url, body });
+      if (opts.postStatus && opts.postStatus >= 400) {
+        return new Response('{"detail":"boom"}', {
+          status: opts.postStatus, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      opts.onPost?.(url, body);
+      return jsonResponse({
+        appliance_id: 'hvac-1', paused_until: null, optimization_enabled: true, pause_state: 'active',
+      });
+    }
     if (method === 'PUT') {
       const body = init?.body ? JSON.parse(String(init.body)) : null;
       opts.puts.push({ url, body });
@@ -268,5 +285,95 @@ describe('per-device optimization toggle', () => {
     expect(root.querySelector('.opt-toggle')).toBeTruthy();
     // …and the per-device one too.
     expect(root.querySelector('.device-opt-toggle')).toBeTruthy();
+  });
+
+  describe('timed pause row', () => {
+    const UNTIL = '2026-07-05T20:45:00Z';
+    function hvacEntry(over: Record<string, unknown> = {}): Record<string, unknown> {
+      return scheduleEntry({
+        appliance_id: 'hvac-1', appliance_type: 'hvac', name: 'Front AC',
+        entities: { entity_id: 'climate.front' },
+        pause_state: 'active', paused_until: null, ...over,
+      });
+    }
+    function applyCalls(el: PanelEl) {
+      const callService = vi.fn(async () => {});
+      (el as unknown as { hass: unknown }).hass = { callService };
+      return callService;
+    }
+
+    it('each button POSTs its minutes, refetches schedules and applies now', async () => {
+      for (const [name, minutes] of [['pause_2h', 120], ['pause_4h', 240], ['pause_6h', 360]] as const) {
+        const posts: Array<{ url: string; body: unknown }> = [];
+        const entries = [hvacEntry()];
+        installFetch({
+          scheduleEntries: entries, applianceRows: [], puts: [], posts,
+          onPost: () => { entries[0] = hvacEntry({ pause_state: 'timed', paused_until: UNTIL }); },
+        });
+        const el = mountAuthedPanel();
+        const callService = applyCalls(el);
+        await flush(el);
+        const root = el.shadowRoot!;
+        const btn = root.querySelector(`.pause-row button[name="${name}"]`) as HTMLButtonElement;
+        expect(btn).toBeTruthy();
+        btn.click();
+        await flush(el);
+        expect(posts).toEqual([{ url: 'https://api.example.test/api/v1/appliances/hvac-1/pause', body: { minutes } }]);
+        expect(callService).toHaveBeenCalledWith('hungry_machines', 'apply_now', {});
+        expect(root.querySelector('.pause-row .paused-until')).toBeTruthy();
+        el.remove();
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('timed state shows the local-time label and Resume posts /resume', async () => {
+      const posts: Array<{ url: string; body: unknown }> = [];
+      const entries = [hvacEntry({ pause_state: 'timed', paused_until: UNTIL })];
+      installFetch({
+        scheduleEntries: entries, applianceRows: [], puts: [], posts,
+        onPost: () => { entries[0] = hvacEntry(); },
+      });
+      const el = mountAuthedPanel();
+      const callService = applyCalls(el);
+      await flush(el);
+      const root = el.shadowRoot!;
+      const expected = new Date(UNTIL).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      expect(root.querySelector('.paused-until')!.textContent).toBe(`Paused until ${expected}`);
+      expect(root.querySelector('button[name="pause_2h"]')).toBeNull();
+      (root.querySelector('button[name="resume_now"]') as HTMLButtonElement).click();
+      await flush(el);
+      expect(posts[0].url).toMatch(/\/api\/v1\/appliances\/hvac-1\/resume$/);
+      expect(callService).toHaveBeenCalledWith('hungry_machines', 'apply_now', {});
+      expect(root.querySelector('button[name="pause_2h"]')).toBeTruthy();
+    });
+
+    it('shows nothing for manual, master, missing state, and non-HVAC cards', async () => {
+      for (const entry of [
+        hvacEntry({ pause_state: 'manual' }),
+        hvacEntry({ pause_state: 'master' }),
+        hvacEntry({ pause_state: undefined }),
+        scheduleEntry({ pause_state: 'active' }),
+      ]) {
+        installFetch({ scheduleEntries: [entry], applianceRows: [], puts: [] });
+        const el = mountAuthedPanel();
+        await flush(el);
+        expect(el.shadowRoot!.querySelector('.pause-row')).toBeNull();
+        el.remove();
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('shows an error and no apply when the POST fails', async () => {
+      installFetch({
+        scheduleEntries: [hvacEntry()], applianceRows: [], puts: [], posts: [], postStatus: 500,
+      });
+      const el = mountAuthedPanel();
+      const callService = applyCalls(el);
+      await flush(el);
+      (el.shadowRoot!.querySelector('button[name="pause_2h"]') as HTMLButtonElement).click();
+      await flush(el);
+      expect(el.shadowRoot!.querySelector('.pause-error')!.textContent).toBe('Could not pause. Try again.');
+      expect(callService).not.toHaveBeenCalled();
+    });
   });
 });

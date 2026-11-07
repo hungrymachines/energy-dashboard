@@ -321,6 +321,32 @@ describe('two-HVAC dashboard display (multi-HVAC validation)', () => {
     expect(downChart.lowLimits).toEqual(Array<number>(48).fill(66));
   });
 
+  it('a Saturday override shows on a Saturday and not on a Wednesday', async () => {
+    const prefs = {
+      ...HVAC_A_PREFS_WITH_BANDS,
+      weekday_bands: {
+        sat: {
+          hourly_high_temps_f: Array<number>(24).fill(81),
+          hourly_low_temps_f: Array<number>(24).fill(63),
+        },
+      },
+    };
+    // 2026-11-07 is a Saturday, 2026-11-11 a Wednesday (local noon).
+    for (const [now, high, low] of [
+      [new Date(2026, 10, 7, 12), 81, 63],
+      [new Date(2026, 10, 11, 12), 75, 69],
+    ] as const) {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(now);
+      const el = await mountWithPrefs(PREFS_NO_BANDS, prefs);
+      const upChart = chartOf(hvacCardsByName(el)['Upstairs Zone']);
+      expect(upChart.highLimits).toEqual(Array<number>(48).fill(high));
+      expect(upChart.lowLimits).toEqual(Array<number>(48).fill(low));
+      vi.useRealTimers();
+      document.body.innerHTML = '';
+    }
+  });
+
   it('recompute results with a failed appliance surface a toast naming it', async () => {
     // The recompute HTTP call succeeds even when one appliance's
     // optimization failed server-side — the panel must read the new

@@ -196,6 +196,7 @@ describe('hm-constraint-editor', () => {
       // so the editor doesn't accidentally pause a
       // unit on first open.
       optimization_enabled: true,
+      weekday_bands: null,
       hourly_low_temps_f: seeded.low,
       hourly_high_temps_f: seeded.high,
     });
@@ -317,6 +318,7 @@ describe('hm-constraint-editor', () => {
       optimize_hvac_fan: false,
       optimize_hvac_mode: false,
       optimization_enabled: true,
+      weekday_bands: null,
       time_away: '06:30',
       hourly_low_temps_f: seeded.low,
       hourly_high_temps_f: seeded.high,

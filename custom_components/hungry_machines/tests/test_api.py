@@ -104,3 +104,23 @@ async def test_authenticated_request_client_error_still_returns_none_and_warns(c
     assert result is None
     warned = [r for r in caplog.records if r.levelname == "WARNING"]
     assert any("ClientConnectionError" in r.getMessage() for r in warned)
+
+
+@pytest.mark.asyncio
+async def test_post_pause_posts_minutes_to_the_appliance_route() -> None:
+    hass, entry = MagicMock(), MagicMock()
+    with patch.object(api, "_authenticated_request", AsyncMock(return_value={})) as req:
+        assert await api.post_pause(hass, entry, "hvac-1", 120) is True
+    req.assert_awaited_once_with(
+        hass, entry, "POST", "/api/v1/appliances/hvac-1/pause", json={"minutes": 120}
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_resume_posts_to_the_appliance_route_and_reports_failure() -> None:
+    hass, entry = MagicMock(), MagicMock()
+    with patch.object(api, "_authenticated_request", AsyncMock(return_value=None)) as req:
+        assert await api.post_resume(hass, entry, "hvac-1") is False
+    req.assert_awaited_once_with(
+        hass, entry, "POST", "/api/v1/appliances/hvac-1/resume"
+    )

@@ -1100,6 +1100,66 @@ describe('solar card', () => {
     expect(card.textContent).not.toContain('export (before household base load)');
   });
 
+  it('overlays measured production from the HA sensor history', async () => {
+    // LA midnight 2025-11-18 = 08:00Z. 0 W until 10:00 local, 2 kW until
+    // noon, then the sensor drops out.
+    const midnight = Date.UTC(2025, 10, 18, 8, 0) / 1000;
+    const callWS = vi.fn(async () => ({
+      'sensor.pv_power': [
+        { s: '0', lu: midnight },
+        { s: '2000', lu: midnight + 10 * 3600 },
+        { s: 'unavailable', lu: midnight + 12 * 3600 },
+      ],
+    }));
+    installFetchStub({
+      '/api/v1/schedules': { date: '2025-11-18', appliances: [SOLAR_SCHEDULE] },
+      '/api/v1/rates': RATES_RESPONSE,
+      '/api/v1/appliances': solarAppliances({ production_sensor_entity_id: 'sensor.pv_power' }),
+    });
+    setAuthState({ access: 'ACCESS', refresh: 'REFRESH', status: 'authed', user: SAMPLE_USER });
+    const el = mountPanel();
+    el.hass = {
+      callWS,
+      states: { 'sensor.pv_power': { state: '0', attributes: { unit_of_measurement: 'W' } } },
+    };
+    el._view = 'dashboard';
+    await flush(el);
+    await flush(el);
+
+    expect(callWS).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'history/history_during_period', entity_ids: ['sensor.pv_power'] }),
+    );
+    const card = el.shadowRoot!.querySelector('.card[data-appliance-type="solar"]')!;
+    const chart = card.querySelector('hm-optimization-chart') as HTMLElement & {
+      actualValues?: (number | null)[];
+    };
+    expect(chart.actualValues?.[19]).toBe(0);
+    expect(chart.actualValues?.[20]).toBe(2);
+    expect(chart.actualValues?.[23]).toBe(2);
+    expect(chart.actualValues?.[24]).toBeNull();
+    // Slots 0-23: measured 4 slots × 2 kW × 0.5 h; forecast (0..11) × 0.3 kW × 0.5 h.
+    expect(card.querySelector('[data-fact="actual"]')!.textContent).toBe(
+      'Measured so far 4.0 kWh, forecast 9.9 kWh for the same hours',
+    );
+  });
+
+  it('shows no overlay when the array has no production sensor', async () => {
+    const callWS = vi.fn(async () => ({}));
+    installFetchStub({
+      '/api/v1/schedules': { date: '2025-11-18', appliances: [SOLAR_SCHEDULE] },
+      '/api/v1/rates': RATES_RESPONSE,
+      '/api/v1/appliances': solarAppliances(),
+    });
+    setAuthState({ access: 'ACCESS', refresh: 'REFRESH', status: 'authed', user: SAMPLE_USER });
+    const el = mountPanel();
+    el.hass = { callWS, states: {} };
+    el._view = 'dashboard';
+    await flush(el);
+    expect(callWS).not.toHaveBeenCalled();
+    const card = el.shadowRoot!.querySelector('.card[data-appliance-type="solar"]')!;
+    expect(card.querySelector('[data-fact="actual"]')).toBeNull();
+  });
+
   it('no generation_kw_48 falls back to the pre-existing informational tile', async () => {
     const el = await mountWithSolar({ ...SOLAR_SCHEDULE, schedule: {} });
     const root = el.shadowRoot!;

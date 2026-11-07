@@ -268,3 +268,106 @@ async def test_freshness_check_timeout_warns_and_never_raises(caplog) -> None:
     mock_watchdog.assert_awaited_once_with(hass, entry)
     warned = [r for r in caplog.records if r.levelname == "WARNING"]
     assert any("TimeoutError" in r.getMessage() for r in warned)
+
+
+# ---------------------------------------------------------------------------
+# hungry_machines.pause / hungry_machines.resume services
+# ---------------------------------------------------------------------------
+
+
+async def _setup_services(cache: dict | None = None):
+    """Run setup and return (hass, entry, {service name: handler})."""
+    hass = _hass()
+    if cache is not None:
+        hass.data[DOMAIN]["schedule"] = cache
+    entry = _entry()
+    with patch.object(
+        hungry_machines, "_ensure_frontend_registered", AsyncMock(return_value=True)
+    ), patch.object(
+        hungry_machines, "fetch_today_schedule", AsyncMock(return_value=None)
+    ), patch.object(hungry_machines, "async_track_time_change"):
+        await hungry_machines.async_setup_entry(hass, entry)
+    handlers = {
+        c.args[1]: c.args[2] for c in hass.services.async_register.call_args_list
+    }
+    return hass, entry, handlers
+
+
+_CACHE = {
+    "fetched_at": "2026-11-06T00:00:00+00:00",
+    "optimization_enabled": True,
+    "hvac-1": {"appliance_type": "hvac"},
+    "hvac-2": {"appliance_type": "hvac"},
+    "ev-1": {"appliance_type": "ev"},
+}
+
+
+async def _call(handler, **data):
+    call = MagicMock()
+    call.data = data
+    with patch.object(hungry_machines.api, "post_pause", AsyncMock()) as pause, \
+        patch.object(hungry_machines.api, "post_resume", AsyncMock()) as resume, \
+        patch.object(hungry_machines, "fetch_today_schedule", AsyncMock()) as fetch, \
+        patch.object(hungry_machines, "apply_current_slot", AsyncMock()) as apply:
+        await handler(call)
+    return pause, resume, fetch, apply
+
+
+@pytest.mark.asyncio
+async def test_pause_with_id_posts_default_120_and_refetches() -> None:
+    hass, entry, h = await _setup_services(_CACHE)
+    pause, resume, fetch, apply = await _call(h["pause"], appliance_id="hvac-1")
+    pause.assert_awaited_once_with(hass, entry, "hvac-1", 120)
+    resume.assert_not_awaited()
+    fetch.assert_awaited_once()
+    apply.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pause_minutes_pass_through() -> None:
+    hass, entry, h = await _setup_services(_CACHE)
+    pause, *_ = await _call(h["pause"], appliance_id="hvac-1", minutes=360)
+    pause.assert_awaited_once_with(hass, entry, "hvac-1", 360)
+
+
+@pytest.mark.asyncio
+async def test_pause_without_id_posts_once_per_hvac() -> None:
+    _, _, h = await _setup_services(_CACHE)
+    pause, *_ = await _call(h["pause"])
+    assert sorted(c.args[2] for c in pause.await_args_list) == ["hvac-1", "hvac-2"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("minutes", [0, 1441])
+async def test_pause_rejects_out_of_range_minutes(minutes) -> None:
+    _, _, h = await _setup_services(_CACHE)
+    with pytest.raises(ValueError):
+        await _call(h["pause"], appliance_id="hvac-1", minutes=minutes)
+
+
+@pytest.mark.asyncio
+async def test_resume_posts_and_refetches() -> None:
+    hass, entry, h = await _setup_services(_CACHE)
+    pause, resume, fetch, apply = await _call(h["resume"], appliance_id="hvac-2")
+    resume.assert_awaited_once_with(hass, entry, "hvac-2")
+    pause.assert_not_awaited()
+    fetch.assert_awaited_once()
+    apply.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resume_without_id_covers_every_hvac() -> None:
+    _, _, h = await _setup_services(_CACHE)
+    _, resume, *_ = await _call(h["resume"])
+    assert sorted(c.args[2] for c in resume.await_args_list) == ["hvac-1", "hvac-2"]
+
+
+@pytest.mark.asyncio
+async def test_pause_resume_registered_and_removed_on_unload() -> None:
+    hass, entry, h = await _setup_services(_CACHE)
+    assert {"pause", "resume"} <= set(h)
+    hass.services.has_service = MagicMock(return_value=True)
+    with patch.object(hungry_machines, "async_remove_panel"):
+        await hungry_machines.async_unload_entry(hass, entry)
+    removed = {c.args[1] for c in hass.services.async_remove.call_args_list}
+    assert {"pause", "resume", "apply_now"} <= removed

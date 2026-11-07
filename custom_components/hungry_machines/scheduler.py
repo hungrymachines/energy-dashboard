@@ -144,6 +144,13 @@ def _domain_data(hass: HomeAssistant) -> dict[str, Any]:
 # independently of cache rebuilds/pops.
 _SCHEDULE_UPDATED_AT_KEY = "schedule_updated_at"
 
+# entity_id -> cancel handle of the pending apply-verification timer.
+_VERIFY_TIMERS_KEY = "verify_timers"
+
+# appliance_id -> cancel handle of the timer that resumes a timed pause.
+_RESUME_TIMERS_KEY = "resume_timers"
+_RESUME_GRACE_SECONDS = 5
+
 _LAST_COMMANDED_KEY = "last_commanded"
 
 
@@ -217,6 +224,8 @@ async def fetch_today_schedule(
         hass, "schedule", True, "fetched today's plan for %d appliances",
         len(appliances),
     )
+    previous = _domain_data(hass).get("schedule")
+    previous = previous if isinstance(previous, dict) else {}
     cache: dict[str, Any] = {
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         # Master pause switch from the panel toggle. Missing key (older
@@ -255,9 +264,30 @@ async def fetch_today_schedule(
             "optimization_enabled": bool(
                 entry_data.get("optimization_enabled", True)
             ),
+            # Timed pause. paused_until is an ISO string
+            # while pause_state is "timed", else None.
+            "paused_until": entry_data.get("paused_until"),
+            "pause_state": entry_data.get("pause_state"),
         }
+        prev_entry = previous.get(aid)
+        prev_enabled = (
+            prev_entry.get("optimization_enabled", True)
+            if isinstance(prev_entry, dict)
+            else None
+        )
+        if (
+            not cache[aid]["optimization_enabled"]
+            and prev_enabled is not False
+            and cache[aid]["appliance_type"] == "hvac"
+            and isinstance(entity_id, str)
+            and entity_id
+        ):
+            _release_control_on_pause(
+                hass, entity_id, cache[aid]["paused_until"]
+            )
     _domain_data(hass)["schedule"] = cache
     _publish_schedule_states(hass, cache)
+    _arm_resume_timers(hass, entry, cache)
 
     # Snapshot the server's current freshness stamp as the baseline
     # `check_schedule_freshness` compares future polls against. Best
@@ -352,6 +382,9 @@ def _publish_schedule_states(hass: HomeAssistant, cache: dict[str, Any]) -> None
             "fetched_at": cache.get("fetched_at"),
             "generated_at": schedule.get("generated_at"),
             "mode": schedule.get("mode"),
+            "optimization_enabled": info.get("optimization_enabled", True),
+            "paused_until": info.get("paused_until"),
+            "pause_state": info.get("pause_state"),
         }
         for key in (
             "setpoint_temps",
@@ -719,6 +752,84 @@ def _band_edge(schedule: dict, key: str, slot: int) -> float | None:
         return None
 
 
+def _arm_resume_timers(
+    hass: HomeAssistant, entry: ConfigEntry, cache: dict[str, Any]
+) -> None:
+    """One timer per timed-paused appliance, firing just after
+    `paused_until`. Replaces every earlier handle, so a re-fetch (or a
+    resume that shortened the pause) never leaves a stale timer."""
+    timers = _domain_data(hass).setdefault(_RESUME_TIMERS_KEY, {})
+    for handle in list(timers.values()):
+        try:
+            handle()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("resume timer cancel failed: %s", err)
+    timers.clear()
+
+    async def _resume(_now) -> None:
+        await fetch_today_schedule(hass, entry)
+        await apply_current_slot(hass, entry)
+
+    now = datetime.now(timezone.utc)
+    for aid, info in cache.items():
+        if aid in ("fetched_at", "optimization_enabled") or not isinstance(info, dict):
+            continue
+        if info.get("pause_state") != "timed":
+            continue
+        raw = info.get("paused_until")
+        try:
+            until = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        delay = max((until - now).total_seconds(), 0) + _RESUME_GRACE_SECONDS
+        try:
+            timers[aid] = async_call_later(hass, delay, _resume)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("resume timer unavailable: %s", err)
+
+
+def _release_control_on_pause(
+    hass: HomeAssistant, entity_id: str, paused_until: Any
+) -> None:
+    """Hand a unit back to the user: drop everything the plan armed.
+
+    Cancels the pending verify retry, forgets what we last commanded and
+    clears the comfort latch. `freeze_latch` is deliberately untouched:
+    the 50 F freeze floor keeps acting while a unit is paused.
+    """
+    data = _domain_data(hass)
+    timer = (data.get(_VERIFY_TIMERS_KEY) or {}).pop(entity_id, None)
+    if timer is not None:
+        try:
+            timer()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("verify timer cancel failed for %s: %s", entity_id, err)
+    (data.get(_LAST_COMMANDED_KEY) or {}).pop(entity_id, None)
+    (data.get(_COMFORT_LATCH_KEY) or {}).pop(entity_id, None)
+    _LOGGER.info(
+        "Hungry Machines released %s: plan paused until %s",
+        entity_id, paused_until or "indefinitely",
+    )
+
+
+def _unit_paused(hass: HomeAssistant, entity_id: str) -> bool:
+    """True when the cache says the plan must not drive `entity_id`
+    (master switch off, or the unit's own flag off / timed pause)."""
+    cache = _domain_data(hass).get("schedule")
+    if not isinstance(cache, dict):
+        return False
+    if cache.get("optimization_enabled") is False:
+        return True
+    for aid, info in cache.items():
+        if aid in ("fetched_at", "optimization_enabled") or not isinstance(info, dict):
+            continue
+        if info.get("entity_id") == entity_id:
+            return info.get("optimization_enabled") is False
+    return False
+
+
 def _aux_indoor_temp_entity_id(hass: HomeAssistant, entity_id: str) -> str | None:
     """Find the cached `indoor_temp_entity_id` for the appliance whose
     climate entity is `entity_id`.
@@ -1078,7 +1189,13 @@ def _comfort_band_override(
 
     was_active = bool(prev_latch and prev_latch.get("active"))
     now_active = bool(new_latch and new_latch.get("active"))
-    if now_active and not was_active:
+    # A latch the day's mode no longer fits is dropped and the breach judged
+    # afresh, so a new direction is a new engagement and gets its own line.
+    redirected = (
+        was_active and now_active
+        and prev_latch.get("direction") != new_latch.get("direction")
+    )
+    if now_active and (not was_active or redirected):
         commanded_edge = override[1] if override else 0.0
         direction = new_latch.get("direction") if new_latch else None
         edge_label = "high" if direction in ("cool", "off_overheat") else "low"
@@ -1727,7 +1844,13 @@ def _schedule_apply_verification(
         )
 
     try:
-        async_call_later(hass, _VERIFY_DELAY_SECONDS, _verify)
+        timers = _domain_data(hass).setdefault(_VERIFY_TIMERS_KEY, {})
+        previous = timers.pop(entity_id, None)
+        if previous is not None:
+            previous()
+        timers[entity_id] = async_call_later(
+            hass, _VERIFY_DELAY_SECONDS, _verify
+        )
     except Exception as err:  # noqa: BLE001
         _LOGGER.debug("verification scheduling unavailable: %s", err)
 
@@ -1745,6 +1868,9 @@ async def _verify_hvac_apply(
     that didn't stick. One retry, no re-verification — persistent
     disobedience surfaces through the divergence report instead of an
     infinite command loop fighting the unit (or the user)."""
+    (_domain_data(hass).get(_VERIFY_TIMERS_KEY) or {}).pop(entity_id, None)
+    if _unit_paused(hass, entity_id):
+        return
     state = hass.states.get(entity_id) if hass.states else None
     if state is None:
         return

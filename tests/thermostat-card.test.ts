@@ -326,6 +326,34 @@ describe('hm-thermostat-card', () => {
     );
   });
 
+  it('adds the "Some days have their own" hint when weekday_bands is non-empty', async () => {
+    const day = {
+      hourly_high_temps_f: Array<number>(24).fill(80),
+      hourly_low_temps_f: Array<number>(24).fill(66),
+    };
+    installFetchStub(makeSchedules([makeHvacAppliance()]), {
+      ...PREFERENCES_RESPONSE,
+      hourly_low_temps_f: Array<number>(24).fill(68),
+      hourly_high_temps_f: Array<number>(24).fill(78),
+      weekday_bands: { sat: day },
+    });
+    const el = mountCard({
+      hass: {
+        states: {
+          'sensor.living_room_temp': { entity_id: 'sensor.living_room_temp', state: '72' },
+        },
+      },
+    });
+    el.setConfig({
+      type: 'custom:hm-thermostat-card',
+      entities: { indoor_temp: 'sensor.living_room_temp' },
+    });
+    await flush(el);
+    expect(el.shadowRoot!.querySelector('.bands-hint')!.textContent).toContain(
+      'Some days have their own',
+    );
+  });
+
   it('_clampLevel clamps above 3 down to 3 and below 1 up to 1', () => {
     const el = mountCard();
     const clamp = (
@@ -656,5 +684,68 @@ describe('hm-thermostat-card', () => {
     expect(chart!.yMin).toBe(40);
     expect(chart!.yMax).toBe(100);
     expect(chart!.unit).toBe('fahrenheit');
+  });
+
+  describe('pause row', () => {
+    function pauseFetch(entry: Record<string, unknown>): FetchCall[] {
+      const calls = installFetchStub(makeSchedules([makeHvacAppliance(entry)]));
+      const base = globalThis.fetch as unknown as (u: string, i?: RequestInit) => Promise<Response>;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: string, init?: RequestInit) => {
+          if (/\/(pause|resume)$/.test(String(input))) {
+            calls.push({ url: String(input), init });
+            return jsonResponse({ appliance_id: 'hvac-1', pause_state: 'timed' });
+          }
+          return base(input, init);
+        }),
+      );
+      return calls;
+    }
+
+    it('active HVAC: three buttons POST 120/240/360 and call apply_now', async () => {
+      const calls = pauseFetch({ pause_state: 'active', paused_until: null });
+      const callService = vi.fn(async () => undefined);
+      const el = mountCard({ hass: { states: {}, callService } });
+      el.setConfig({ type: 'custom:hm-thermostat-card' });
+      await flush(el);
+      for (const [name, minutes] of [['pause_2h', 120], ['pause_4h', 240], ['pause_6h', 360]] as const) {
+        const btn = el.shadowRoot!.querySelector(`button[name="${name}"]`) as HTMLButtonElement;
+        expect(btn).not.toBeNull();
+        btn.click();
+        await vi.waitFor(() => expect((el as unknown as { _pauseBusy: boolean })._pauseBusy).toBe(false));
+        await flush(el);
+        const post = calls.filter((c) => c.url.endsWith('/pause')).pop()!;
+        expect(JSON.parse(String(post.init?.body))).toEqual({ minutes });
+      }
+      expect(callService).toHaveBeenCalledWith('hungry_machines', 'apply_now', {});
+    });
+
+    it('timed: shows the label and Resume now, which POSTs resume', async () => {
+      const calls = pauseFetch({ pause_state: 'timed', paused_until: '2026-11-06T20:45:00Z' });
+      const el = mountCard({ hass: { states: {} } });
+      el.setConfig({ type: 'custom:hm-thermostat-card' });
+      await flush(el);
+      const root = el.shadowRoot!;
+      expect(root.querySelector('.paused-until')!.textContent).toContain('Paused until');
+      expect(root.querySelector('button[name="pause_2h"]')).toBeNull();
+      (root.querySelector('button[name="resume_now"]') as HTMLButtonElement).click();
+      await flush(el);
+      expect(calls.some((c) => c.url.endsWith('/resume') && c.init?.method === 'POST')).toBe(true);
+    });
+
+    it('renders nothing for manual/master or no resolved appliance', async () => {
+      pauseFetch({ pause_state: 'manual' });
+      const el = mountCard({ hass: { states: {} } });
+      el.setConfig({ type: 'custom:hm-thermostat-card' });
+      await flush(el);
+      expect(el.shadowRoot!.querySelector('.pause-row')).toBeNull();
+      document.body.innerHTML = '';
+      pauseFetch({ pause_state: 'active' });
+      const el2 = mountCard({ hass: { states: {} } });
+      el2.setConfig({ type: 'custom:hm-thermostat-card', appliance_id: 'nope' });
+      await flush(el2);
+      expect(el2.shadowRoot!.querySelector('.pause-row')).toBeNull();
+    });
   });
 });

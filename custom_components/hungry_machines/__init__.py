@@ -55,7 +55,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_time_change
 
-from . import health, readings, weather
+from . import api, health, readings, weather
 from .version import MANIFEST_VERSION
 from .const import (
     DOMAIN,
@@ -178,6 +178,42 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if not hass.services.has_service(DOMAIN, "apply_now"):
         hass.services.async_register(DOMAIN, "apply_now", _apply_now_service)
+
+    def _hvac_ids(call) -> list[str]:
+        """The call's `appliance_id`, or every HVAC appliance in the cache."""
+        aid = call.data.get("appliance_id")
+        if aid:
+            return [aid]
+        cache = hass.data.get(DOMAIN, {}).get("schedule") or {}
+        return [
+            key
+            for key, info in cache.items()
+            if key not in ("fetched_at", "optimization_enabled")
+            and isinstance(info, dict)
+            and info.get("appliance_type") == "hvac"
+        ]
+
+    async def _pause_service(call) -> None:
+        minutes = int(call.data.get("minutes", 120))
+        if not 1 <= minutes <= 1440:
+            raise ValueError("minutes must be between 1 and 1440")
+        _LOGGER.info("Hungry Machines: pause service triggered (%d min)", minutes)
+        for aid in _hvac_ids(call):
+            await api.post_pause(hass, entry, aid, minutes)
+        await fetch_today_schedule(hass, entry)
+        await apply_current_slot(hass, entry)
+
+    async def _resume_service(call) -> None:
+        _LOGGER.info("Hungry Machines: resume service triggered")
+        for aid in _hvac_ids(call):
+            await api.post_resume(hass, entry, aid)
+        await fetch_today_schedule(hass, entry)
+        await apply_current_slot(hass, entry)
+
+    if not hass.services.has_service(DOMAIN, "pause"):
+        hass.services.async_register(DOMAIN, "pause", _pause_service)
+    if not hass.services.has_service(DOMAIN, "resume"):
+        hass.services.async_register(DOMAIN, "resume", _resume_service)
 
     await fetch_today_schedule(hass, entry)
 
@@ -307,6 +343,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.warning(
                 "Hungry Machines unsubscribe failed: %s", err
             )
+    for handle in list((domain_data.get("resume_timers") or {}).values()):
+        try:
+            handle()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Hungry Machines resume timer cancel failed: %s", err)
+    domain_data.pop("resume_timers", None)
     domain_data.pop(entry.entry_id, None)
     # v2.1+: capture+flush timers live in entry_data['unsub'] above, so
     # the legacy 'readings_unsub' key is no longer maintained.
@@ -317,4 +359,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # re-registers a fresh handler bound to the new entry.
     if hass.services.has_service(DOMAIN, "apply_now"):
         hass.services.async_remove(DOMAIN, "apply_now")
+    for name in ("pause", "resume"):
+        if hass.services.has_service(DOMAIN, name):
+            hass.services.async_remove(DOMAIN, name)
     return True

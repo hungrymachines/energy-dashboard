@@ -177,6 +177,30 @@ async def post_appliance_readings(
     return body is not None
 
 
+async def post_pause(
+    hass: HomeAssistant, entry: ConfigEntry, appliance_id: str, minutes: int
+) -> bool:
+    """POST /api/v1/appliances/{id}/pause: hand one unit to the user for `minutes`."""
+    body = await _authenticated_request(
+        hass,
+        entry,
+        "POST",
+        f"/api/v1/appliances/{appliance_id}/pause",
+        json={"minutes": minutes},
+    )
+    return body is not None
+
+
+async def post_resume(
+    hass: HomeAssistant, entry: ConfigEntry, appliance_id: str
+) -> bool:
+    """POST /api/v1/appliances/{id}/resume: end a pause early."""
+    body = await _authenticated_request(
+        hass, entry, "POST", f"/api/v1/appliances/{appliance_id}/resume"
+    )
+    return body is not None
+
+
 async def post_weather(
     hass: HomeAssistant, entry: ConfigEntry, forecast: dict
 ) -> bool:

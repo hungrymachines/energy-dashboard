@@ -5,11 +5,22 @@ import {
   defaultBands as fetchDefaultBands,
 } from '../api/appliance-preferences.js';
 import type { ApplianceType } from '../api/appliances.js';
+import type { BandPrefs } from '../utils/day-bands.js';
 import {
   deriveHourlyComfortBand,
   hasHourlyComfortBands,
   type ComfortMode,
 } from '../utils/hourly.js';
+import {
+  WEEKDAY_KEYS,
+  bandsEqual,
+  detectPreset,
+  expandWeek,
+  toStorage,
+  type DayBand,
+  type DayPreset,
+  type WeekdayKey,
+} from '../utils/day-bands.js';
 import {
   displayTemp,
   fToC,
@@ -46,6 +57,30 @@ function toNumber(v: unknown): number | null {
   }
   return null;
 }
+
+const DAY_NAMES: Record<WeekdayKey, string> = {
+  mon: 'Monday',
+  tue: 'Tuesday',
+  wed: 'Wednesday',
+  thu: 'Thursday',
+  fri: 'Friday',
+  sat: 'Saturday',
+  sun: 'Sunday',
+};
+const DAY_LETTERS: Record<WeekdayKey, string> = {
+  mon: 'M',
+  tue: 'T',
+  wed: 'W',
+  thu: 'T',
+  fri: 'F',
+  sat: 'S',
+  sun: 'S',
+};
+const PRESET_LABELS: ReadonlyArray<[DayPreset, string]> = [
+  ['every', 'Every day'],
+  ['weekend', 'Weekdays and weekends'],
+  ['each', 'Each day'],
+];
 
 function toString(v: unknown): string {
   return typeof v === 'string' ? v : '';
@@ -235,6 +270,67 @@ export class HmConstraintEditor extends LitElement {
       color: var(--hm-error, #DC2626);
       font-size: 12px;
     }
+    .day-modes {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin: 6px 0;
+      font-size: 13px;
+    }
+    .day-modes label {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .day-modes input {
+      width: auto;
+    }
+    .day-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 6px 0;
+    }
+    .day-chips button.day-chip {
+      padding: 4px 10px;
+      background: transparent;
+      border: 1px solid var(--hm-muted, #64748B);
+      color: var(--hm-text, #0F172A);
+    }
+    .day-chips button.day-chip[aria-pressed='true'] {
+      background: var(--hm-primary, #1E3A8A);
+      border-color: var(--hm-primary, #1E3A8A);
+      color: #ffffff;
+    }
+    .day-chips button.day-chip.same:not([aria-pressed='true']) {
+      border-style: dashed;
+      border-color: var(--hm-primary, #1E3A8A);
+    }
+    .day-help,
+    .day-note {
+      margin: 4px 0;
+      font-size: 12px;
+      color: var(--hm-muted, #64748B);
+    }
+    .day-copy {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin: 6px 0;
+      font-size: 13px;
+    }
+    .day-copy label {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .day-copy input {
+      width: auto;
+    }
+    .day-copy .copy-targets {
+      display: contents;
+    }
     button.reset-defaults {
       background: transparent;
       border: 1px solid var(--hm-primary, #1E3A8A);
@@ -268,6 +364,12 @@ export class HmConstraintEditor extends LitElement {
     _hourlyHigh: { state: true },
     _resetting: { state: true },
     _resetError: { state: true },
+    _preset: { state: true },
+    _sel: { state: true },
+    _dayError: { state: true },
+    _replaceNote: { state: true },
+    _copyOpen: { state: true },
+    _copyTargets: { state: true },
   };
 
   applianceId = '';
@@ -299,6 +401,16 @@ export class HmConstraintEditor extends LitElement {
   private _scalarSeed: Record<string, string> = {};
   _resetting = false;
   _resetError: string | null = null;
+  // Weekday bands: seven stored-°F days, the preset they group into, and the
+  // day whose band the table shows. In 'weekend' the shown keys are mon
+  // (Mon-Fri) and sat (Sat-Sun); in 'every' it is always mon.
+  private _week = {} as Record<WeekdayKey, DayBand>;
+  _preset: DayPreset = 'every';
+  _sel: WeekdayKey = 'mon';
+  _dayError: string | null = null;
+  _replaceNote = false;
+  _copyOpen = false;
+  _copyTargets: WeekdayKey[] = [];
 
   private _lastKey = '';
 
@@ -377,6 +489,111 @@ export class HmConstraintEditor extends LitElement {
       // trip just to open the editor.
       this._loadDerivedHourlyBands();
     }
+    this._week = expandWeek(c as BandPrefs, { high: this._hourlyHighF, low: this._hourlyLowF });
+    this._preset = detectPreset(this._week);
+    this._sel = 'mon';
+    this._dayError = null;
+    this._replaceNote = false;
+    this._copyOpen = false;
+    this._copyTargets = [];
+    this._setHourlyFromF(this._week.mon.high, this._week.mon.low);
+  }
+
+  /** The shown cells as a °F band; untouched cells keep their exact stored °F. */
+  private _shownBand(loose: boolean): DayBand | null {
+    const base = this._week[this._sel];
+    const high: number[] = [];
+    const low: number[] = [];
+    for (let i = 0; i < 24; i++) {
+      const h = this._hourlyCellF(this._hourlyHigh, this._seedHigh, this._hourlyHighF, i).f;
+      const l = this._hourlyCellF(this._hourlyLow, this._seedLow, this._hourlyLowF, i).f;
+      if ((h === null || l === null) && !loose) return null;
+      high.push(h ?? base?.high[i] ?? 0);
+      low.push(l ?? base?.low[i] ?? 0);
+    }
+    return { high, low };
+  }
+
+  /** The week with the shown band written into the day(s) the shown chip stands for. */
+  private _weekWith(band: DayBand): Record<WeekdayKey, DayBand> {
+    const week = { ...this._week };
+    const keys: WeekdayKey[] =
+      this._preset === 'every'
+        ? [...WEEKDAY_KEYS]
+        : this._preset === 'weekend'
+          ? this._sel === 'mon'
+            ? ['mon', 'tue', 'wed', 'thu', 'fri']
+            : ['sat', 'sun']
+          : [this._sel];
+    for (const k of keys) week[k] = { high: [...band.high], low: [...band.low] };
+    return week;
+  }
+
+  /** Write the shown cells back into the week. False (and a message) when they have errors. */
+  private _commitShown(): boolean {
+    const hasErr = Object.keys(this._validate(this._values)).some((k) => k.startsWith('hourly_'));
+    const band = hasErr ? null : this._shownBand(false);
+    if (!band) {
+      this._dayError = "Fix this day's errors first.";
+      this._errors = this._validate(this._values);
+      return false;
+    }
+    this._week = this._weekWith(band);
+    this._dayError = null;
+    return true;
+  }
+
+  private _showDay(key: WeekdayKey): void {
+    this._sel = key;
+    this._setHourlyFromF(this._week[key].high, this._week[key].low);
+    this._errors = this._validate(this._values);
+  }
+
+  private _onSelectDay(key: WeekdayKey): void {
+    if (key === this._sel || !this._commitShown()) return;
+    this._copyOpen = false;
+    this._showDay(key);
+  }
+
+  private _onSetPreset(next: DayPreset): void {
+    if (next === this._preset || !this._commitShown()) return;
+    const w = this._week;
+    const prev = this._preset;
+    let replaced = false;
+    let sel: WeekdayKey = 'mon';
+    if (next === 'every') {
+      const shown = w[this._sel];
+      replaced = !WEEKDAY_KEYS.every((k) => bandsEqual(w[k], shown));
+      for (const k of WEEKDAY_KEYS) w[k] = { high: [...shown.high], low: [...shown.low] };
+      sel = 'mon';
+    } else if (next === 'weekend' && prev === 'each') {
+      replaced =
+        !(['tue', 'wed', 'thu', 'fri'] as const).every((k) => bandsEqual(w[k], w.mon)) ||
+        !bandsEqual(w.sun, w.sat);
+      for (const k of ['tue', 'wed', 'thu', 'fri'] as const) w[k] = { high: [...w.mon.high], low: [...w.mon.low] };
+      w.sun = { high: [...w.sat.high], low: [...w.sat.low] };
+    } else if (next === 'each') {
+      sel = this._sel;
+    }
+    this._dirty = true;
+    this._preset = next;
+    this._copyOpen = false;
+    this._replaceNote = this._replaceNote || replaced;
+    this._week = { ...w };
+    this._showDay(sel);
+  }
+
+  private _onCopyDay(): void {
+    if (!this._commitShown()) return;
+    const src = this._week[this._sel];
+    const week = { ...this._week };
+    for (const k of this._copyTargets) {
+      if (k !== this._sel) week[k] = { high: [...src.high], low: [...src.low] };
+    }
+    this._week = week;
+    this._dirty = true;
+    this._copyOpen = false;
+    this._copyTargets = [];
   }
 
   /**
@@ -815,12 +1032,8 @@ export class HmConstraintEditor extends LitElement {
         if (timeHome !== '') payload['time_home'] = timeHome;
         // Hourly limits are always the saved comfort band —
         // the table is the primary control, not an opt-in override.
-        payload['hourly_low_temps_f'] = this._hourlyLow.map(
-          (_, i) => this._hourlyCellF(this._hourlyLow, this._seedLow, this._hourlyLowF, i).f,
-        );
-        payload['hourly_high_temps_f'] = this._hourlyHigh.map(
-          (_, i) => this._hourlyCellF(this._hourlyHigh, this._seedHigh, this._hourlyHighF, i).f,
-        );
+        const shown = this._shownBand(true) as DayBand;
+        Object.assign(payload, toStorage(this._preset, this._weekWith(shown)));
         return payload;
       }
     }
@@ -905,6 +1118,98 @@ export class HmConstraintEditor extends LitElement {
     this.dispatchEvent(
       new CustomEvent('constraints-cancelled', { bubbles: true, composed: true }),
     );
+  }
+
+  private _renderDays() {
+    const preset = this._preset;
+    const sel = this._sel;
+    const live = this._shownBand(true) as DayBand;
+    const chips: Array<[WeekdayKey, string, string]> =
+      preset === 'weekend'
+        ? [
+            ['mon', 'Mon–Fri', 'Monday to Friday'],
+            ['sat', 'Sat–Sun', 'Saturday and Sunday'],
+          ]
+        : preset === 'each'
+          ? WEEKDAY_KEYS.map((k): [WeekdayKey, string, string] => [k, DAY_LETTERS[k], DAY_NAMES[k]])
+          : [];
+    return html`
+      <div class="days" data-region="days">
+        <div class="day-modes" role="radiogroup" aria-label="Days">
+          ${PRESET_LABELS.map(
+            ([id, label]) => html`
+              <label>
+                <input
+                  type="radio"
+                  name="day_preset"
+                  value=${id}
+                  .checked=${preset === id}
+                  @change=${() => this._onSetPreset(id)}
+                />
+                ${label}
+              </label>
+            `,
+          )}
+        </div>
+        ${chips.length
+          ? html`<div class="day-chips" role="group" aria-label="Day">
+              ${chips.map(
+                ([k, label, full]) => html`
+                  <button
+                    type="button"
+                    class="day-chip ${k !== sel && bandsEqual(this._week[k], live) ? 'same' : ''}"
+                    data-day=${k}
+                    aria-label=${full}
+                    aria-pressed=${k === sel ? 'true' : 'false'}
+                    @click=${() => this._onSelectDay(k)}
+                  >
+                    ${label}
+                  </button>
+                `,
+              )}
+            </div>`
+          : null}
+        <p class="day-help">Days run midnight to midnight.</p>
+        ${this._dayError ? html`<div class="field-error" data-region="day-error">${this._dayError}</div>` : null}
+        ${this._replaceNote
+          ? html`<p class="day-note" data-region="day-note">Days with their own band will be replaced when you save.</p>`
+          : null}
+        ${preset === 'each'
+          ? html`<div class="day-copy">
+              <button
+                type="button"
+                class="reset-defaults copy-toggle"
+                @click=${() => {
+                  this._copyOpen = !this._copyOpen;
+                }}
+              >
+                Copy this day to…
+              </button>
+              ${this._copyOpen
+                ? html`<span class="copy-targets">${WEEKDAY_KEYS.filter((k) => k !== sel).map(
+                      (k) => html`
+                        <label>
+                          <input
+                            type="checkbox"
+                            name="copy_${k}"
+                            .checked=${this._copyTargets.includes(k)}
+                            @change=${(e: Event) => {
+                              const on = (e.target as HTMLInputElement).checked;
+                              this._copyTargets = on
+                                ? [...this._copyTargets, k]
+                                : this._copyTargets.filter((x) => x !== k);
+                            }}
+                          />
+                          ${DAY_NAMES[k]}
+                        </label>
+                      `,
+                    )}</span>
+                    <button type="button" class="copy-go" @click=${() => this._onCopyDay()}>Copy</button>`
+                : null}
+            </div>`
+          : null}
+      </div>
+    `;
   }
 
   override render() {
@@ -1369,6 +1674,7 @@ export class HmConstraintEditor extends LitElement {
                 </fieldset>
                 <div class="hourly-bands">
                   <span class="label-text">Hourly comfort limits (${unitLabel(unit)})</span>
+                  ${this._renderDays()}
                   <div class="hourly-content">
                     <table class="hourly-table">
                       <thead>

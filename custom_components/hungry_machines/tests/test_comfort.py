@@ -309,6 +309,85 @@ def test_off_latch_respects_min_on_time():
     assert l1 is latch
 
 
+def test_off_overheat_latch_does_not_outlive_a_switch_to_cool():
+    """A heat evening latched OFF over a 66 F ceiling; the night's plan is
+    cool. The latch must not hold the unit off: the breach is judged afresh
+    and cooled, before MIN_ON_SECONDS and with the room still over the edge
+    (seen 2026-11-03, a main floor held OFF all night under a cool plan)."""
+    latch = {"active": True, "direction": "off_overheat", "since": T0}
+    override, new_latch = comfort.decide(
+        indoor=70.2, high=66.0, low=61.0, sched_mode="cool",
+        latch=latch, now=T0 + timedelta(seconds=60),
+    )
+    assert override == ("COOL", 64.0)
+    assert new_latch["direction"] == "cool"
+
+
+def test_off_overcool_latch_does_not_keep_the_heat_off():
+    """The winter mirror: a cool day's OFF latch carried into a heat plan
+    must hand straight over to HEAT on a low breach."""
+    latch = {"active": True, "direction": "off_overcool", "since": T0}
+    override, new_latch = comfort.decide(
+        indoor=63.0, high=72.0, low=68.0, sched_mode="heat",
+        latch=latch, now=T0 + timedelta(seconds=60),
+    )
+    assert override == ("HEAT", 70.0)
+    assert new_latch["direction"] == "heat"
+
+
+def test_off_latch_into_auto_switches_mode():
+    """Auto answers a breach by switching mode, so an OFF latch from a
+    single-direction day is dropped there too."""
+    latch = {"active": True, "direction": "off_overheat", "since": T0}
+    override, new_latch = comfort.decide(
+        indoor=78.0, high=76.0, low=64.0, sched_mode="auto",
+        latch=latch, now=T0 + timedelta(seconds=60),
+    )
+    assert override == ("COOL", 74.0)
+    assert new_latch["direction"] == "cool"
+
+
+def test_heat_latch_into_cool_mode_stops_heating():
+    """A HEAT override latched on a heat plan stops when the plan turns to
+    cool; a room still under the floor there is an OFF, not more heat."""
+    latch = {"active": True, "direction": "heat", "since": T0, "command_f": 70.0}
+    override, new_latch = comfort.decide(
+        indoor=67.0, high=76.0, low=68.0, sched_mode="cool",
+        latch=latch, now=T0 + timedelta(seconds=60),
+    )
+    assert override == ("OFF", 68.0)
+    assert new_latch["direction"] == "off_overcool"
+
+
+def test_latch_clears_when_the_guard_must_stand_down():
+    """The scheduler passes an empty mode when the thermostat's own setting
+    overrules the plan; a held latch must not keep commanding then."""
+    latch = {"active": True, "direction": "cool", "since": T0, "command_f": 74.0}
+    override, new_latch = comfort.decide(
+        indoor=80.0, high=76.0, low=64.0, sched_mode="",
+        latch=latch, now=T0 + timedelta(seconds=60),
+    )
+    assert override is None
+    assert new_latch is None
+
+
+@pytest.mark.parametrize("direction,sched_mode", [
+    ("cool", "cool"), ("cool", "auto"), ("heat", "heat"), ("heat", "auto"),
+    ("off_overcool", "cool"), ("off_overheat", "heat"),
+])
+def test_latch_holds_under_its_own_modes(direction, sched_mode):
+    """Nothing changes for a latch whose mode still fits: it holds through
+    MIN_ON_SECONDS exactly as before."""
+    latch = {"active": True, "direction": direction, "since": T0}
+    if direction in ("cool", "heat"):
+        latch["command_f"] = 70.0
+    _, new_latch = comfort.decide(
+        indoor=70.0, high=72.0, low=68.0, sched_mode=sched_mode,
+        latch=latch, now=T0 + timedelta(seconds=60),
+    )
+    assert new_latch is latch
+
+
 def test_missing_band_edge_while_off_latched_clears():
     latch = {"active": True, "direction": "off_overheat", "since": T0}
     override, new_latch = comfort.decide(
