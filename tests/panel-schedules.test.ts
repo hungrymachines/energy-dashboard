@@ -1168,3 +1168,89 @@ describe('solar card', () => {
     expect(card.textContent).toContain('Generation forecast is folded into pricing');
   });
 });
+
+describe('solar card: production sensor indicator', () => {
+  beforeEach(() => {
+    setApiBase('https://api.example.test');
+    localStorage.clear();
+    clearTokens();
+    setAuthState({});
+    vi.spyOn(authStore, 'hydrate').mockImplementation(async () => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    document.body.innerHTML = '';
+    localStorage.clear();
+    clearTokens();
+    setAuthState({});
+  });
+
+  async function mount(
+    config: Record<string, unknown>,
+    states: Record<string, unknown>,
+    source = 'learned',
+  ): Promise<Element> {
+    installFetchStub({
+      '/api/v1/schedules': {
+        date: '2025-11-18',
+        appliances: [{ ...SOLAR_SCHEDULE, schedule: { ...SOLAR_SCHEDULE.schedule, source } }],
+      },
+      '/api/v1/rates': RATES_RESPONSE,
+      '/api/v1/appliances': [
+        {
+          id: 'solar-1',
+          user_id: 'user-123',
+          appliance_type: 'solar',
+          name: 'Roof PV',
+          config: { system_size_kw: 8.5, ...config },
+          is_active: true,
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    });
+    setAuthState({ access: 'ACCESS', refresh: 'REFRESH', status: 'authed', user: SAMPLE_USER });
+    const el = mountPanel();
+    el.hass = { callWS: vi.fn(async () => ({})), states };
+    el._view = 'dashboard';
+    await flush(el);
+    return el.shadowRoot!.querySelector('.card[data-appliance-type="solar"]')!;
+  }
+
+  it('connected: green dot and the live reading', async () => {
+    const card = await mount(
+      { production_sensor_entity_id: 'sensor.pv_power' },
+      { 'sensor.pv_power': { state: '2500', attributes: { unit_of_measurement: 'W' } } },
+    );
+    const row = card.querySelector('.solar-sensor')!;
+    expect(row.getAttribute('data-sensor')).toBe('connected');
+    expect(row.textContent!.trim()).toBe('Production sensor connected: 2.5 kW now');
+  });
+
+  it('offline when the sensor reports unavailable', async () => {
+    const card = await mount(
+      { production_sensor_entity_id: 'sensor.pv_power' },
+      { 'sensor.pv_power': { state: 'unavailable', attributes: {} } },
+    );
+    expect(card.querySelector('.solar-sensor')!.getAttribute('data-sensor')).toBe('offline');
+  });
+
+  it('missing when the configured entity is not in Home Assistant', async () => {
+    const card = await mount({ production_sensor_entity_id: 'sensor.renamed' }, {});
+    expect(card.querySelector('.solar-sensor')!.getAttribute('data-sensor')).toBe('missing');
+  });
+
+  it('no sensor on an irradiance forecast says so', async () => {
+    const card = await mount({}, {}, 'irradiance');
+    expect(card.querySelector('.solar-sensor')!.textContent!.trim()).toBe(
+      'No production sensor connected',
+    );
+  });
+
+  it('no sensor on a nameplate estimate leaves it to the existing nudge', async () => {
+    const card = await mount({}, {}, 'nameplate');
+    expect(card.querySelector('.solar-sensor')).toBeNull();
+    expect(card.textContent).toContain('connect a production sensor');
+  });
+});

@@ -53,7 +53,12 @@ import { expandHourlyTo48, hasCustomRates, hasHourlyComfortBands } from '../util
 import { resolveDayBand, todayIsoLocal, weekdayKeyOf } from '../utils/day-bands.js';
 import { formatSavingsEstimate, savingsEstimateTitle } from '../utils/savings.js';
 import { chartScaleStore } from '../utils/chart-scale.js';
-import { comparedKwh, fetchSolarActuals, type SolarActuals } from '../utils/solar-actuals.js';
+import {
+  comparedKwh,
+  fetchSolarActuals,
+  solarSensorStatus,
+  type SolarActuals,
+} from '../utils/solar-actuals.js';
 import {
   groupPricingZones,
   pricingZoneFullLabel,
@@ -933,6 +938,30 @@ export class HungryMachinesPanel extends LitElement {
       margin: 4px 0 0;
       color: var(--hm-muted, #64748B);
       font-size: 14px;
+    }
+    .card .solar-sensor {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 4px 0 0;
+      color: var(--hm-muted, #64748B);
+      font-size: 14px;
+    }
+    .card .solar-sensor .sensor-dot {
+      flex: none;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--hm-muted, #64748B);
+    }
+    .card .solar-sensor[data-sensor='connected'] .sensor-dot {
+      background: var(--hm-secondary, #0F766E);
+    }
+    .card .solar-sensor[data-sensor='offline'] .sensor-dot {
+      background: var(--hm-accent, #F59E0B);
+    }
+    .card .solar-sensor[data-sensor='missing'] .sensor-dot {
+      background: var(--hm-error, #DC2626);
     }
     .card .edit-btn {
       align-self: flex-start;
@@ -3892,6 +3921,17 @@ export class HungryMachinesPanel extends LitElement {
     const generationKw48 = asNumberArray(sched['generation_kw_48']);
     const hasCurve = Array.isArray(generationKw48) && generationKw48.length === 48;
 
+    // Live state of the production sensor in Home Assistant. A card already
+    // telling the customer to connect one (nameplate source) skips "none".
+    const sensorRaw = config['production_sensor_entity_id'];
+    const sensor = solarSensorStatus(
+      (this.hass as HassLike | undefined)?.states,
+      typeof sensorRaw === 'string' ? sensorRaw : '',
+    );
+    const saysNameplate =
+      hasCurve && sched['source'] !== 'learned' && sched['source'] !== 'irradiance';
+    const showSensor = !(sensor.state === 'none' && saysNameplate);
+
     let sourceLine = '';
     let generationLine = '';
     let exportLine: string | null = null;
@@ -3936,6 +3976,11 @@ export class HungryMachinesPanel extends LitElement {
           <span class="name">${appliance.name}</span>
         </div>
         <div class="savings">${sizeText}</div>
+        ${showSensor
+          ? html`<p class="solar-sensor" data-sensor=${sensor.state}>
+              <span class="sensor-dot" aria-hidden="true"></span>${sensor.text}
+            </p>`
+          : null}
         ${hasCurve
           ? html`
               <hm-optimization-chart

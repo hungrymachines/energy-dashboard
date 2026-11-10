@@ -176,3 +176,51 @@ export function comparedKwh(
   }
   return { actualKwh, forecastKwh, slots };
 }
+
+export type SolarSensorState = 'none' | 'missing' | 'offline' | 'connected';
+
+export interface SolarSensorStatus {
+  state: SolarSensorState;
+  text: string;
+}
+
+type SensorStates = Record<
+  string,
+  { state?: unknown; attributes?: Record<string, unknown> } | undefined
+>;
+
+/**
+ * Whether the solar appliance's production sensor is reporting to Home
+ * Assistant right now, from its live state. Not a staleness check: a power
+ * sensor can sit at 0 W for hours at night and still be healthy.
+ */
+export function solarSensorStatus(
+  states: SensorStates | undefined,
+  entityId: string,
+): SolarSensorStatus {
+  if (!entityId) return { state: 'none', text: 'No production sensor connected' };
+  const s = states?.[entityId];
+  if (!s) {
+    return {
+      state: 'missing',
+      text: `Production sensor ${entityId} isn't in Home Assistant`,
+    };
+  }
+  const unitRaw = s.attributes?.['unit_of_measurement'];
+  const unit = typeof unitRaw === 'string' ? unitRaw : 'W';
+  const kw = toKw(s.state, unit);
+  if (kw === null) {
+    const reported = typeof s.state === 'string' && s.state !== '' ? s.state : 'no value';
+    return {
+      state: 'offline',
+      text:
+        `Production sensor offline: ${entityId} reports ${reported}. ` +
+        'Some inverters stop reporting at night.',
+    };
+  }
+  // An energy total (kWh) is still a live sensor, but its value isn't power.
+  if (/wh$/i.test(unit.trim())) {
+    return { state: 'connected', text: 'Production sensor connected' };
+  }
+  return { state: 'connected', text: `Production sensor connected: ${kw.toFixed(1)} kW now` };
+}

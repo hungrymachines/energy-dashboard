@@ -4,6 +4,7 @@ import {
   fetchSolarActuals,
   localMidnightMs,
   slotAveragesKw,
+  solarSensorStatus,
   toKw,
 } from '../src/utils/solar-actuals.js';
 
@@ -135,5 +136,50 @@ describe('comparedKwh', () => {
     actuals[21] = 4;
     const forecast = Array<number>(48).fill(1);
     expect(comparedKwh(actuals, forecast)).toEqual({ actualKwh: 3, forecastKwh: 1, slots: 2 });
+  });
+});
+
+describe('solarSensorStatus', () => {
+  const states = {
+    'sensor.pv_w': { state: '3240', attributes: { unit_of_measurement: 'W' } },
+    'sensor.pv_kw': { state: '0', attributes: { unit_of_measurement: 'kW' } },
+    'sensor.pv_kwh': { state: '18.2', attributes: { unit_of_measurement: 'kWh' } },
+    'sensor.pv_off': { state: 'unavailable', attributes: { unit_of_measurement: 'W' } },
+  };
+
+  it('none when no sensor is configured', () => {
+    expect(solarSensorStatus(states, '')).toEqual({
+      state: 'none',
+      text: 'No production sensor connected',
+    });
+  });
+
+  it('missing when Home Assistant has no such entity', () => {
+    const s = solarSensorStatus(states, 'sensor.gone');
+    expect(s.state).toBe('missing');
+    expect(s.text).toBe("Production sensor sensor.gone isn't in Home Assistant");
+    expect(solarSensorStatus(undefined, 'sensor.pv_w').state).toBe('missing');
+  });
+
+  it('offline when the sensor reports unavailable', () => {
+    const s = solarSensorStatus(states, 'sensor.pv_off');
+    expect(s.state).toBe('offline');
+    expect(s.text).toContain('reports unavailable');
+  });
+
+  it('connected with the live reading in kW, zero included', () => {
+    expect(solarSensorStatus(states, 'sensor.pv_w').text).toBe(
+      'Production sensor connected: 3.2 kW now',
+    );
+    expect(solarSensorStatus(states, 'sensor.pv_kw').text).toBe(
+      'Production sensor connected: 0.0 kW now',
+    );
+  });
+
+  it('connected without a power figure for an energy total', () => {
+    expect(solarSensorStatus(states, 'sensor.pv_kwh')).toEqual({
+      state: 'connected',
+      text: 'Production sensor connected',
+    });
   });
 });
