@@ -1309,6 +1309,201 @@ async def test_apply_current_slot_dispatches_robot_via_apply_robot() -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_current_slot_dispatches_pool_pump_via_apply_switch() -> None:
+    """pool_pump joins the generic switch path, same as ev_charger etc."""
+    hass = _hass()
+    entry = _entry()
+    hass.data[DOMAIN] = {
+        "schedule": {
+            "fetched_at": _fresh_ts(),
+            "pump-1": {
+                "appliance_type": "pool_pump",
+                "entity_id": "switch.pool_pump",
+                "schedule": {"intervals": [True] + [False] * 47},
+            },
+        }
+    }
+    with patch.object(scheduler, "_current_slot", return_value=0):
+        await scheduler.apply_current_slot(hass, entry)
+
+    hass.services.async_call.assert_awaited_once()
+    args = hass.services.async_call.await_args.args
+    assert args[0] == "switch"
+    assert args[1] == "turn_on"
+    assert args[2]["entity_id"] == "switch.pool_pump"
+
+
+# --- _apply_tub (hot tub ready/eco setpoint) -------------------------------
+
+
+def _tub_state(
+    domain_state: str = "cool",
+    temperature: float | None = None,
+    min_temp: float | None = None,
+    max_temp: float | None = None,
+    step: object | None = None,
+) -> MagicMock:
+    state = MagicMock()
+    state.state = domain_state
+    attrs: dict = {}
+    if temperature is not None:
+        attrs["temperature"] = temperature
+    if min_temp is not None:
+        attrs["min_temp"] = min_temp
+    if max_temp is not None:
+        attrs["max_temp"] = max_temp
+    if step is not None:
+        attrs["target_temp_step"] = step
+    state.attributes = attrs
+    return state
+
+
+@pytest.mark.asyncio
+async def test_apply_tub_sets_climate_temperature() -> None:
+    hass = _hass(_tub_state(temperature=95.0))
+    schedule = {"setpoint_temps": [100.0] * 48}
+    await scheduler._apply_tub(hass, "climate.tub", schedule, 10)
+
+    hass.services.async_call.assert_awaited_once()
+    args = hass.services.async_call.await_args.args
+    assert args[0] == "climate"
+    assert args[1] == "set_temperature"
+    assert args[2] == {"entity_id": "climate.tub", "temperature": 100.0}
+
+
+@pytest.mark.asyncio
+async def test_apply_tub_water_heater_domain_uses_its_own_service() -> None:
+    hass = _hass(_tub_state(temperature=95.0))
+    schedule = {"setpoint_temps": [100.0] * 48}
+    await scheduler._apply_tub(hass, "water_heater.tub", schedule, 10)
+
+    args = hass.services.async_call.await_args.args
+    assert args[0] == "water_heater"
+    assert args[1] == "set_temperature"
+    assert args[2]["entity_id"] == "water_heater.tub"
+
+
+@pytest.mark.asyncio
+async def test_apply_tub_equal_target_sends_nothing() -> None:
+    hass = _hass(_tub_state(temperature=100.0))
+    schedule = {"setpoint_temps": [100.0] * 48}
+    await scheduler._apply_tub(hass, "climate.tub", schedule, 10)
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_tub_within_tenth_degree_sends_nothing() -> None:
+    hass = _hass(_tub_state(temperature=100.05))
+    schedule = {"setpoint_temps": [100.0] * 48}
+    await scheduler._apply_tub(hass, "climate.tub", schedule, 10)
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_tub_missing_setpoint_temps_sends_nothing() -> None:
+    hass = _hass(_tub_state(temperature=95.0))
+    schedule: dict = {}
+    await scheduler._apply_tub(hass, "climate.tub", schedule, 10)
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_tub_short_setpoint_array_sends_nothing() -> None:
+    hass = _hass(_tub_state(temperature=95.0))
+    schedule = {"setpoint_temps": [100.0] * 5}
+    await scheduler._apply_tub(hass, "climate.tub", schedule, 10)
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_tub_entity_not_found_sends_nothing() -> None:
+    hass = _hass(None)
+    schedule = {"setpoint_temps": [100.0] * 48}
+    await scheduler._apply_tub(hass, "climate.tub", schedule, 10)
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_tub_clamps_to_entity_hardware_range() -> None:
+    hass = _hass(_tub_state(temperature=95.0, min_temp=80.0, max_temp=104.0))
+    schedule = {"setpoint_temps": [110.0] * 48}
+    await scheduler._apply_tub(hass, "climate.tub", schedule, 10)
+    args = hass.services.async_call.await_args.args
+    assert args[2]["temperature"] == 104.0
+
+
+@pytest.mark.asyncio
+async def test_apply_tub_celsius_ha_converts() -> None:
+    # 98.6 F = 37.0 C exactly, so the 1-degree device step is a no-op --
+    # isolates the unit conversion from the step-snap behaviour, which
+    # test_apply_tub_snaps_to_device_step covers on its own.
+    hass = _metric_hass(_tub_state(temperature=35.0, step=1))
+    schedule = {"setpoint_temps": [98.6] * 48}
+    await scheduler._apply_tub(hass, "climate.tub", schedule, 10)
+
+    args = hass.services.async_call.await_args.args
+    assert args[2]["temperature"] == 37.0
+
+
+@pytest.mark.asyncio
+async def test_apply_tub_snaps_to_device_step() -> None:
+    # 100 F = 37.78 C, which a 1-degree-step device cannot hold; it
+    # snaps to the nearest step (38.0 C) the same way HVAC setpoints do.
+    hass = _metric_hass(_tub_state(temperature=36.0, step=1))
+    schedule = {"setpoint_temps": [100.0] * 48}
+    await scheduler._apply_tub(hass, "climate.tub", schedule, 10)
+
+    args = hass.services.async_call.await_args.args
+    assert args[2]["temperature"] == 38.0
+
+
+@pytest.mark.asyncio
+async def test_apply_tub_never_calls_turn_off() -> None:
+    """Across every branch that does call a service, it's always
+    set_temperature — never turn_off, and the mode is never touched."""
+    hass = _hass(_tub_state(domain_state="off", temperature=95.0))
+    schedule = {"setpoint_temps": [100.0] * 48}
+    await scheduler._apply_tub(hass, "climate.tub", schedule, 10)
+
+    hass.services.async_call.assert_awaited_once()
+    args = hass.services.async_call.await_args.args
+    assert args[1] == "set_temperature"
+    assert "hvac_mode" not in args[2]
+
+
+@pytest.mark.asyncio
+async def test_apply_tub_service_exception_logged_not_raised() -> None:
+    hass = _hass(_tub_state(temperature=95.0))
+    hass.services.async_call = AsyncMock(side_effect=RuntimeError("boom"))
+    schedule = {"setpoint_temps": [100.0] * 48}
+    # Must not raise.
+    await scheduler._apply_tub(hass, "climate.tub", schedule, 10)
+
+
+@pytest.mark.asyncio
+async def test_apply_current_slot_dispatches_hot_tub_via_apply_tub() -> None:
+    hass = _hass(_tub_state(temperature=95.0))
+    entry = _entry()
+    hass.data[DOMAIN] = {
+        "schedule": {
+            "fetched_at": _fresh_ts(),
+            "tub-1": {
+                "appliance_type": "hot_tub",
+                "entity_id": "climate.tub",
+                "schedule": {"setpoint_temps": [100.0] * 48},
+            },
+        }
+    }
+    with patch.object(scheduler, "_current_slot", return_value=10):
+        await scheduler.apply_current_slot(hass, entry)
+
+    hass.services.async_call.assert_awaited_once()
+    args = hass.services.async_call.await_args.args
+    assert args[1] == "set_temperature"
+    assert args[2]["temperature"] == 100.0
+
+
+@pytest.mark.asyncio
 async def test_apply_skipped_when_entity_id_missing() -> None:
     hass = _hass()
     entry = _entry()
@@ -3495,3 +3690,191 @@ async def test_resume_mode_schedule_plan_is_redriven() -> None:
     hass = _resume_hass("heat", plan)
     await scheduler._apply_hvac(hass, "climate.living_room", plan, 30)
     assert _modes_sent(hass) == ["cool"]
+
+
+# ---------------------------------------------------------------------------
+# _publish_schedule_states: the Dev Tools -> States mirror.
+# Temperature-target types publish the slot's setpoint; switch types publish
+# on/off. A type in neither group would read "unknown" forever.
+# ---------------------------------------------------------------------------
+
+
+def _publish_cache(atype: str, schedule: dict) -> dict:
+    return {
+        "fetched_at": _fresh_ts(),
+        "a1": {
+            "appliance_type": atype,
+            "name": "Back Deck",
+            "entity_id": "climate.tub",
+            "schedule": schedule,
+        },
+    }
+
+
+def test_publish_schedule_states_hot_tub_state_is_the_slot_setpoint():
+    hass = _hass()
+    cache = _publish_cache(
+        "hot_tub",
+        {"setpoint_temps": [95.0] * 20 + [102.0] * 28, "intervals": [False] * 48},
+    )
+    with patch.object(scheduler, "_current_slot", return_value=20):
+        scheduler._publish_schedule_states(hass, cache)
+
+    hass.states.async_set.assert_called_once()
+    entity_id, state_value, attributes = hass.states.async_set.call_args[0]
+    assert entity_id == "sensor.hungry_machines_back_deck_schedule"
+    assert state_value == 102.0
+    assert attributes["unit_of_measurement"] == "°F"
+    assert attributes["device_class"] == "temperature"
+    assert attributes["setpoint_temps"] == cache["a1"]["schedule"]["setpoint_temps"]
+
+
+def test_publish_schedule_states_pool_pump_state_is_on_off():
+    hass = _hass()
+    cache = _publish_cache(
+        "pool_pump", {"intervals": [False] * 16 + [True] * 8 + [False] * 24}
+    )
+    with patch.object(scheduler, "_current_slot", return_value=18):
+        scheduler._publish_schedule_states(hass, cache)
+
+    _entity_id, state_value, _attributes = hass.states.async_set.call_args[0]
+    assert state_value == "on"
+
+    hass.states.async_set.reset_mock()
+    with patch.object(scheduler, "_current_slot", return_value=30):
+        scheduler._publish_schedule_states(hass, cache)
+    _entity_id, state_value, _attributes = hass.states.async_set.call_args[0]
+    assert state_value == "off"
+
+
+# ---------------------------------------------------------------------------
+# November 2026: a heating day's OFF is HEAT at the band floor, and the
+# guard asks what the unit is doing.
+# ---------------------------------------------------------------------------
+
+def _thermostat(mode: str, action: str | None, current: float | None = None) -> MagicMock:
+    """A central thermostat: reports hvac_action, can heat and cool."""
+    state = _climate_state(mode, supports_range=False, hvac_modes=["off", "heat", "cool"])
+    if action is not None:
+        state.attributes["hvac_action"] = action
+    if current is not None:
+        state.attributes["current_temperature"] = current
+    return state
+
+
+def _heat_day_cache(hvac_mode_schedule: list[str]) -> dict:
+    cache = _hvac_cache(setpoint=62.0, hvac_mode_schedule=hvac_mode_schedule)
+    schedule = cache["schedule"]["hvac-1"]["schedule"]
+    schedule["mode"] = "heat"
+    schedule["low_temps"] = [61.0] * 48
+    schedule["high_temps"] = [66.0] * 48
+    return cache
+
+
+def _calls(hass: MagicMock, service: str) -> list[dict]:
+    return [c.args[2] for c in hass.services.async_call.call_args_list if c.args[1] == service]
+
+
+@pytest.mark.asyncio
+async def test_heating_day_off_slot_holds_the_band_floor_in_heat() -> None:
+    """The plan says OFF on a heating day. The thermostat is left in heat
+    at the band floor, so it still heats on its own if Home Assistant
+    stops. The room is at 64 (inside the band), so the guard is quiet."""
+    hass = _hass(_thermostat("heat", "idle", current=64.0))
+    hass.data[DOMAIN] = _heat_day_cache(["OFF"] * 48)
+    with patch.object(scheduler, "_current_slot", return_value=22):
+        await scheduler.apply_current_slot(hass, _entry())
+
+    commanded = scheduler.get_last_commanded(hass, "climate.living_room")
+    assert commanded["hvac_mode"] == "HEAT"
+    assert commanded["setpoint"] == 61.0
+    assert _calls(hass, "set_temperature")[0]["temperature"] == 61.0
+    assert all(c.get("hvac_mode") != "off" for c in _calls(hass, "set_hvac_mode"))
+
+
+@pytest.mark.asyncio
+async def test_heating_day_off_slot_wakes_a_thermostat_left_off() -> None:
+    hass = _hass(_thermostat("off", "off", current=64.0))
+    hass.data[DOMAIN] = _heat_day_cache(["OFF"] * 48)
+    with patch.object(scheduler, "_current_slot", return_value=22):
+        await scheduler.apply_current_slot(hass, _entry())
+    assert [c["hvac_mode"] for c in _calls(hass, "set_hvac_mode")] == ["heat"]
+
+
+@pytest.mark.asyncio
+async def test_a_unit_with_no_activity_signal_is_still_switched_off() -> None:
+    """A commanded HEAT reads as running time on a unit that cannot say
+    what it is doing, so those keep a real OFF."""
+    hass = _hass(_thermostat("heat", None, current=64.0))
+    hass.data[DOMAIN] = _heat_day_cache(["OFF"] * 48)
+    with patch.object(scheduler, "_current_slot", return_value=22):
+        await scheduler.apply_current_slot(hass, _entry())
+    assert scheduler.get_last_commanded(hass, "climate.living_room")["hvac_mode"] == "OFF"
+
+
+@pytest.mark.asyncio
+async def test_a_cooling_days_off_slot_stays_off() -> None:
+    hass = _hass(_thermostat("cool", "idle", current=72.0))
+    cache = _hvac_cache(setpoint=72.0, hvac_mode_schedule=["OFF"] * 48)
+    cache["schedule"]["hvac-1"]["schedule"]["mode"] = "cool"
+    hass.data[DOMAIN] = cache
+    with patch.object(scheduler, "_current_slot", return_value=22):
+        await scheduler.apply_current_slot(hass, _entry())
+    assert scheduler.get_last_commanded(hass, "climate.living_room")["hvac_mode"] == "OFF"
+
+
+def test_heat_floor_helper_leaves_everything_else_alone() -> None:
+    hass = _hass(_thermostat("heat", "idle"))
+    heat = {"mode": "heat", "low_temps": [61.0] * 48}
+    helper = scheduler._heat_floor_instead_of_off
+    assert helper(hass, "climate.x", heat, 3, "OFF", 66.0) == ("HEAT", 61.0)
+    assert helper(hass, "climate.x", heat, 3, "HEAT", 70.0) == ("HEAT", 70.0)
+    assert helper(hass, "climate.x", heat, 3, None, 70.0) == (None, 70.0)
+    assert helper(hass, "climate.x", {"mode": "heat"}, 3, "OFF", 66.0) == ("OFF", 66.0)
+    cool_only = _hass(_climate_state("cool", hvac_modes=["off", "cool"]))
+    cool_only.states.get.return_value.attributes["hvac_action"] = "idle"
+    assert helper(cool_only, "climate.x", heat, 3, "OFF", 66.0) == ("OFF", 66.0)
+
+
+def test_conditioning_reads_hvac_action() -> None:
+    for action, expected in (
+        ("heating", "heating"), ("preheating", "heating"), ("cooling", "cooling"),
+        ("idle", "idle"), ("fan", "idle"), ("off", "idle"), ("drying", None), (None, None),
+    ):
+        hass = _hass(_thermostat("heat", action))
+        assert scheduler._conditioning(hass, "climate.x") == expected, action
+
+
+def test_guard_leaves_a_house_floating_above_a_heat_days_ceiling() -> None:
+    """70 degF under a 66 ceiling with the furnace idle: no override, so
+    no latch, so readings do not report the guard in control."""
+    hass = _hass(_thermostat("heat", "idle", current=70.0))
+    schedule = {"mode": "heat", "high_temps": [66.0] * 48, "low_temps": [61.0] * 48}
+    assert scheduler._comfort_band_override(hass, "climate.x", schedule, 3, "OFF") is None
+    assert "climate.x" not in hass.data[DOMAIN][scheduler._COMFORT_LATCH_KEY]
+
+    heating = _hass(_thermostat("heat", "heating", current=70.0))
+    assert scheduler._comfort_band_override(heating, "climate.x", schedule, 3, "HEAT") == ("OFF", 66.0)
+
+
+def test_guard_remembers_its_last_correction_for_the_auto_lockout() -> None:
+    """A finished HEAT correction is recorded, and the overshoot that
+    follows it on an Auto plan is not answered with cooling."""
+    schedule = {
+        "mode": "heat", "auto_mode": True,
+        "high_temps": [71.6] * 48, "low_temps": [70.0] * 48,
+    }
+    t0 = datetime(2026, 11, 10, 22, 20, tzinfo=timezone.utc)
+    hass = _hass(_thermostat("heat", "idle", current=69.9))
+    override = scheduler._comfort_band_override(hass, "climate.x", schedule, 44, None, now=t0)
+    assert override[0] == "HEAT" and override[1] == pytest.approx(70.8)
+
+    hass.states.get.return_value.attributes["current_temperature"] = 70.6
+    later = t0 + timedelta(minutes=11)
+    assert scheduler._comfort_band_override(hass, "climate.x", schedule, 44, None, now=later) is None
+    history = hass.data[DOMAIN][scheduler._GUARD_HISTORY_KEY]["climate.x"]
+    assert history == {"direction": "heat", "at": later}
+
+    hass.states.get.return_value.attributes["current_temperature"] = 72.0
+    soon = later + timedelta(minutes=5)
+    assert scheduler._comfort_band_override(hass, "climate.x", schedule, 44, None, now=soon) is None

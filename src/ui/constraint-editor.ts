@@ -27,6 +27,7 @@ import {
   limitsFor,
   parseTempInput,
   unitLabel,
+  type LimitField,
   type TempUnit,
 } from '../utils/temperature.js';
 
@@ -47,7 +48,61 @@ export function modeHelp(mode: string): string {
 type ErrorMap = Record<string, string>;
 
 const TIME_PATTERN = /^\d{2}:\d{2}$/;
-const SCALAR_TEMP_FIELDS = ['base_temperature', 'max_temp_f', 'min_temp_f'] as const;
+const SCALAR_TEMP_FIELDS = [
+  'base_temperature',
+  'max_temp_f',
+  'min_temp_f',
+  'floor_temp_f',
+  'sanitize_temp_f',
+  'ready_temp_f',
+  'eco_temp_f',
+] as const;
+
+const MAX_SOAK_ROWS = 4;
+
+interface SoakRow {
+  start: string;
+  end: string;
+  // Index 0 = Monday .. 6 = Sunday, matching WEEKDAY_KEYS order.
+  days: boolean[];
+}
+
+function newSoakRow(start: string, end: string, days?: boolean[]): SoakRow {
+  return { start, end, days: days ?? [true, true, true, true, true, true, true] };
+}
+
+function parseSoakWindows(raw: unknown): SoakRow[] {
+  if (!Array.isArray(raw) || raw.length === 0) return [newSoakRow('19:00', '21:00')];
+  const rows: SoakRow[] = [];
+  for (const w of raw.slice(0, MAX_SOAK_ROWS)) {
+    if (typeof w !== 'object' || w === null) continue;
+    const obj = w as Record<string, unknown>;
+    const start = typeof obj['start'] === 'string' ? obj['start'] : '';
+    const end = typeof obj['end'] === 'string' ? obj['end'] : '';
+    const daysRaw = obj['days'];
+    const days = Array.isArray(daysRaw)
+      ? WEEKDAY_KEYS.map((_, i) => daysRaw.includes(i))
+      : undefined;
+    rows.push(newSoakRow(start, end, days));
+  }
+  return rows.length > 0 ? rows : [newSoakRow('19:00', '21:00')];
+}
+
+function soakRowsToPayload(rows: SoakRow[]): Array<{ start: string; end: string; days?: number[] }> {
+  return rows.map((row) => {
+    const entry: { start: string; end: string; days?: number[] } = {
+      start: row.start,
+      end: row.end,
+    };
+    if (!row.days.every(Boolean)) {
+      entry.days = row.days
+        .map((on, i) => (on ? i : -1))
+        .filter((i) => i >= 0)
+        .sort((a, b) => a - b);
+    }
+    return entry;
+  });
+}
 
 function toNumber(v: unknown): number | null {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
@@ -347,6 +402,40 @@ export class HmConstraintEditor extends LitElement {
       color: var(--hm-muted, #64748B);
       margin-top: 4px;
     }
+    .soak-rows {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .soak-row {
+      border: 1px solid rgba(100, 116, 139, 0.3);
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    .soak-days {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 8px 0;
+    }
+    label.day-toggle {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      font-size: 12px;
+      width: auto;
+    }
+    label.day-toggle input {
+      width: auto;
+    }
+    button.soak-remove {
+      background: transparent;
+      border: 1px solid var(--hm-error, #DC2626);
+      color: var(--hm-error, #DC2626);
+      font-size: 12px;
+      padding: 4px 10px;
+      margin-top: 4px;
+    }
   `;
 
   static override properties = {
@@ -370,6 +459,7 @@ export class HmConstraintEditor extends LitElement {
     _replaceNote: { state: true },
     _copyOpen: { state: true },
     _copyTargets: { state: true },
+    _soakRows: { state: true },
   };
 
   applianceId = '';
@@ -411,6 +501,7 @@ export class HmConstraintEditor extends LitElement {
   _replaceNote = false;
   _copyOpen = false;
   _copyTargets: WeekdayKey[] = [];
+  _soakRows: SoakRow[] = [newSoakRow('19:00', '21:00')];
 
   private _lastKey = '';
 
@@ -596,6 +687,39 @@ export class HmConstraintEditor extends LitElement {
     this._copyTargets = [];
   }
 
+  private _setSoakField(i: number, field: 'start' | 'end', value: string): void {
+    this._dirty = true;
+    this._soakRows = this._soakRows.map((row, idx) =>
+      idx === i ? { ...row, [field]: value } : row,
+    );
+    this._errors = this._validate(this._values);
+  }
+
+  private _setSoakDay(i: number, dayIndex: number, checked: boolean): void {
+    this._dirty = true;
+    this._soakRows = this._soakRows.map((row, idx) => {
+      if (idx !== i) return row;
+      const days = [...row.days];
+      days[dayIndex] = checked;
+      return { ...row, days };
+    });
+    this._errors = this._validate(this._values);
+  }
+
+  private _addSoakRow(): void {
+    if (this._soakRows.length >= MAX_SOAK_ROWS) return;
+    this._dirty = true;
+    this._soakRows = [...this._soakRows, newSoakRow('', '')];
+    this._errors = this._validate(this._values);
+  }
+
+  private _removeSoakRow(i: number): void {
+    if (this._soakRows.length <= 1) return;
+    this._dirty = true;
+    this._soakRows = this._soakRows.filter((_, idx) => idx !== i);
+    this._errors = this._validate(this._values);
+  }
+
   /**
    * Replace `_hourlyHigh` / `_hourlyLow` with the band derived from the
    * legacy preference fields (base_temperature, savings_level, time_away,
@@ -764,14 +888,28 @@ export class HmConstraintEditor extends LitElement {
           min_charge_pct: s('min_charge_pct'),
           deadline_time: s('deadline_time'),
         };
-      case 'water_heater':
+      case 'water_heater': {
+        const floor = toNumber((c as Record<string, unknown>)['floor_temp_f']);
+        const sanitizeTemp = toNumber((c as Record<string, unknown>)['sanitize_temp_f']);
+        const sanitizeEnabledRaw = (c as Record<string, unknown>)['sanitize_enabled'];
+        const sanitizeHold = toNumber((c as Record<string, unknown>)['sanitize_hold_minutes']);
+        const sanitizeDays = toNumber((c as Record<string, unknown>)['sanitize_interval_days']);
         return this._seedScalars(
-          { max_temp_f: s('max_temp_f'), min_temp_f: s('min_temp_f') },
+          {
+            max_temp_f: s('max_temp_f'),
+            min_temp_f: s('min_temp_f'),
+            sanitize_enabled: sanitizeEnabledRaw === false ? '' : '1',
+            sanitize_hold_minutes: sanitizeHold === null ? '60' : String(sanitizeHold),
+            sanitize_interval_days: sanitizeDays === null ? '2' : String(sanitizeDays),
+          },
           {
             max_temp_f: toNumber((c as Record<string, unknown>)['max_temp_f']),
             min_temp_f: toNumber((c as Record<string, unknown>)['min_temp_f']),
+            floor_temp_f: floor === null ? 120 : floor,
+            sanitize_temp_f: sanitizeTemp === null ? 140 : sanitizeTemp,
           },
         );
+      }
       case 'robot':
         // Defaults mirror the backend's own fallbacks (_optimize_robot in
         // nightly.py) so a first-time editor shows the same plan the
@@ -783,6 +921,26 @@ export class HmConstraintEditor extends LitElement {
           tasks_window_start: s('tasks_window_start') || '09:00',
           tasks_window_end: s('tasks_window_end') || '17:00',
         };
+      case 'pool_pump':
+        // Defaults mirror the backend's own fallbacks
+        // (_pool_pump_plan_inputs in nightly.py).
+        return {
+          run_hours: s('run_hours') || '8',
+          window_start: s('window_start') || '08:00',
+          window_end: s('window_end') || '20:00',
+        };
+      case 'hot_tub': {
+        const ready = toNumber((c as Record<string, unknown>)['ready_temp_f']);
+        const eco = toNumber((c as Record<string, unknown>)['eco_temp_f']);
+        this._soakRows = parseSoakWindows((c as Record<string, unknown>)['soak_windows']);
+        return this._seedScalars(
+          {},
+          {
+            ready_temp_f: ready === null ? 102 : ready,
+            eco_temp_f: eco === null ? 95 : eco,
+          },
+        );
+      }
       case 'hvac':
       default: {
         const base = toNumber((c as Record<string, unknown>)['base_temperature']);
@@ -838,14 +996,14 @@ export class HmConstraintEditor extends LitElement {
       }
       return n;
     };
-    const reqTemp = (name: string) => {
+    const reqTemp = (name: string, field: LimitField = 'water_heater') => {
       const raw = values[name] ?? '';
       if (raw === '') {
         errors[name] = 'Required';
         return null;
       }
       if (!this._scalarCellF(name).edited) return this._scalarCellF(name).f;
-      const lim = limitsFor('water_heater', this.temperatureUnit);
+      const lim = limitsFor(field, this.temperatureUnit);
       const n = Number(raw);
       if (!Number.isFinite(n) || n < lim.min || n > lim.max) {
         errors[name] = `Must be ${lim.min}–${lim.max}`;
@@ -862,6 +1020,21 @@ export class HmConstraintEditor extends LitElement {
       if (!TIME_PATTERN.test(raw)) {
         errors[name] = 'Use HH:MM';
       }
+    };
+    const reqTempRange = (name: string, minF: number, maxF: number): number | null => {
+      const raw = values[name] ?? '';
+      if (raw === '') {
+        errors[name] = 'Required';
+        return null;
+      }
+      if (!this._scalarCellF(name).edited) return this._scalarCellF(name).f;
+      const f = parseTempInput(raw, this.temperatureUnit);
+      if (f === null || f < minF || f > maxF) {
+        errors[name] =
+          `Must be ${displayTemp(minF, this.temperatureUnit)}–${displayTemp(maxF, this.temperatureUnit)}`;
+        return null;
+      }
+      return f;
     };
 
     switch (this.applianceType) {
@@ -899,6 +1072,26 @@ export class HmConstraintEditor extends LitElement {
         if (maxT !== null && minT !== null && minT >= maxT) {
           errors['min_temp_f'] = 'Must be less than max';
         }
+        reqTemp('floor_temp_f', 'water_heater_floor');
+        reqTemp('sanitize_temp_f', 'water_heater_sanitize');
+        const holdRaw = values['sanitize_hold_minutes'] ?? '';
+        if (holdRaw === '') {
+          errors['sanitize_hold_minutes'] = 'Required';
+        } else {
+          const n = Number(holdRaw);
+          if (!Number.isFinite(n) || n < 30 || n > 180) {
+            errors['sanitize_hold_minutes'] = 'Must be 30–180';
+          }
+        }
+        const daysRaw = values['sanitize_interval_days'] ?? '';
+        if (daysRaw === '') {
+          errors['sanitize_interval_days'] = 'Required';
+        } else {
+          const n = Number(daysRaw);
+          if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1 || n > 14) {
+            errors['sanitize_interval_days'] = 'Must be a whole number 1–14';
+          }
+        }
         break;
       }
       case 'robot': {
@@ -921,6 +1114,81 @@ export class HmConstraintEditor extends LitElement {
         ) {
           errors['tasks_window_end'] = 'Must differ from start';
         }
+        break;
+      }
+      case 'pool_pump': {
+        const hoursRaw = values['run_hours'] ?? '';
+        let hours: number | null = null;
+        if (hoursRaw === '') {
+          errors['run_hours'] = 'Required';
+        } else {
+          const n = Number(hoursRaw);
+          if (!Number.isFinite(n) || n < 0.5 || n > 24) {
+            errors['run_hours'] = 'Must be 0.5–24';
+          } else {
+            hours = n;
+          }
+        }
+        reqTime('window_start');
+        reqTime('window_end');
+        const pStart = values['window_start'] ?? '';
+        const pEnd = values['window_end'] ?? '';
+        if (
+          pStart !== '' &&
+          pEnd !== '' &&
+          TIME_PATTERN.test(pStart) &&
+          TIME_PATTERN.test(pEnd)
+        ) {
+          const [sh, sm] = pStart.split(':').map(Number);
+          const [eh, em] = pEnd.split(':').map(Number);
+          const startMin = sh * 60 + sm;
+          const endMin = eh * 60 + em;
+          if (startMin >= endMin) {
+            errors['window_end'] = 'Must be after start';
+          } else if (hours !== null && hours > (endMin - startMin) / 60) {
+            errors['run_hours'] = 'The window is shorter than the run time';
+          }
+        }
+        break;
+      }
+      case 'hot_tub': {
+        let ready = reqTempRange('ready_temp_f', 80, 104);
+        let eco = reqTempRange('eco_temp_f', 50, 104);
+        if (
+          ready !== null &&
+          eco !== null &&
+          (this._scalarCellF('ready_temp_f').edited || this._scalarCellF('eco_temp_f').edited)
+        ) {
+          ready = Number(values['ready_temp_f']);
+          eco = Number(values['eco_temp_f']);
+        }
+        if (ready !== null && eco !== null && eco > ready) {
+          errors['eco_temp_f'] = 'Must be at or below ready';
+        }
+        this._soakRows.forEach((row, i) => {
+          const startKey = `soak_start_${i}`;
+          const endKey = `soak_end_${i}`;
+          if (row.start === '') {
+            errors[startKey] = 'Required';
+          } else if (!TIME_PATTERN.test(row.start)) {
+            errors[startKey] = 'Use HH:MM';
+          }
+          if (row.end === '') {
+            errors[endKey] = 'Required';
+          } else if (!TIME_PATTERN.test(row.end)) {
+            errors[endKey] = 'Use HH:MM';
+          }
+          if (TIME_PATTERN.test(row.start) && TIME_PATTERN.test(row.end)) {
+            const [sh, sm] = row.start.split(':').map(Number);
+            const [eh, em] = row.end.split(':').map(Number);
+            if (sh * 60 + sm >= eh * 60 + em) {
+              errors[endKey] = 'Must be after start';
+            }
+          }
+          if (!row.days.some(Boolean)) {
+            errors[`soak_days_${i}`] = 'Pick at least one day';
+          }
+        });
         break;
       }
       case 'hvac': {
@@ -1003,6 +1271,11 @@ export class HmConstraintEditor extends LitElement {
         return {
           max_temp_f: this._scalarCellF('max_temp_f').f,
           min_temp_f: this._scalarCellF('min_temp_f').f,
+          floor_temp_f: this._scalarCellF('floor_temp_f').f,
+          sanitize_enabled: v['sanitize_enabled'] === '1',
+          sanitize_temp_f: this._scalarCellF('sanitize_temp_f').f,
+          sanitize_hold_minutes: Number(v['sanitize_hold_minutes']),
+          sanitize_interval_days: Number(v['sanitize_interval_days']),
         };
       case 'robot':
         return {
@@ -1011,6 +1284,18 @@ export class HmConstraintEditor extends LitElement {
           current_charge_pct: Number(v['current_charge_pct']),
           tasks_window_start: v['tasks_window_start'] ?? '',
           tasks_window_end: v['tasks_window_end'] ?? '',
+        };
+      case 'pool_pump':
+        return {
+          run_hours: Number(v['run_hours']),
+          window_start: v['window_start'] ?? '',
+          window_end: v['window_end'] ?? '',
+        };
+      case 'hot_tub':
+        return {
+          ready_temp_f: this._scalarCellF('ready_temp_f').f,
+          eco_temp_f: this._scalarCellF('eco_temp_f').f,
+          soak_windows: soakRowsToPayload(this._soakRows),
         };
       case 'hvac':
       default: {
@@ -1242,6 +1527,9 @@ export class HmConstraintEditor extends LitElement {
     const unit = this.temperatureUnit;
     const hLim = limitsFor('hourly', unit);
     const wLim = limitsFor('water_heater', unit);
+    const floorLim = limitsFor('water_heater_floor', unit);
+    const sanitizeLim = limitsFor('water_heater_sanitize', unit);
+    const hotTubLim = limitsFor('hot_tub', unit);
     const fmtHour = (i: number) =>
       `${String(i).padStart(2, '0')}:00`;
     const hasHourlyErrors =
@@ -1257,7 +1545,11 @@ export class HmConstraintEditor extends LitElement {
             ? 'Water heater constraints'
             : type === 'robot'
               ? 'Home robot constraints'
-              : 'HVAC preferences';
+              : type === 'pool_pump'
+                ? 'Pool pump schedule'
+                : type === 'hot_tub'
+                  ? 'Hot tub constraints'
+                  : 'HVAC preferences';
 
     return html`
       <div class="overlay" role="presentation">
@@ -1416,6 +1708,86 @@ export class HmConstraintEditor extends LitElement {
                     ? html`<div class="field-error">${errs['min_temp_f']}</div>`
                     : null}
                 </label>
+                <label>
+                  <span class="label-text">Never plan below (${unitLabel(unit)})</span>
+                  <input
+                    name="floor_temp_f"
+                    type="number"
+                    min=${floorLim.min}
+                    max=${floorLim.max}
+                    step=${floorLim.step}
+                    .value=${v['floor_temp_f'] ?? ''}
+                    @input=${onNum('floor_temp_f')}
+                  />
+                  ${errs['floor_temp_f']
+                    ? html`<div class="field-error">${errs['floor_temp_f']}</div>`
+                    : null}
+                </label>
+                <label class="opt-toggle">
+                  <input
+                    name="sanitize_enabled"
+                    type="checkbox"
+                    .checked=${v['sanitize_enabled'] === '1'}
+                    @change=${(e: Event) =>
+                      this._setValue(
+                        'sanitize_enabled',
+                        (e.target as HTMLInputElement).checked ? '1' : '',
+                      )}
+                  />
+                  <span>Heat the tank on a schedule</span>
+                </label>
+                <p class="opt-toggles-help">
+                  Heats the tank to this temperature and holds it. Your
+                  tank's own thermostat must be set at least this high,
+                  and a mixing valve at the tank keeps tap water from
+                  scalding. Health agencies advise storing hot water at
+                  140 °F (60 °C).
+                </p>
+                <label>
+                  <span class="label-text">Cycle temperature (${unitLabel(unit)})</span>
+                  <input
+                    name="sanitize_temp_f"
+                    type="number"
+                    min=${sanitizeLim.min}
+                    max=${sanitizeLim.max}
+                    step=${sanitizeLim.step}
+                    .value=${v['sanitize_temp_f'] ?? ''}
+                    @input=${onNum('sanitize_temp_f')}
+                  />
+                  ${errs['sanitize_temp_f']
+                    ? html`<div class="field-error">${errs['sanitize_temp_f']}</div>`
+                    : null}
+                </label>
+                <label>
+                  <span class="label-text">Hold for (minutes)</span>
+                  <input
+                    name="sanitize_hold_minutes"
+                    type="number"
+                    min="30"
+                    max="180"
+                    step="1"
+                    .value=${v['sanitize_hold_minutes'] ?? ''}
+                    @input=${onNum('sanitize_hold_minutes')}
+                  />
+                  ${errs['sanitize_hold_minutes']
+                    ? html`<div class="field-error">${errs['sanitize_hold_minutes']}</div>`
+                    : null}
+                </label>
+                <label>
+                  <span class="label-text">Every (days)</span>
+                  <input
+                    name="sanitize_interval_days"
+                    type="number"
+                    min="1"
+                    max="14"
+                    step="1"
+                    .value=${v['sanitize_interval_days'] ?? ''}
+                    @input=${onNum('sanitize_interval_days')}
+                  />
+                  ${errs['sanitize_interval_days']
+                    ? html`<div class="field-error">${errs['sanitize_interval_days']}</div>`
+                    : null}
+                </label>
               `
             : null}
           ${type === 'robot'
@@ -1500,6 +1872,176 @@ export class HmConstraintEditor extends LitElement {
                     : null}
                 </label>
               `
+            : null}
+          ${type === 'pool_pump'
+            ? html`
+                <p class="opt-toggles-help">
+                  The pump runs for this long each day, in the lowest-cost
+                  half hours inside the window you allow. Change either
+                  whenever you like.
+                </p>
+                <label>
+                  <span class="label-text">Run time per day (hours)</span>
+                  <input
+                    name="run_hours"
+                    type="number"
+                    min="0.5"
+                    max="24"
+                    step="0.5"
+                    .value=${v['run_hours'] ?? ''}
+                    @input=${onNum('run_hours')}
+                  />
+                  ${errs['run_hours']
+                    ? html`<div class="field-error">${errs['run_hours']}</div>`
+                    : null}
+                </label>
+                <label>
+                  <span class="label-text">Allowed from (HH:MM)</span>
+                  <input
+                    name="window_start"
+                    type="text"
+                    inputmode="numeric"
+                    placeholder="08:00"
+                    pattern="\\d{2}:\\d{2}"
+                    .value=${v['window_start'] ?? ''}
+                    @input=${onNum('window_start')}
+                  />
+                  ${errs['window_start']
+                    ? html`<div class="field-error">${errs['window_start']}</div>`
+                    : null}
+                </label>
+                <label>
+                  <span class="label-text">Allowed until (HH:MM)</span>
+                  <input
+                    name="window_end"
+                    type="text"
+                    inputmode="numeric"
+                    placeholder="20:00"
+                    pattern="\\d{2}:\\d{2}"
+                    .value=${v['window_end'] ?? ''}
+                    @input=${onNum('window_end')}
+                  />
+                  ${errs['window_end']
+                    ? html`<div class="field-error">${errs['window_end']}</div>`
+                    : null}
+                </label>
+              `
+            : null}
+          ${type === 'hot_tub'
+            ? html`
+                <label>
+                  <span class="label-text">Ready temperature (${unitLabel(unit)})</span>
+                  <input
+                    name="ready_temp_f"
+                    type="number"
+                    min=${hotTubLim.min}
+                    max=${hotTubLim.max}
+                    step=${hotTubLim.step}
+                    .value=${v['ready_temp_f'] ?? ''}
+                    @input=${onNum('ready_temp_f')}
+                  />
+                  ${errs['ready_temp_f']
+                    ? html`<div class="field-error">${errs['ready_temp_f']}</div>`
+                    : null}
+                </label>
+                <label>
+                  <span class="label-text">Between soaks, no lower than (${unitLabel(unit)})</span>
+                  <input
+                    name="eco_temp_f"
+                    type="number"
+                    min=${hotTubLim.min}
+                    max=${hotTubLim.max}
+                    step=${hotTubLim.step}
+                    .value=${v['eco_temp_f'] ?? ''}
+                    @input=${onNum('eco_temp_f')}
+                  />
+                  ${errs['eco_temp_f']
+                    ? html`<div class="field-error">${errs['eco_temp_f']}</div>`
+                    : null}
+                </label>
+                <p class="opt-toggles-help">
+                  Your tub is at the ready temperature for these times. In
+                  between it may ease down to the lower limit and reheats
+                  when power costs least.
+                </p>
+                <div class="soak-rows" data-region="soak-rows">
+                  ${this._soakRows.map(
+                    (row, i) => html`
+                      <div class="soak-row" data-soak-row=${i}>
+                        <label>
+                          <span class="label-text">Start (HH:MM)</span>
+                          <input
+                            name="soak_start_${i}"
+                            type="text"
+                            inputmode="numeric"
+                            placeholder="19:00"
+                            pattern="\\d{2}:\\d{2}"
+                            .value=${row.start}
+                            @input=${(e: Event) =>
+                              this._setSoakField(i, 'start', (e.target as HTMLInputElement).value)}
+                          />
+                          ${errs[`soak_start_${i}`]
+                            ? html`<div class="field-error">${errs[`soak_start_${i}`]}</div>`
+                            : null}
+                        </label>
+                        <label>
+                          <span class="label-text">End (HH:MM)</span>
+                          <input
+                            name="soak_end_${i}"
+                            type="text"
+                            inputmode="numeric"
+                            placeholder="21:00"
+                            pattern="\\d{2}:\\d{2}"
+                            .value=${row.end}
+                            @input=${(e: Event) =>
+                              this._setSoakField(i, 'end', (e.target as HTMLInputElement).value)}
+                          />
+                          ${errs[`soak_end_${i}`]
+                            ? html`<div class="field-error">${errs[`soak_end_${i}`]}</div>`
+                            : null}
+                        </label>
+                        <div class="soak-days" role="group" aria-label="Days">
+                          ${WEEKDAY_KEYS.map(
+                            (k, di) => html`
+                              <label class="day-toggle">
+                                <input
+                                  type="checkbox"
+                                  name="soak_day_${i}_${k}"
+                                  .checked=${row.days[di]}
+                                  @change=${(e: Event) =>
+                                    this._setSoakDay(i, di, (e.target as HTMLInputElement).checked)}
+                                />
+                                ${DAY_LETTERS[k]}
+                              </label>
+                            `,
+                          )}
+                        </div>
+                        ${errs[`soak_days_${i}`]
+                          ? html`<div class="field-error">${errs[`soak_days_${i}`]}</div>`
+                          : null}
+                        ${this._soakRows.length > 1
+                          ? html`<button
+                              type="button"
+                              class="soak-remove"
+                              @click=${() => this._removeSoakRow(i)}
+                            >
+                              Remove
+                            </button>`
+                          : null}
+                      </div>
+                    `,
+                  )}
+                </div>
+              `
+            : null}
+          ${type === 'hot_tub' && this._soakRows.length < MAX_SOAK_ROWS
+            ? html`<button
+                type="button"
+                class="reset-defaults"
+                @click=${() => this._addSoakRow()}
+              >
+                Add a soak time
+              </button>`
             : null}
           ${type === 'hvac'
             ? html`

@@ -4,6 +4,7 @@ import { authStore, type AuthState } from '../store.js';
 import {
   formatDelta,
   haUnitFrom,
+  liveTemp,
   temperatureUnitStore,
   unitLabel,
   type TempUnit,
@@ -32,6 +33,7 @@ import {
   type ApplianceType,
 } from '../api/appliances.js';
 import * as calibrationApi from '../api/calibration.js';
+import { ApiError } from '../api/client.js';
 import type {
   CalibrationStatusResponse,
 } from '../api/calibration.js';
@@ -86,6 +88,8 @@ const TYPE_LABELS: Record<ApplianceType, string> = {
   solar: 'Solar',
   dehumidifier: 'Dehumidifier',
   robot: 'Robot',
+  pool_pump: 'Pool pump',
+  hot_tub: 'Hot tub',
 };
 
 function asNumberArray(value: unknown): number[] | undefined {
@@ -168,6 +172,21 @@ function asFiniteNumber(value: unknown): number | undefined {
 
 function constantArray(value: number, length = 48): number[] {
   return new Array(length).fill(value);
+}
+
+/** A 48-slot half-hour index as a local clock time, e.g. slot 38 -> "7:00 PM". */
+function _slotTimeLabel(slot: number): string {
+  const d = new Date();
+  d.setHours(Math.floor(slot / 2), slot % 2 === 0 ? 0 : 30, 0, 0);
+  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+/** A 'YYYY-MM-DD' date string as a short local date, e.g. "Nov 9". */
+function _shortDateLabel(isoDate: string): string {
+  return new Date(`${isoDate}T00:00:00`).toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+  });
 }
 
 type ChartSize = 'small' | 'medium' | 'large';
@@ -414,6 +433,15 @@ function _clearPersistedPrefs(): void {
   }
 }
 
+// "Tue, Nov 17" for a calibration run's local schedule_date.
+function _warmupDateLabel(isoDate: string): string {
+  return new Date(isoDate + 'T00:00:00').toLocaleDateString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
 // True once a completed calibration is older than the banner TTL. A
 // null/unparseable timestamp is treated as not-expired so the banner
 // still shows (and stays dismissable).
@@ -504,6 +532,37 @@ function _exampleScheduleFor(type: ApplianceType): Record<string, unknown> {
         deadline_interval: 18,
       };
     }
+    case 'pool_pump': {
+      // Runs its daily hours inside an 08:00-16:00 window, climbing from
+      // 0% to 100% as the cheapest slots in the window fill in.
+      const trajectory = Array.from({ length: 48 }, (_, i) => {
+        if (i < 16) return 0;
+        if (i < 32) return Math.round(((i - 16) / 16) * 100 * 10) / 10;
+        return 100;
+      });
+      return {
+        intervals: Array.from({ length: 48 }, (_, i) => i >= 16 && i < 32),
+        value_trajectory: trajectory,
+        unit: 'percent',
+        min_value: 0,
+        target_value: 100,
+        deadline_interval: 31,
+      };
+    }
+    case 'hot_tub': {
+      // Drifts to an eco temperature all day, then reheats to ready for a
+      // 19:00-21:00 evening soak (slots 38-41).
+      const trajectory = Array.from({ length: 48 }, (_, i) =>
+        i >= 36 && i < 42 ? 102 : 90,
+      );
+      return {
+        intervals: Array.from({ length: 48 }, (_, i) => i >= 36 && i < 42),
+        high_temps: constantArray(112),
+        low_temps: Array.from({ length: 48 }, (_, i) => (i >= 38 && i < 41 ? 102 : 90)),
+        temp_trajectory: trajectory,
+        unit: 'fahrenheit',
+      };
+    }
     case 'solar':
     default:
       return {};
@@ -530,6 +589,8 @@ function _exampleNameFor(type: ApplianceType): string {
     case 'solar': return 'Solar PV';
     case 'dehumidifier': return 'Dehumidifier';
     case 'robot': return 'Home robot';
+    case 'pool_pump': return 'Pool pump';
+    case 'hot_tub': return 'Hot tub';
   }
 }
 
@@ -939,6 +1000,14 @@ export class HungryMachinesPanel extends LitElement {
       color: var(--hm-muted, #64748B);
       font-size: 14px;
     }
+    .card .sanitize-info {
+      margin: 4px 0 0;
+      color: var(--hm-muted, #64748B);
+      font-size: 14px;
+    }
+    .card .sanitize-info.sanitize-warning {
+      color: var(--hm-accent, #F59E0B);
+    }
     .card .solar-sensor {
       display: flex;
       align-items: center;
@@ -998,6 +1067,12 @@ export class HungryMachinesPanel extends LitElement {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
+    }
+    .card .warmup-message {
+      margin: 10px 0 0;
+      font-size: 13px;
+      line-height: 1.4;
+      color: var(--hm-muted, #64748B);
     }
     .card .edit-btn.secondary {
       border-color: var(--hm-muted, #64748B);
@@ -1580,6 +1655,8 @@ export class HungryMachinesPanel extends LitElement {
     // the dashboard loads and refreshed on appliance-updated events.
     _calibrationByAppliance: { state: true },
     _calibrationSkipping: { state: true },
+    _warmupBusy: { state: true },
+    _warmupMessage: { state: true },
     _dismissedCalibrations: { state: true },
     _weatherEntityDraft: { state: true },
     _zoneDraft: { state: true },
@@ -1688,6 +1765,10 @@ export class HungryMachinesPanel extends LitElement {
   _deleteError: string | null = null;
   _calibrationByAppliance: Record<string, CalibrationStatusResponse> = {};
   _calibrationSkipping = false;
+  // Manual warm-up request per HVAC: in flight, and the line shown under
+  // the card afterwards (the scheduled date, or why it wasn't scheduled).
+  _warmupBusy: Record<string, boolean> = {};
+  _warmupMessage: Record<string, string> = {};
   // Run ids of completed-calibration banners the user has dismissed.
   // Hydrated from localStorage so the dismissal sticks across reloads.
   _dismissedCalibrations: Set<number> = _loadDismissedCalibrations();
@@ -2044,6 +2125,62 @@ export class HungryMachinesPanel extends LitElement {
     } finally {
       this._calibrationSkipping = false;
     }
+  }
+
+  /** Ask for a warm-up on this HVAC. The API schedules the run the
+   * season calls for, or answers 409 with a sentence saying why it
+   * can't (forecast, optimization off, one already scheduled); that
+   * sentence is shown as-is. */
+  private async _onCalibrationStart(applianceId: string): Promise<void> {
+    if (this._warmupBusy[applianceId]) return;
+    this._warmupBusy = { ...this._warmupBusy, [applianceId]: true };
+    let message: string;
+    try {
+      const started = await calibrationApi.start(applianceId);
+      const date = started.run?.schedule_date;
+      message = date
+        ? `Warm-up scheduled for ${_warmupDateLabel(date)}, 09:00–15:00.`
+        : 'Warm-up scheduled.';
+      const fresh = await calibrationApi.getStatus(applianceId);
+      this._calibrationByAppliance = {
+        ...this._calibrationByAppliance,
+        [applianceId]: fresh,
+      };
+    } catch (err) {
+      message =
+        err instanceof ApiError && err.status === 409 && err.detail
+          ? err.detail
+          : 'The warm-up could not be scheduled. Try again in a moment.';
+    } finally {
+      this._warmupBusy = { ...this._warmupBusy, [applianceId]: false };
+    }
+    this._warmupMessage = { ...this._warmupMessage, [applianceId]: message };
+  }
+
+  /** "Run warm-up" for an HVAC card. Hidden while a run is already
+   * scheduled: the banner above the cards covers that, with Skip. */
+  private _renderWarmupButton(applianceId: string): TemplateResult {
+    if (applianceId.startsWith('__example_')) return html``;
+    if (this._calibrationByAppliance[applianceId]?.is_in_progress) return html``;
+    const busy = !!this._warmupBusy[applianceId];
+    return html`
+      <button
+        class="edit-btn secondary"
+        type="button"
+        name="run_warmup"
+        ?disabled=${busy}
+        title="Schedule a one-time warm-up for this unit on the next suitable day"
+        @click=${() => this._onCalibrationStart(applianceId)}
+      >
+        ${busy ? 'Scheduling…' : 'Run warm-up'}
+      </button>
+    `;
+  }
+
+  private _renderWarmupMessage(applianceId: string): TemplateResult {
+    const message = this._warmupMessage[applianceId];
+    if (!message) return html``;
+    return html`<p class="warmup-message" role="status">${message}</p>`;
   }
 
   private _onCalibrationDismiss(runId: number): void {
@@ -3013,6 +3150,7 @@ export class HungryMachinesPanel extends LitElement {
     const registeredTypes = new Set(appliances.map((a) => a.appliance_type));
     const ALL_TYPES: ReadonlyArray<ApplianceType> = [
       'hvac', 'ev_charger', 'home_battery', 'water_heater', 'solar', 'robot',
+      'pool_pump', 'hot_tub',
     ];
     const missingTypes = ALL_TYPES.filter((t) => !registeredTypes.has(t));
 
@@ -3381,7 +3519,9 @@ export class HungryMachinesPanel extends LitElement {
       type === 'ev_charger' ||
       type === 'home_battery' ||
       type === 'water_heater' ||
-      type === 'robot'
+      type === 'robot' ||
+      type === 'pool_pump' ||
+      type === 'hot_tub'
     );
   }
 
@@ -3573,9 +3713,11 @@ export class HungryMachinesPanel extends LitElement {
           <div class="banner-text">
             <strong>Calibrating ${name}</strong>
             <span>
-              ${run?.status === 'in_progress'
-                ? `Running a 6-hour test on ${dateLabel} (09:00–15:00 local) to measure how this AC actually cools your space.`
-                : `Scheduled for ${dateLabel} during the next warm day.`}
+              ${run?.kind === 'setpoint_step'
+                ? `Holding three temperatures inside your comfort band on ${dateLabel} (09:00–15:00 local) to measure how quickly this unit responds.`
+                : run?.status === 'in_progress'
+                  ? `Running a 6-hour test on ${dateLabel} (09:00–15:00 local) to measure how this AC actually cools your space.`
+                  : `Scheduled for ${dateLabel} during the next warm day.`}
             </span>
           </div>
           ${status.can_skip
@@ -3727,6 +3869,52 @@ export class HungryMachinesPanel extends LitElement {
     `;
   }
 
+  /**
+   * The water heater card's sanitize-cycle status line(s): when today's
+   * cycle is planned, when the last one ran (if not), and a warning when
+   * the last one didn't verify at temperature. No line at all when the
+   * schedule carries no `sanitize` object (not yet applied
+   * to this appliance's plan, or the example "Not Connected" cards).
+   */
+  private _renderSanitizeInfo(sched: Record<string, unknown>): TemplateResult[] | null {
+    const sanitize = sched['sanitize'];
+    if (typeof sanitize !== 'object' || sanitize === null) return null;
+    const s = sanitize as Record<string, unknown>;
+    const unit = temperatureUnitStore.state.unit;
+    const tempF = asFiniteNumber(s['temp_f']);
+    const tempLabel = tempF !== undefined ? `${liveTemp(tempF, 'F', unit)}°` : null;
+
+    const lines: TemplateResult[] = [];
+    if (s['planned'] === true) {
+      const startSlot = asFiniteNumber(s['start_slot']);
+      if (tempLabel !== null && startSlot !== undefined) {
+        lines.push(html`
+          <p class="sanitize-info">
+            Heats to ${tempLabel} at ${_slotTimeLabel(startSlot)} today
+          </p>
+        `);
+      }
+    } else {
+      const lastCycleDate = s['last_cycle_date'];
+      if (typeof lastCycleDate === 'string' && lastCycleDate) {
+        lines.push(html`
+          <p class="sanitize-info">
+            Last ${tempLabel ?? ''} cycle: ${_shortDateLabel(lastCycleDate)}
+          </p>
+        `);
+      }
+    }
+    if (s['last_cycle_verified'] === false && tempLabel !== null) {
+      lines.push(html`
+        <p class="sanitize-info sanitize-warning">
+          The tank did not reach ${tempLabel} last time. Check that its
+          thermostat is set at least that high.
+        </p>
+      `);
+    }
+    return lines.length > 0 ? lines : null;
+  }
+
   private _renderApplianceCard(
     appliance: ApplianceScheduleEntry,
     rates: number[],
@@ -3757,7 +3945,9 @@ export class HungryMachinesPanel extends LitElement {
     // across the dashboard regardless of the day's data:
     //   HVAC          → 40–100 °F (covers winter heat to summer cool)
     //   Water heater  → 50–150 °F (covers tap-cold to scald-hot)
-    //   EV / battery / robot → handled by the chart's `'percent'` mode (0–100)
+    //   Hot tub       → 50–110 °F (eco drift to a warm soak)
+    //   EV / battery / robot / pool pump → handled by the chart's
+    //     `'percent'` mode (0–100)
     let yMin: number | undefined;
     let yMax: number | undefined;
     let marker:
@@ -3803,7 +3993,19 @@ export class HungryMachinesPanel extends LitElement {
       chartUnit = 'fahrenheit';
       yMin = 50;
       yMax = 150;
-    } else if (type === 'ev_charger' || type === 'home_battery' || type === 'robot') {
+    } else if (type === 'hot_tub') {
+      highLimits = asNumberArray(sched['high_temps']);
+      lowLimits = asNumberArray(sched['low_temps']);
+      targetValues = asNumberArray(sched['temp_trajectory']);
+      chartUnit = 'fahrenheit';
+      yMin = 50;
+      yMax = 110;
+    } else if (
+      type === 'ev_charger' ||
+      type === 'home_battery' ||
+      type === 'robot' ||
+      type === 'pool_pump'
+    ) {
       targetValues = asNumberArray(sched['value_trajectory']);
       chartUnit = 'percent';
       const minValue = asFiniteNumber(sched['min_value']);
@@ -3846,6 +4048,7 @@ export class HungryMachinesPanel extends LitElement {
         <div class="entity-binding" ?hidden=${!boundEntityId}>${boundEntityId ?? ''}</div>
         ${this._renderPauseRow(appliance)}
         <div class="savings" title=${savingsTitle}>${savings}</div>
+        ${type === 'water_heater' ? this._renderSanitizeInfo(sched) : null}
         <hm-optimization-chart
           .rates=${rates}
           .highLimits=${highLimits}
@@ -3875,6 +4078,7 @@ export class HungryMachinesPanel extends LitElement {
           >
             Edit appliance
           </button>
+          ${type === 'hvac' ? this._renderWarmupButton(appliance.appliance_id) : null}
           <button
             class="edit-btn danger"
             type="button"
@@ -3884,6 +4088,7 @@ export class HungryMachinesPanel extends LitElement {
             Delete
           </button>
         </div>
+        ${type === 'hvac' ? this._renderWarmupMessage(appliance.appliance_id) : null}
       </div>
     `;
   }

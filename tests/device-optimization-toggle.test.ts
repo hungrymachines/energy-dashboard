@@ -201,6 +201,78 @@ describe('per-device optimization toggle', () => {
     expect(put!.body).toEqual({ optimization_enabled: false });
   });
 
+  it('pool pump card shows an On toggle and PUTs the appliance row on pause', async () => {
+    const puts: Array<{ url: string; body: unknown }> = [];
+    installFetch({
+      scheduleEntries: [scheduleEntry({
+        appliance_id: 'pool-1', appliance_type: 'pool_pump', name: 'Pool Pump',
+        schedule: { intervals: Array(48).fill(false), value_trajectory: Array(48).fill(0), unit: 'percent' },
+        entities: { entity_id: 'switch.pool_pump' },
+      })],
+      applianceRows: [applianceRow({
+        id: 'pool-1', appliance_type: 'pool_pump', name: 'Pool Pump',
+        config: { entity_id: 'switch.pool_pump' },
+      })],
+      puts,
+    });
+
+    const el = mountAuthedPanel();
+    await flush(el);
+    const root = el.shadowRoot!;
+
+    const toggle = root.querySelector('.device-opt-toggle') as HTMLButtonElement;
+    expect(toggle).toBeTruthy();
+    expect(toggle.textContent?.trim()).toBe('On');
+
+    toggle.click();
+    await flush(el);
+
+    // Pool pump is a controllable type — pausing it writes
+    // the appliance row exactly like robot/ev_charger/home_battery do.
+    const put = puts.find((p) => /\/api\/v1\/appliances\/pool-1$/.test(p.url));
+    expect(put).toBeTruthy();
+    expect(put!.body).toEqual({ optimization_enabled: false });
+  });
+
+  it('hot tub card shows an On toggle and PUTs the appliance row on pause', async () => {
+    const puts: Array<{ url: string; body: unknown }> = [];
+    installFetch({
+      scheduleEntries: [scheduleEntry({
+        appliance_id: 'tub-1', appliance_type: 'hot_tub', name: 'Backyard Spa',
+        schedule: {
+          intervals: Array(48).fill(false),
+          temp_trajectory: Array(48).fill(90),
+          high_temps: Array(48).fill(112),
+          low_temps: Array(48).fill(90),
+          unit: 'fahrenheit',
+        },
+        entities: { entity_id: 'climate.hot_tub' },
+      })],
+      applianceRows: [applianceRow({
+        id: 'tub-1', appliance_type: 'hot_tub', name: 'Backyard Spa',
+        config: { entity_id: 'climate.hot_tub' },
+      })],
+      puts,
+    });
+
+    const el = mountAuthedPanel();
+    await flush(el);
+    const root = el.shadowRoot!;
+
+    const toggle = root.querySelector('.device-opt-toggle') as HTMLButtonElement;
+    expect(toggle).toBeTruthy();
+    expect(toggle.textContent?.trim()).toBe('On');
+
+    toggle.click();
+    await flush(el);
+
+    // Hot tub is a controllable type — pausing it writes
+    // the appliance row exactly like water_heater/robot do.
+    const put = puts.find((p) => /\/api\/v1\/appliances\/tub-1$/.test(p.url));
+    expect(put).toBeTruthy();
+    expect(put!.body).toEqual({ optimization_enabled: false });
+  });
+
   it('HVAC card toggle writes the per-appliance preferences row, not the appliance row', async () => {
     const puts: Array<{ url: string; body: unknown }> = [];
     installFetch({

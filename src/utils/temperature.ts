@@ -3,7 +3,13 @@
 // types goes through here. The HA-boundary conversion lives in Python.
 
 export type TempUnit = 'F' | 'C';
-export type LimitField = 'hourly' | 'base' | 'water_heater';
+export type LimitField =
+  | 'hourly'
+  | 'base'
+  | 'water_heater'
+  | 'water_heater_floor'
+  | 'water_heater_sanitize'
+  | 'hot_tub';
 
 export interface TempLimits {
   min: number;
@@ -84,6 +90,9 @@ const LIMITS: Record<LimitField, Record<TempUnit, TempLimits>> = {
   hourly: { F: { min: 50, max: 90, step: 0.5 }, C: { min: 10, max: 32, step: 0.5 } },
   base: { F: { min: 60, max: 85, step: 0.5 }, C: { min: 16, max: 29, step: 0.5 } },
   water_heater: { F: { min: 60, max: 180, step: 1 }, C: { min: 16, max: 82, step: 1 } },
+  water_heater_floor: { F: { min: 60, max: 160, step: 1 }, C: { min: 16, max: 71, step: 1 } },
+  water_heater_sanitize: { F: { min: 140, max: 160, step: 1 }, C: { min: 60, max: 71, step: 1 } },
+  hot_tub: { F: { min: 50, max: 104, step: 1 }, C: { min: 10, max: 40, step: 1 } },
 };
 
 export function limitsFor(field: LimitField, unit: TempUnit): TempLimits {

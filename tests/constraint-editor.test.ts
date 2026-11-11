@@ -788,6 +788,217 @@ describe('hm-constraint-editor', () => {
     expect(calls.length).toBe(0);
   });
 
+  it('seeds pool pump defaults matching the backend fallback when currentConstraints is empty', async () => {
+    captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'pool-1',
+      applianceType: 'pool_pump',
+      currentConstraints: {},
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(root.querySelector<HTMLInputElement>('input[name="run_hours"]')!.value).toBe('8');
+    expect(root.querySelector<HTMLInputElement>('input[name="window_start"]')!.value).toBe('08:00');
+    expect(root.querySelector<HTMLInputElement>('input[name="window_end"]')!.value).toBe('20:00');
+  });
+
+  it('seeds pool pump fields from currentConstraints when present', async () => {
+    captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'pool-1',
+      applianceType: 'pool_pump',
+      currentConstraints: {
+        run_hours: 6,
+        window_start: '10:00',
+        window_end: '18:00',
+      },
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(root.querySelector<HTMLInputElement>('input[name="run_hours"]')!.value).toBe('6');
+    expect(root.querySelector<HTMLInputElement>('input[name="window_start"]')!.value).toBe('10:00');
+    expect(root.querySelector<HTMLInputElement>('input[name="window_end"]')!.value).toBe('18:00');
+  });
+
+  it('submits pool pump form to POST /api/v1/appliances/<id>/constraints with exactly three keys', async () => {
+    const { calls } = captureFetch(
+      jsonResponse({ status: 'ok', constraints: {} }),
+    );
+
+    const el = mountEditor({
+      applianceId: 'pool-9',
+      applianceType: 'pool_pump',
+      currentConstraints: {},
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    setInputValue(root, 'run_hours', '10');
+    setInputValue(root, 'window_start', '07:00');
+    setInputValue(root, 'window_end', '21:00');
+    await flush(el);
+
+    const saved = new Promise<CustomEvent>((resolve) => {
+      el.addEventListener(
+        'constraints-saved',
+        (e) => resolve(e as CustomEvent),
+        { once: true },
+      );
+    });
+
+    clickSave(root);
+    await flush(el);
+    const event = await saved;
+
+    expect(calls.length).toBe(1);
+    const [url, init] = calls[0]!;
+    expect(url).toContain('/api/v1/appliances/pool-9/constraints');
+    expect(init?.method).toBe('POST');
+    const body = JSON.parse(String(init?.body));
+    expect(body).toEqual({
+      run_hours: 10,
+      window_start: '07:00',
+      window_end: '21:00',
+    });
+    expect(Object.keys(body).sort()).toEqual(
+      ['run_hours', 'window_end', 'window_start'].sort(),
+    );
+    expect(event.detail).toEqual({
+      applianceId: 'pool-9',
+      payload: body,
+    });
+    expect(el.open).toBe(false);
+  });
+
+  it('blocks save when pool pump run_hours is out of range', async () => {
+    const { calls } = captureFetch(jsonResponse({ status: 'ok', constraints: {} }));
+
+    const el = mountEditor({
+      applianceId: 'pool-2',
+      applianceType: 'pool_pump',
+      currentConstraints: {},
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    setInputValue(root, 'run_hours', '25'); // invalid: over 24
+    setInputValue(root, 'window_start', '08:00');
+    setInputValue(root, 'window_end', '20:00');
+    await flush(el);
+
+    const save = Array.from(root.querySelectorAll<HTMLButtonElement>('button')).find(
+      (b) => b.classList.contains('save'),
+    )!;
+    expect(save.disabled).toBe(true);
+
+    clickSave(root);
+    await flush(el);
+    expect(calls.length).toBe(0);
+    const fieldErrors = Array.from(root.querySelectorAll('.field-error')).map(
+      (n) => n.textContent ?? '',
+    );
+    expect(fieldErrors.some((t) => t.includes('0.5–24'))).toBe(true);
+  });
+
+  it('blocks save when pool pump window_start is not HH:MM', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'pool-3',
+      applianceType: 'pool_pump',
+      currentConstraints: {},
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    setInputValue(root, 'window_start', 'invalid');
+    await flush(el);
+
+    const save = Array.from(root.querySelectorAll<HTMLButtonElement>('button')).find(
+      (b) => b.classList.contains('save'),
+    )!;
+    expect(save.disabled).toBe(true);
+
+    const fieldErrors = Array.from(root.querySelectorAll('.field-error')).map(
+      (n) => n.textContent ?? '',
+    );
+    expect(fieldErrors.some((t) => t.includes('Use HH:MM'))).toBe(true);
+
+    clickSave(root);
+    await flush(el);
+    expect(calls.length).toBe(0);
+  });
+
+  it('blocks save when pool pump window_start is not earlier than window_end', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'pool-4',
+      applianceType: 'pool_pump',
+      currentConstraints: {},
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    setInputValue(root, 'run_hours', '4');
+    setInputValue(root, 'window_start', '20:00');
+    setInputValue(root, 'window_end', '08:00');
+    await flush(el);
+
+    const save = Array.from(root.querySelectorAll<HTMLButtonElement>('button')).find(
+      (b) => b.classList.contains('save'),
+    )!;
+    expect(save.disabled).toBe(true);
+
+    const fieldErrors = Array.from(root.querySelectorAll('.field-error')).map(
+      (n) => n.textContent ?? '',
+    );
+    expect(fieldErrors.some((t) => t.includes('after start'))).toBe(true);
+
+    clickSave(root);
+    await flush(el);
+    expect(calls.length).toBe(0);
+  });
+
+  it('blocks save when pool pump run_hours is longer than the allowed window', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'pool-5',
+      applianceType: 'pool_pump',
+      currentConstraints: {},
+      open: true,
+    });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    setInputValue(root, 'run_hours', '10');
+    setInputValue(root, 'window_start', '08:00');
+    setInputValue(root, 'window_end', '12:00'); // 4-hour window, shorter than run_hours
+    await flush(el);
+
+    const save = Array.from(root.querySelectorAll<HTMLButtonElement>('button')).find(
+      (b) => b.classList.contains('save'),
+    )!;
+    expect(save.disabled).toBe(true);
+
+    const fieldErrors = Array.from(root.querySelectorAll('.field-error')).map(
+      (n) => n.textContent ?? '',
+    );
+    expect(
+      fieldErrors.some((t) => t.includes('window is shorter than the run time')),
+    ).toBe(true);
+
+    clickSave(root);
+    await flush(el);
+    expect(calls.length).toBe(0);
+  });
+
   it('blocks save when min_charge_pct is not less than target_charge_pct', async () => {
     const { calls } = captureFetch(
       jsonResponse({ status: 'ok', constraints: {} }),

@@ -4,9 +4,12 @@ import { apiFetch } from './client.js';
  * Typed wrappers for /api/v1/calibration/{status,start,skip}.
  *
  * See `the API API_CONTRACT.md` ("Calibration" section) for
- * payload shapes. The backend runs a 6-hour forced schedule on the
- * first qualifying warm day after HVAC appliance registration so the
- * thermal model gets direct measurements of cool_low and cool_high.
+ * payload shapes. On the first qualifying warm day the backend runs a
+ * 6-hour cooling schedule (`fan_excitation`) so the thermal model gets
+ * direct measurements of cool_low and cool_high; on a heating day the
+ * run is three in-band holds instead (`setpoint_step`). `start` asks
+ * for another run under the same rules and answers 409, with a
+ * sentence in `detail`, when none can be scheduled.
  */
 
 export type CalibrationStatus =
@@ -33,10 +36,12 @@ export interface CalibrationDerivedRates {
 
 export interface CalibrationPhase {
   phase: number;
-  state: 'COOL' | 'OFF';
+  state: 'COOL' | 'HEAT' | 'OFF';
   fan: 'low' | 'high' | null;
   start_slot: number;
   end_slot: number;
+  // Only on setpoint_step phases: the temperature the phase holds (°F).
+  setpoint_f?: number | null;
 }
 
 export interface CalibrationRun {

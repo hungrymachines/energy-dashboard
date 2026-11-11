@@ -7,7 +7,9 @@ export type ApplianceType =
   | 'water_heater'
   | 'solar'
   | 'dehumidifier'
-  | 'robot';
+  | 'robot'
+  | 'pool_pump'
+  | 'hot_tub';
 
 export interface Appliance {
   id: string;

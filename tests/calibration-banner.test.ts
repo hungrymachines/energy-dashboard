@@ -174,3 +174,120 @@ describe('calibration completed banner — dismiss + TTL', () => {
     expect(el.shadowRoot?.querySelector('.banner.calibration.complete')).toBeNull();
   });
 });
+
+describe('manual warm-up button', () => {
+  beforeEach(() => {
+    setApiBase('https://api.example.test');
+    localStorage.clear();
+    setTokens({ access: 'tok', refresh: 'ref' });
+    vi.spyOn(authStore, 'hydrate').mockImplementation(async () => {});
+    setAuthed();
+  });
+
+  afterEach(() => {
+    document.querySelectorAll('hungry-machines-panel').forEach((n) => n.remove());
+    localStorage.clear();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const NO_RUNS: CalibrationStatusResponse = {
+    appliance_id: 'app-1',
+    is_complete: false,
+    is_in_progress: false,
+    can_skip: true,
+    history: [],
+    latest_run: null,
+  } as unknown as CalibrationStatusResponse;
+
+  const HEAT_RUN = {
+    id: 43,
+    status: 'in_progress',
+    kind: 'setpoint_step',
+    schedule_date: '2026-11-17',
+    started_at: '2026-11-16T21:00:00Z',
+    completed_at: null,
+    aborted_reason: null,
+    derived_rates: null,
+    phases: [],
+  };
+
+  // Routes the panel's fetches: POST /calibration/start gets `start`,
+  // GET /calibration/status gets `status`, everything else settles empty.
+  function stubCalibrationFetch(start: () => Response, status: unknown) {
+    const fn = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+      const url = String(input);
+      if (url.includes('/calibration/start')) return start();
+      if (url.includes('/calibration/status')) return jsonResponse(status);
+      return jsonResponse({ appliances: [], rates_cents_per_kwh: [] });
+    });
+    vi.stubGlobal('fetch', fn);
+    return fn;
+  }
+
+  type Internals = {
+    _renderWarmupButton(id: string): unknown;
+    _onCalibrationStart(id: string): Promise<void>;
+    _warmupMessage: Record<string, string>;
+    _calibrationByAppliance: Record<string, CalibrationStatusResponse>;
+  };
+
+  type Mounted = Internals & { updateComplete: Promise<boolean>; shadowRoot: ShadowRoot | null };
+
+  async function mount(status: CalibrationStatusResponse): Promise<Mounted> {
+    return (await mountWithStatus(status)) as unknown as Mounted;
+  }
+
+  function templateText(t: unknown): string {
+    return ((t as { strings?: readonly string[] }).strings ?? []).join('');
+  }
+
+  it('offers the button on an HVAC with no run scheduled, and hides it while one is', async () => {
+    stubCalibrationFetch(() => jsonResponse({}), NO_RUNS);
+    const el = await mount(NO_RUNS);
+    expect(templateText(el._renderWarmupButton('app-1'))).toContain('run_warmup');
+
+    el._calibrationByAppliance = {
+      'app-1': { ...NO_RUNS, is_in_progress: true } as CalibrationStatusResponse,
+    };
+    expect(templateText(el._renderWarmupButton('app-1'))).toBe('');
+    expect(templateText(el._renderWarmupButton('__example_hvac'))).toBe('');
+  });
+
+  it('schedules the run, says when, and shows the in-progress banner', async () => {
+    const inProgress = { ...NO_RUNS, is_in_progress: true, latest_run: HEAT_RUN };
+    const fetchFn = stubCalibrationFetch(
+      () => jsonResponse({ appliance_id: 'app-1', started: true, run_id: 43, run: HEAT_RUN }, 201),
+      inProgress,
+    );
+    const el = await mount(NO_RUNS);
+    await el._onCalibrationStart('app-1');
+    await flush(el as unknown as PanelEl);
+
+    const post = fetchFn.mock.calls.find(([u]) => String(u).includes('/calibration/start'));
+    expect(post).toBeTruthy();
+    expect(el._warmupMessage['app-1']).toContain('Warm-up scheduled for');
+    const banner = el.shadowRoot?.querySelector('.banner.calibration.in-progress')?.textContent ?? '';
+    expect(banner).toContain('Holding three temperatures inside your comfort band');
+  });
+
+  it('shows the reason as written when the run cannot be scheduled', async () => {
+    const detail =
+      "The warm-up can't run on the next available day: forecast peak 61.3°F is below " +
+      '78°F threshold for usable cooling signal. Try again when the forecast changes.';
+    stubCalibrationFetch(() => jsonResponse({ detail }, 409), NO_RUNS);
+    const el = await mount(NO_RUNS);
+    await el._onCalibrationStart('app-1');
+    expect(el._warmupMessage['app-1']).toBe(detail);
+    expect(el._calibrationByAppliance['app-1'].is_in_progress).toBe(false);
+  });
+
+  it('falls back to a plain message on any other failure', async () => {
+    stubCalibrationFetch(() => jsonResponse({ detail: 'Database unavailable' }, 503), NO_RUNS);
+    const el = await mount(NO_RUNS);
+    await el._onCalibrationStart('app-1');
+    expect(el._warmupMessage['app-1']).toBe(
+      'The warm-up could not be scheduled. Try again in a moment.',
+    );
+  });
+});

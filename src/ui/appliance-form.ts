@@ -1,15 +1,22 @@
 import { LitElement, html, css, type TemplateResult } from 'lit';
 import * as appliancesApi from '../api/appliances.js';
 import type { Appliance, ApplianceType } from '../api/appliances.js';
+import {
+  rankEntities,
+  companionsFor,
+  findDevices,
+  type DiscoveryHass,
+  type CompanionField,
+  type DiscoveryFinding,
+} from '../utils/entity-discovery.js';
 
 type ErrorMap = Record<string, string>;
 
-type HassStateLike = {
-  entity_id?: string;
-  state?: unknown;
-  attributes?: Record<string, unknown>;
-};
-type HassLike = { states?: Record<string, HassStateLike> };
+// The panel hands this form its own `hass` object verbatim — on current HA
+// that carries `.entities`/`.devices` registries alongside `.states`, which
+// `rankEntities`/`companionsFor` read for the ranked picker and companion
+// auto-fill. `DiscoveryHass` already models that full shape.
+type HassLike = DiscoveryHass;
 
 const TYPE_OPTIONS: Array<{ type: ApplianceType; label: string; description: string }> = [
   { type: 'hvac', label: 'HVAC', description: 'Thermostat / heat pump / AC' },
@@ -19,7 +26,13 @@ const TYPE_OPTIONS: Array<{ type: ApplianceType; label: string; description: str
   { type: 'solar', label: 'Solar PV', description: 'Rooftop, plug-in, or balcony solar' },
   { type: 'dehumidifier', label: 'Dehumidifier', description: 'Records room temp/humidity (data only)' },
   { type: 'robot', label: 'Home robot', description: 'Robot vacuum or mower — charges on its dock around your daily tasks window' },
+  { type: 'pool_pump', label: 'Pool pump', description: 'Runs its daily hours when power costs least' },
+  { type: 'hot_tub', label: 'Hot tub', description: 'Ready for your soak times, eases off in between' },
 ];
+
+function typeLabelFor(t: ApplianceType): string {
+  return TYPE_OPTIONS.find((o) => o.type === t)?.label ?? t;
+}
 
 // Per-type allowed control-entity domains. The integration applies the
 // optimized schedule by calling the matching service on this entity.
@@ -40,6 +53,8 @@ const CONTROL_DOMAINS: Record<ApplianceType, ReadonlyArray<string>> = {
   // docking is the charging proxy. return_to_base (vacuum) / dock
   // (lawn_mower) are the only commands the integration ever sends.
   robot: ['vacuum', 'lawn_mower'],
+  pool_pump: ['switch'],
+  hot_tub: ['climate', 'water_heater'],
 };
 
 // Optional auxiliary sensor entities — when present, the readings poller
@@ -73,6 +88,12 @@ const AUX_FIELDS: Partial<Record<ApplianceType, { name: string; label: string; h
     name: 'soc_entity_id',
     label: 'Battery sensor (optional)',
     help: 'sensor.* exposing battery % so the optimizer sees live charge',
+    domain: 'sensor',
+  },
+  hot_tub: {
+    name: 'temp_entity_id',
+    label: 'Water temperature sensor (optional)',
+    help: 'Only needed when the tub entity does not report its own water temperature',
     domain: 'sensor',
   },
 };
@@ -133,6 +154,23 @@ const SOLAR_PRODUCTION_FIELD = {
   label: 'Production sensor (optional)',
   domain: 'sensor',
 } as const;
+
+const COMPANION_FIELD_NAMES = new Set<string>(['temp_entity_id', 'soc_entity_id', 'power_sensor_entity_id']);
+
+// Every rendered aux-field name for `t` that could be filled from
+// `companionsFor` — derived from the same constants the render path uses,
+// so a type's set of fillable fields never drifts from what it actually
+// shows. Names outside COMPANION_FIELD_NAMES (e.g. hvac's own
+// indoor_temp_entity_id, which is a room sensor, not a device sibling) are
+// filtered out by the caller.
+function auxFieldNamesFor(t: ApplianceType): string[] {
+  const names: string[] = [];
+  const aux = AUX_FIELDS[t];
+  if (aux) names.push(aux.name);
+  if (t === 'hvac') names.push(HVAC_POWER_FIELD.name);
+  if (t === 'dehumidifier') names.push(DEHU_POWER_FIELD.name);
+  return names;
+}
 
 export class HmApplianceForm extends LitElement {
   static override styles = css`
@@ -200,6 +238,46 @@ export class HmApplianceForm extends LitElement {
       font-size: 12px;
       color: var(--hm-muted, #64748B);
     }
+    /* Fragment-level template bindings between sibling elements silently
+       drop under this version's happy-dom  — wrapping the
+       conditional in a host element avoids it. display: contents keeps the
+       wrapper invisible to layout when there is nothing to show. */
+    .discovery-slot {
+      display: contents;
+    }
+    .discovery-block {
+      border-bottom: 1px solid rgba(100, 116, 139, 0.2);
+      padding-bottom: 12px;
+      margin-bottom: 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .discovery-title {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--hm-muted, #64748B);
+    }
+    .discovery-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    button.discovery-btn {
+      background: var(--hm-bg, #F8FAFC);
+      border: 1px solid var(--hm-primary, #1E3A8A);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      text-align: left;
+      color: var(--hm-primary, #1E3A8A);
+    }
+    button.discovery-btn:hover {
+      background: rgba(30, 58, 138, 0.08);
+    }
     label {
       display: block;
       font-size: 14px;
@@ -237,6 +315,16 @@ export class HmApplianceForm extends LitElement {
       display: flex;
       flex-direction: column;
       gap: 12px;
+    }
+    /* Wraps the conditional entity-picker/aux-field labels in a single
+       root element — lit-html's conditional child parts in this version
+       lose later sibling bindings when a nested template has more than
+       one top-level node and no common parent (found this:
+       the aux/power/humidity selects silently never reached the DOM).
+       display: contents keeps it invisible to .entity-section's flex
+       layout so the labels stay direct flex items with the same gap. */
+    .entity-fields {
+      display: contents;
     }
     .entity-section .hint {
       display: block;
@@ -300,6 +388,7 @@ export class HmApplianceForm extends LitElement {
     _pickedType: { state: true },
     _values: { state: true },
     _errors: { state: true },
+    _autoFilled: { state: true },
   };
 
   open = false;
@@ -311,6 +400,9 @@ export class HmApplianceForm extends LitElement {
   _pickedType: ApplianceType | null = null;
   _values: Record<string, string> = {};
   _errors: ErrorMap = {};
+  // Aux-field names currently showing a "Found on the same device" note —
+  // cleared for a field the moment the user edits it.
+  _autoFilled: Set<string> = new Set();
 
   private _lastOpen = false;
   private _seededForEditingId: string | null = null;
@@ -345,6 +437,7 @@ export class HmApplianceForm extends LitElement {
     this._pickedType = null;
     this._values = {};
     this._errors = {};
+    this._autoFilled = new Set();
     this.error = null;
     this.submitting = false;
   }
@@ -389,6 +482,7 @@ export class HmApplianceForm extends LitElement {
     }
     this._values = seeded;
     this._errors = this._validate(seeded);
+    this._autoFilled = new Set();
     this.error = null;
     this.submitting = false;
   }
@@ -397,7 +491,26 @@ export class HmApplianceForm extends LitElement {
     this._pickedType = t;
     this._values = this._defaultValues(t);
     this._errors = {};
+    this._autoFilled = new Set();
     this.error = null;
+  }
+
+  // entity_id values already bound to one of the user's registered
+  // appliances — findDevices() must never suggest one of these again
+  //.
+  private _existingEntityIds(): string[] {
+    return this.existingAppliances
+      .map((a) => (a.config as Record<string, unknown> | undefined)?.['entity_id'])
+      .filter((v): v is string => typeof v === 'string' && v.length > 0);
+  }
+
+  // Picking a "Found in your Home Assistant" suggestion jumps
+  // straight to step 2 with the type and entity chosen — reusing
+  // _onPickEntity so companion aux fields fill exactly as they would for a
+  // manually-picked entity. The user can still change either afterward.
+  private _pickFinding(f: DiscoveryFinding): void {
+    this._pickType(f.type);
+    this._onPickEntity(f.entityId);
   }
 
   private _defaultValues(t: ApplianceType): Record<string, string> {
@@ -474,6 +587,23 @@ export class HmApplianceForm extends LitElement {
           entity_id: '',
           soc_entity_id: '',
         };
+      case 'pool_pump':
+        return {
+          name: '',
+          pump_watts: '1500',
+          entity_id: '',
+        };
+      case 'hot_tub':
+        // Soak times and ready/eco temps are set from the constraint
+        // editor after the appliance is created (water_heater's own
+        // pattern) — this form only takes the tub's physical specs.
+        return {
+          name: '',
+          volume_gallons: '400',
+          heater_watts: '4000',
+          entity_id: '',
+          temp_entity_id: '',
+        };
     }
   }
 
@@ -501,16 +631,63 @@ export class HmApplianceForm extends LitElement {
     return [...options].sort((a, b) => Number(!isPower(a)) - Number(!isPower(b)));
   }
 
+  // The "Found on the same device" note for a companion-filled aux field
+  // — shown until the user changes that field.
+  private _autoFillNote(name: string): TemplateResult | null {
+    return this._autoFilled.has(name)
+      ? html`<small class="hint">Found on the same device</small>`
+      : null;
+  }
+
   private _back(): void {
     this._pickedType = null;
     this._values = {};
     this._errors = {};
+    this._autoFilled = new Set();
     this.error = null;
   }
 
   private _setValue(name: string, value: string): void {
     this._values = { ...this._values, [name]: value };
+    if (this._autoFilled.has(name)) {
+      const next = new Set(this._autoFilled);
+      next.delete(name);
+      this._autoFilled = next;
+    }
     this._errors = this._validate(this._values);
+  }
+
+  // Picking a control entity (CREATE mode only) also fills any still-empty
+  // companion aux field from the same HA device — a temp probe, a battery-%
+  // sensor, a power meter. Editing an existing appliance never
+  // auto-fills: the user's saved config is the source of truth.
+  private _onPickEntity(value: string): void {
+    this._setValue('entity_id', value);
+    if (this.editing || !value || !this.hass || this._pickedType === null) return;
+    const t = this._pickedType;
+    const companions = companionsFor(this.hass, value, t);
+    const names = auxFieldNamesFor(t).filter((n) => COMPANION_FIELD_NAMES.has(n)) as CompanionField[];
+
+    let nextValues = this._values;
+    let nextAutoFilled = this._autoFilled;
+    let changed = false;
+    for (const name of names) {
+      const candidate = companions[name];
+      if (candidate && (nextValues[name] ?? '') === '') {
+        if (!changed) {
+          nextValues = { ...nextValues };
+          nextAutoFilled = new Set(nextAutoFilled);
+          changed = true;
+        }
+        nextValues[name] = candidate;
+        nextAutoFilled.add(name);
+      }
+    }
+    if (changed) {
+      this._values = nextValues;
+      this._autoFilled = nextAutoFilled;
+      this._errors = this._validate(nextValues);
+    }
   }
 
   private _validate(values: Record<string, string>): ErrorMap {
@@ -606,6 +783,35 @@ export class HmApplianceForm extends LitElement {
         reqPositive('battery_capacity_kwh', 'Must be greater than 0');
         reqPositive('max_charge_rate_kw', 'Must be greater than 0');
         break;
+      case 'pool_pump': {
+        const raw = (values['pump_watts'] ?? '').trim();
+        if (raw === '') {
+          errors['pump_watts'] = 'Required';
+        } else {
+          const n = Number(raw);
+          if (!Number.isFinite(n) || n <= 0 || n > 5000) {
+            errors['pump_watts'] = 'Must be greater than 0 and at most 5000';
+          }
+        }
+        break;
+      }
+      case 'hot_tub': {
+        const vol = (values['volume_gallons'] ?? '').trim();
+        if (vol === '') {
+          errors['volume_gallons'] = 'Required';
+        } else {
+          const n = Number(vol);
+          if (!Number.isInteger(n) || n < 50 || n > 1000) errors['volume_gallons'] = 'Must be 50-1000';
+        }
+        const heater = (values['heater_watts'] ?? '').trim();
+        if (heater === '') {
+          errors['heater_watts'] = 'Required';
+        } else {
+          const n = Number(heater);
+          if (!Number.isInteger(n) || n < 500 || n > 12000) errors['heater_watts'] = 'Must be 500-12000';
+        }
+        break;
+      }
     }
 
     // entity_id is required for every type with a non-empty CONTROL_DOMAINS
@@ -705,6 +911,18 @@ export class HmApplianceForm extends LitElement {
           max_charge_rate_kw: Number(v['max_charge_rate_kw']),
           entity_id: entityId,
           ...(auxValue ? { soc_entity_id: auxValue } : {}),
+        };
+      case 'pool_pump':
+        return {
+          pump_watts: Number(v['pump_watts']),
+          entity_id: entityId,
+        };
+      case 'hot_tub':
+        return {
+          volume_gallons: Number(v['volume_gallons']),
+          heater_watts: Number(v['heater_watts']),
+          entity_id: entityId,
+          ...(auxValue ? { temp_entity_id: auxValue } : {}),
         };
       default:
         return {};
@@ -810,7 +1028,33 @@ export class HmApplianceForm extends LitElement {
   }
 
   private _renderStep1() {
+    const findings =
+      !this.editing && this.hass
+        ? findDevices(this.hass, this._existingEntityIds()).slice(0, 4)
+        : [];
     return html`
+      <div class="discovery-slot">
+        ${findings.length > 0
+          ? html`
+              <div class="discovery-block">
+                <p class="discovery-title">Found in your Home Assistant</p>
+                <div class="discovery-list">
+                  ${findings.map(
+                    (f) => html`
+                      <button
+                        class="discovery-btn"
+                        type="button"
+                        @click=${() => this._pickFinding(f)}
+                      >
+                        ${f.label} - add as ${typeLabelFor(f.type)}
+                      </button>
+                    `,
+                  )}
+                </div>
+              </div>
+            `
+          : null}
+      </div>
       <p>What kind of appliance are you registering?</p>
       <div class="type-grid">
         ${TYPE_OPTIONS.map(
@@ -1076,6 +1320,57 @@ export class HmApplianceForm extends LitElement {
             : null}
         </label>
       `;
+    } else if (t === 'pool_pump') {
+      typeFields = html`
+        <label>
+          <span class="label-text">Pump power (W)</span>
+          <input
+            name="pump_watts"
+            type="number"
+            min="1"
+            max="5000"
+            step="50"
+            .value=${v['pump_watts'] ?? '1500'}
+            @input=${onInput('pump_watts')}
+          />
+          ${errs['pump_watts']
+            ? html`<div class="field-error">${errs['pump_watts']}</div>`
+            : null}
+        </label>
+      `;
+    } else if (t === 'hot_tub') {
+      typeFields = html`
+        <label>
+          <span class="label-text">Water volume (gallons)</span>
+          <input
+            name="volume_gallons"
+            type="number"
+            min="50"
+            max="1000"
+            step="10"
+            .value=${v['volume_gallons'] ?? '400'}
+            @input=${onInput('volume_gallons')}
+          />
+          ${errs['volume_gallons']
+            ? html`<div class="field-error">${errs['volume_gallons']}</div>`
+            : null}
+        </label>
+        <label>
+          <span class="label-text">Heater power (W)</span>
+          <input
+            name="heater_watts"
+            type="number"
+            min="500"
+            max="12000"
+            step="100"
+            .value=${v['heater_watts'] ?? '4000'}
+            @input=${onInput('heater_watts')}
+          />
+          ${errs['heater_watts']
+            ? html`<div class="field-error">${errs['heater_watts']}</div>`
+            : null}
+        </label>
+      `;
     } else {
       // solar — forecast-only, system size + orientation only.
       typeFields = html`
@@ -1150,17 +1445,28 @@ export class HmApplianceForm extends LitElement {
     // hidden entirely. Other types still require one.
     const showEntitySection = controlDomains.length > 0;
     const controlOptions = showEntitySection ? this._entityList(controlDomains) : [];
+    // Ranked suggestions. `rankEntities` never hides an
+    // entity, so `suggested` + `restOptions` together cover every id in
+    // `controlOptions` exactly once. With no positive score the select
+    // renders exactly as it did before discovery existed (flat list).
+    const ranked = showEntitySection && this.hass ? rankEntities(this.hass, t, controlDomains) : [];
+    const suggested = ranked.filter((r) => r.score > 0);
+    const showSuggestions = suggested.length > 0;
+    const suggestedIds = new Set(suggested.map((r) => r.entityId));
+    const restOptions = controlOptions.filter((id) => !suggestedIds.has(id));
     const controlErr = errs['entity_id'] ?? '';
     const controlHelp =
       t === 'hvac'
         ? 'climate.* — sets target temps every 30 min'
         : t === 'water_heater'
-          ? 'switch.* (resistive) or climate.* — toggled every 30 min'
+          ? "switch.* (resistive) or climate.* — toggled every 30 min. Your tank's own thermostat must be set at least as high as your settings, and a mixing valve at the tank keeps tap water from scalding."
           : t === 'dehumidifier'
             ? 'humidifier.* — observed only (Hungry Machines sends no commands)'
             : t === 'robot'
               ? 'vacuum.* or lawn_mower.* — sent back to its dock when charging is scheduled'
-              : 'switch.* — toggled on/off every 30 min';
+              : t === 'hot_tub'
+                ? 'climate.* or water_heater.* - Hungry Machines changes the target temperature only; it never switches the tub off'
+                : 'switch.* — toggled on/off every 30 min';
     const aux = AUX_FIELDS[t];
     const auxOptions = aux ? this._entityList([aux.domain]) : [];
     const auxName = aux ? aux.name : '';
@@ -1176,18 +1482,31 @@ export class HmApplianceForm extends LitElement {
       <div class="type-fields">${typeFields}</div>
       <div class="entity-section">
         ${showEntitySection
-          ? html`
+          ? html`<div class="entity-fields">
               <label>
                 <span class="label-text">Home Assistant entity to control</span>
                 <select
                   name="entity_id"
                   .value=${v['entity_id'] ?? ''}
-                  @change=${onSelect('entity_id')}
+                  @change=${(e: Event) => this._onPickEntity((e.target as HTMLSelectElement).value)}
                 >
                   <option value="" ?selected=${(v['entity_id'] ?? '') === ''}>— pick one —</option>
-                  ${controlOptions.map(
-                    (id) => html`<option value=${id} ?selected=${id === v['entity_id']}>${id}</option>`,
-                  )}
+                  ${showSuggestions
+                    ? html`
+                        <optgroup label="Suggested">
+                          ${suggested.map(
+                            (r) => html`<option value=${r.entityId} ?selected=${r.entityId === v['entity_id']}>${r.entityId} - ${r.reason}</option>`,
+                          )}
+                        </optgroup>
+                        <optgroup label="All ${controlDomains.join('/')} entities">
+                          ${restOptions.map(
+                            (id) => html`<option value=${id} ?selected=${id === v['entity_id']}>${id}</option>`,
+                          )}
+                        </optgroup>
+                      `
+                    : controlOptions.map(
+                        (id) => html`<option value=${id} ?selected=${id === v['entity_id']}>${id}</option>`,
+                      )}
                 </select>
                 <small class="hint">${controlHelp}</small>
                 ${controlErr ? html`<div class="field-error">${controlErr}</div>` : null}
@@ -1212,6 +1531,7 @@ export class HmApplianceForm extends LitElement {
                         )}
                       </select>
                       <small class="hint">${auxHelp}</small>
+                      ${this._autoFillNote(auxName)}
                     </label>
                   `
                 : null}
@@ -1230,6 +1550,7 @@ export class HmApplianceForm extends LitElement {
                         )}
                       </select>
                       <small class="hint">${HVAC_POWER_FIELD.help}</small>
+                      ${this._autoFillNote(HVAC_POWER_FIELD.name)}
                     </label>
                   `
                 : null}
@@ -1297,10 +1618,11 @@ export class HmApplianceForm extends LitElement {
                         )}
                       </select>
                       <small class="hint">${DEHU_POWER_FIELD.help}</small>
+                      ${this._autoFillNote(DEHU_POWER_FIELD.name)}
                     </label>
                   `
                 : null}
-            `
+            </div>`
           : null}
       </div>
       <div class="actions">

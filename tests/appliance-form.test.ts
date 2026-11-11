@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { HmApplianceForm } from '../src/ui/appliance-form.js';
 import { clearTokens, setApiBase, setTokens } from '../src/api/client.js';
+import type { DiscoveryHass } from '../src/utils/entity-discovery.js';
 
 if (!customElements.get('hm-appliance-form')) {
   customElements.define('hm-appliance-form', HmApplianceForm);
@@ -45,12 +46,66 @@ const TEST_HASS = {
     'vacuum.living_room': { entity_id: 'vacuum.living_room' },
     'lawn_mower.backyard': { entity_id: 'lawn_mower.backyard' },
     'sensor.robot_battery': { entity_id: 'sensor.robot_battery' },
+    'switch.pool_pump': { entity_id: 'switch.pool_pump' },
+    'water_heater.hot_tub': { entity_id: 'water_heater.hot_tub' },
+    'sensor.hot_tub_temp': { entity_id: 'sensor.hot_tub_temp' },
   },
 };
 
-function mountForm(): FormEl {
+// adds the entity/device registries TEST_HASS omits, so
+// rankEntities/companionsFor have something to score and fill from.
+// 'switch.tank_heater' is the only water_heater switch that scores above
+// zero (keyword "tank"); 'switch.garage_light' is a same-domain decoy that
+// scores zero and has no sibling sensors.
+const TEST_HASS_DISCOVERY: DiscoveryHass = {
+  states: {
+    'switch.tank_heater': {},
+    'switch.boiler_unit': {},
+    'switch.garage_light': {},
+    'climate.living_room': {},
+    'sensor.tank_heater_temp': { attributes: { device_class: 'temperature' } },
+    'sensor.unrelated': {},
+  },
+  entities: {
+    'switch.tank_heater': { device_id: 'wh-dev' },
+    'switch.boiler_unit': { device_id: 'boiler-dev' },
+    'switch.garage_light': { device_id: 'light-dev' },
+    'sensor.tank_heater_temp': { device_id: 'wh-dev' },
+    'sensor.unrelated': { device_id: 'light-dev' },
+  },
+  devices: {},
+};
+
+// A hass with no entity/device registry at all — rankEntities can still
+// score by keyword, but companionsFor has no device_id to look siblings
+// up from, so no aux field can ever auto-fill against it.
+const TEST_HASS_NO_REGISTRY: DiscoveryHass = {
+  states: {
+    'switch.garage_light': {},
+    'switch.other': {},
+  },
+};
+
+// a Balboa-platform spa entity scores 3 (a platform match) for
+// hot_tub — above findDevices' threshold, unlike TEST_HASS_DISCOVERY's
+// keyword-only (score 2) water_heater candidates — with a sibling
+// temperature sensor so picking the suggestion also exercises the
+// an earlier change companion fill.
+const TEST_HASS_FOUND_DEVICES: DiscoveryHass = {
+  states: {
+    'climate.spa': { attributes: { friendly_name: 'Spa' } },
+    'sensor.spa_temp': { attributes: { device_class: 'temperature' } },
+  },
+  entities: {
+    'climate.spa': { device_id: 'spa-dev', platform: 'balboa' },
+    'sensor.spa_temp': { device_id: 'spa-dev' },
+  },
+  devices: {},
+};
+
+function mountForm(hass: DiscoveryHass = TEST_HASS): FormEl {
   const el = document.createElement('hm-appliance-form') as FormEl;
-  el.hass = TEST_HASS;
+  el.hass = hass;
   el.open = true;
   document.body.appendChild(el);
   return el;
@@ -97,20 +152,22 @@ describe('hm-appliance-form', () => {
     clearTokens();
   });
 
-  it('initial render shows step 1 with all seven type buttons', async () => {
+  it('initial render shows step 1 with all nine type buttons', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
     const el = mountForm();
     await flush(el);
 
     const root = el.shadowRoot!;
     const typeButtons = root.querySelectorAll<HTMLButtonElement>('button.type-btn');
-    expect(typeButtons.length).toBe(7);
+    expect(typeButtons.length).toBe(9);
     const types = Array.from(typeButtons).map((b) => b.dataset.type);
     expect(types.sort()).toEqual([
       'dehumidifier',
       'ev_charger',
       'home_battery',
+      'hot_tub',
       'hvac',
+      'pool_pump',
       'robot',
       'solar',
       'water_heater',
@@ -505,7 +562,7 @@ describe('hm-appliance-form', () => {
     el.open = true;
     await flush(el);
     const root = el.shadowRoot!;
-    expect(root.querySelectorAll('button.type-btn').length).toBe(7);
+    expect(root.querySelectorAll('button.type-btn').length).toBe(9);
     expect(root.querySelector('input[name="name"]')).toBeNull();
   });
 
@@ -1112,5 +1169,510 @@ describe('hm-appliance-form', () => {
     await flush(el);
 
     expect(buttonByText(root, 'Add')!.disabled).toBe(true);
+  });
+
+  // -----------------------------------------------------------------------
+  // Pool pump — runs its daily hours when power costs least
+  // -----------------------------------------------------------------------
+
+  it("clicking 'Pool pump' advances to step 2 with pump_watts default", async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'pool_pump')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(inputByName(root, 'pump_watts').value).toBe('1500');
+    expect(root.querySelector('input[name="name"]')).not.toBeNull();
+    // Step 1 type buttons no longer rendered.
+    expect(root.querySelectorAll('button.type-btn').length).toBe(0);
+  });
+
+  it('pool pump: entity picker lists switch.* entities', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'pool_pump')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const sel = selectByName(root, 'entity_id');
+    const optionValues = Array.from(sel.querySelectorAll('option')).map((o) => o.value);
+    expect(optionValues).toContain('switch.pool_pump');
+  });
+
+  it('pool pump: submit posts pump_watts as a number and entity_id', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      calls.push({ url, init });
+      return jsonResponse({ appliance_id: 'app-pool-pump-1' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const el = mountForm();
+    await flush(el);
+
+    let createdEvent: CustomEvent | null = null;
+    el.addEventListener('appliance-created', ((e: Event) => {
+      createdEvent = e as CustomEvent;
+    }) as EventListener);
+
+    buttonByDataType(el.shadowRoot!, 'pool_pump')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Backyard Pool Pump';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    // Pump power left at its default (1500 W).
+    pickEntity(root, 'switch.pool_pump');
+    await flush(el);
+
+    const submitBtn = buttonByText(root, 'Add');
+    expect(submitBtn!.disabled).toBe(false);
+    submitBtn!.click();
+    await flush(el);
+
+    const postCall = calls.find(
+      (c) => c.url.endsWith('/api/v1/appliances') && c.init?.method === 'POST',
+    );
+    expect(postCall).toBeDefined();
+    const body = JSON.parse(String(postCall!.init!.body));
+    expect(body.appliance_type).toBe('pool_pump');
+    expect(body.name).toBe('Backyard Pool Pump');
+    expect(body.config).toEqual({
+      pump_watts: 1500,
+      entity_id: 'switch.pool_pump',
+    });
+
+    expect(createdEvent).not.toBeNull();
+    expect(el.open).toBe(false);
+  });
+
+  it('pool pump: pump_watts of 0 blocks submit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'pool_pump')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Backyard Pool Pump';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    const watts = inputByName(root, 'pump_watts');
+    watts.value = '0';
+    watts.dispatchEvent(new Event('input', { bubbles: true }));
+    pickEntity(root, 'switch.pool_pump');
+    await flush(el);
+
+    const errs = Array.from(root.querySelectorAll('.field-error')).map((e) => e.textContent);
+    expect(errs.some((t) => t?.includes('Must be greater than 0'))).toBe(true);
+    expect(buttonByText(root, 'Add')!.disabled).toBe(true);
+  });
+
+  it('pool pump: pump_watts over 5000 blocks submit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'pool_pump')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Backyard Pool Pump';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    const watts = inputByName(root, 'pump_watts');
+    watts.value = '5001';
+    watts.dispatchEvent(new Event('input', { bubbles: true }));
+    pickEntity(root, 'switch.pool_pump');
+    await flush(el);
+
+    const errs = Array.from(root.querySelectorAll('.field-error')).map((e) => e.textContent);
+    expect(errs.some((t) => t?.includes('at most 5000'))).toBe(true);
+    expect(buttonByText(root, 'Add')!.disabled).toBe(true);
+  });
+
+  it('pool pump: missing entity_id blocks submit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'pool_pump')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Backyard Pool Pump';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    // entity_id left unpicked.
+    await flush(el);
+
+    expect(buttonByText(root, 'Add')!.disabled).toBe(true);
+  });
+
+  // -----------------------------------------------------------------------
+  // Hot tub — ready for soak times, eases off in between
+  // -----------------------------------------------------------------------
+
+  it("clicking 'Hot tub' advances to step 2 with volume/heater defaults", async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'hot_tub')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(inputByName(root, 'volume_gallons').value).toBe('400');
+    expect(inputByName(root, 'heater_watts').value).toBe('4000');
+    expect(root.querySelector('input[name="name"]')).not.toBeNull();
+    expect(root.querySelectorAll('button.type-btn').length).toBe(0);
+  });
+
+  it('hot tub: entity picker lists both climate.* and water_heater.* entities', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'hot_tub')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const sel = selectByName(root, 'entity_id');
+    const optionValues = Array.from(sel.querySelectorAll('option')).map((o) => o.value);
+    expect(optionValues).toContain('climate.living_room');
+    expect(optionValues).toContain('water_heater.hot_tub');
+  });
+
+  it('hot tub: submit posts volume_gallons, heater_watts and entity_id', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      calls.push({ url, init });
+      return jsonResponse({ appliance_id: 'app-hot-tub-1' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const el = mountForm();
+    await flush(el);
+
+    let createdEvent: CustomEvent | null = null;
+    el.addEventListener('appliance-created', ((e: Event) => {
+      createdEvent = e as CustomEvent;
+    }) as EventListener);
+
+    buttonByDataType(el.shadowRoot!, 'hot_tub')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Backyard Hot Tub';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    // Volume and heater power left at their defaults (400 gal / 4000 W).
+    pickEntity(root, 'water_heater.hot_tub');
+    await flush(el);
+
+    const submitBtn = buttonByText(root, 'Add');
+    expect(submitBtn!.disabled).toBe(false);
+    submitBtn!.click();
+    await flush(el);
+
+    const postCall = calls.find(
+      (c) => c.url.endsWith('/api/v1/appliances') && c.init?.method === 'POST',
+    );
+    expect(postCall).toBeDefined();
+    const body = JSON.parse(String(postCall!.init!.body));
+    expect(body.appliance_type).toBe('hot_tub');
+    expect(body.name).toBe('Backyard Hot Tub');
+    expect(body.config).toEqual({
+      volume_gallons: 400,
+      heater_watts: 4000,
+      entity_id: 'water_heater.hot_tub',
+    });
+
+    expect(createdEvent).not.toBeNull();
+    expect(el.open).toBe(false);
+  });
+
+  it('hot tub: submit includes temp_entity_id when a sensor is picked', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      calls.push({ url, init });
+      return jsonResponse({ appliance_id: 'app-hot-tub-2' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'hot_tub')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Backyard Hot Tub';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    pickEntity(root, 'water_heater.hot_tub');
+    // Set the aux sensor value directly in form state — the input path
+    // via the rendered select works around the pre-existing aux-render
+    // issue noted on the hvac power-sensor tests above. The contract
+    // this pins: when the form's state has the value set, the POST
+    // body includes it under the expected key.
+    el._values = { ...el._values, temp_entity_id: 'sensor.hot_tub_temp' };
+    await flush(el);
+
+    const submitBtn = buttonByText(root, 'Add');
+    submitBtn!.click();
+    await flush(el);
+
+    const postCall = calls.find(
+      (c) => c.url.endsWith('/api/v1/appliances') && c.init?.method === 'POST',
+    );
+    const body = JSON.parse(String(postCall!.init!.body));
+    expect(body.config).toEqual({
+      volume_gallons: 400,
+      heater_watts: 4000,
+      entity_id: 'water_heater.hot_tub',
+      temp_entity_id: 'sensor.hot_tub_temp',
+    });
+  });
+
+  it('hot tub: volume_gallons out of range blocks submit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'hot_tub')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Backyard Hot Tub';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    const vol = inputByName(root, 'volume_gallons');
+    vol.value = '40';
+    vol.dispatchEvent(new Event('input', { bubbles: true }));
+    pickEntity(root, 'water_heater.hot_tub');
+    await flush(el);
+
+    const errs = Array.from(root.querySelectorAll('.field-error')).map((e) => e.textContent);
+    expect(errs.some((t) => t?.includes('50-1000'))).toBe(true);
+    expect(buttonByText(root, 'Add')!.disabled).toBe(true);
+  });
+
+  it('hot tub: heater_watts out of range blocks submit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'hot_tub')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Backyard Hot Tub';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    const heater = inputByName(root, 'heater_watts');
+    heater.value = '12001';
+    heater.dispatchEvent(new Event('input', { bubbles: true }));
+    pickEntity(root, 'water_heater.hot_tub');
+    await flush(el);
+
+    const errs = Array.from(root.querySelectorAll('.field-error')).map((e) => e.textContent);
+    expect(errs.some((t) => t?.includes('500-12000'))).toBe(true);
+    expect(buttonByText(root, 'Add')!.disabled).toBe(true);
+  });
+
+  it('hot tub: missing entity_id blocks submit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    const el = mountForm();
+    await flush(el);
+
+    buttonByDataType(el.shadowRoot!, 'hot_tub')!.click();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    inputByName(root, 'name').value = 'Backyard Hot Tub';
+    inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+    // entity_id left unpicked.
+    await flush(el);
+
+    expect(buttonByText(root, 'Add')!.disabled).toBe(true);
+  });
+
+  // ranked picker + companion auto-fill.
+  describe('entity discovery', () => {
+    it('groups scoring entities under "Suggested", ordered by score then id, ahead of the rest', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+      const el = mountForm(TEST_HASS_DISCOVERY);
+      await flush(el);
+
+      buttonByDataType(el.shadowRoot!, 'water_heater')!.click();
+      await flush(el);
+
+      const root = el.shadowRoot!;
+      const sel = selectByName(root, 'entity_id');
+      const groups = Array.from(sel.querySelectorAll('optgroup'));
+      expect(groups.map((g) => g.label)).toEqual(['Suggested', 'All switch/climate entities']);
+
+      const suggestedOptions = Array.from(groups[0].querySelectorAll('option'));
+      expect(suggestedOptions.map((o) => o.value)).toEqual(['switch.boiler_unit', 'switch.tank_heater']);
+      expect(suggestedOptions[0].textContent).toBe('switch.boiler_unit - name mentions water heater');
+      expect(suggestedOptions[1].textContent).toBe('switch.tank_heater - name mentions water heater');
+
+      const restOptions = Array.from(groups[1].querySelectorAll('option'));
+      expect(restOptions.map((o) => o.value)).toEqual(['climate.living_room', 'switch.garage_light']);
+    });
+
+    it('renders a flat option list, no optgroups, when nothing scores above zero', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+      const el = mountForm(TEST_HASS_NO_REGISTRY);
+      await flush(el);
+
+      buttonByDataType(el.shadowRoot!, 'ev_charger')!.click();
+      await flush(el);
+
+      const root = el.shadowRoot!;
+      const sel = selectByName(root, 'entity_id');
+      expect(sel.querySelectorAll('optgroup').length).toBe(0);
+      const optionValues = Array.from(sel.querySelectorAll('option')).map((o) => o.value);
+      expect(optionValues).toEqual(['', 'switch.garage_light', 'switch.other']);
+    });
+
+    it('fills the empty companion sensor field from the picked entity\'s device, with a note', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+      const el = mountForm(TEST_HASS_DISCOVERY);
+      await flush(el);
+
+      buttonByDataType(el.shadowRoot!, 'water_heater')!.click();
+      await flush(el);
+
+      const root = el.shadowRoot!;
+      expect(selectByName(root, 'temp_entity_id').value).toBe('');
+      pickEntity(root, 'switch.tank_heater');
+      await flush(el);
+
+      expect(selectByName(root, 'temp_entity_id').value).toBe('sensor.tank_heater_temp');
+      expect(root.textContent).toContain('Found on the same device');
+    });
+
+    it('never overwrites a companion field the user already set', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+      const el = mountForm(TEST_HASS_DISCOVERY);
+      await flush(el);
+
+      buttonByDataType(el.shadowRoot!, 'water_heater')!.click();
+      await flush(el);
+
+      const root = el.shadowRoot!;
+      const tempSel = selectByName(root, 'temp_entity_id');
+      tempSel.value = 'sensor.unrelated';
+      tempSel.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush(el);
+
+      pickEntity(root, 'switch.tank_heater');
+      await flush(el);
+
+      expect(selectByName(root, 'temp_entity_id').value).toBe('sensor.unrelated');
+      expect(root.textContent).not.toContain('Found on the same device');
+    });
+
+    it('never auto-fills when editing an existing appliance', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ id: 'app-wh-1' })));
+      const el = mountForm(TEST_HASS_DISCOVERY);
+      const existing = {
+        id: 'app-wh-1',
+        user_id: 'user-1',
+        appliance_type: 'water_heater' as const,
+        name: 'Tank',
+        config: {
+          entity_id: 'switch.garage_light',
+          tank_size_gallons: 50,
+          element_watts: 4500,
+          insulation_factor: 0.03,
+        },
+        is_active: true,
+        created_at: new Date().toISOString(),
+      };
+      el.editing = existing;
+      await flush(el);
+
+      const root = el.shadowRoot!;
+      expect(selectByName(root, 'temp_entity_id').value).toBe('');
+      pickEntity(root, 'switch.tank_heater');
+      await flush(el);
+
+      expect(selectByName(root, 'temp_entity_id').value).toBe('');
+      expect(root.textContent).not.toContain('Found on the same device');
+    });
+  });
+
+  // the type-picker step's "Found in your Home Assistant" shortcut.
+  describe('discovered device suggestions', () => {
+    it('lists a finding above the type grid, naming the entity and the type it would be added as', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+      const el = mountForm(TEST_HASS_FOUND_DEVICES);
+      await flush(el);
+
+      const root = el.shadowRoot!;
+      expect(root.textContent).toContain('Found in your Home Assistant');
+      expect(buttonByText(root, 'Spa - add as Hot tub')).toBeTruthy();
+    });
+
+    it('is absent when nothing scores above the discovery threshold', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+      // TEST_HASS_DISCOVERY's best water_heater candidate only scores 2
+      // (a keyword match) — below findDevices' threshold of 3.
+      const el = mountForm(TEST_HASS_DISCOVERY);
+      await flush(el);
+
+      expect(el.shadowRoot!.textContent).not.toContain('Found in your Home Assistant');
+    });
+
+    it('is absent in edit mode', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ id: 'app-ht-1' })));
+      const el = mountForm(TEST_HASS_FOUND_DEVICES);
+      el.editing = {
+        id: 'app-ht-1',
+        user_id: 'user-1',
+        appliance_type: 'hot_tub',
+        name: 'Spa',
+        config: { entity_id: 'climate.spa', ready_temp_f: '104', eco_temp_f: '90' },
+        is_active: true,
+        created_at: new Date().toISOString(),
+      };
+      await flush(el);
+
+      expect(el.shadowRoot!.textContent).not.toContain('Found in your Home Assistant');
+    });
+
+    it('clicking a finding picks the type, moves to step 2, and pre-selects the entity with companions filled', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+      const el = mountForm(TEST_HASS_FOUND_DEVICES);
+      await flush(el);
+
+      buttonByText(el.shadowRoot!, 'Spa - add as Hot tub')!.click();
+      await flush(el);
+
+      const root = el.shadowRoot!;
+      expect(selectByName(root, 'entity_id').value).toBe('climate.spa');
+      expect(selectByName(root, 'temp_entity_id').value).toBe('sensor.spa_temp');
+      expect(root.textContent).toContain('Found on the same device');
+    });
   });
 });

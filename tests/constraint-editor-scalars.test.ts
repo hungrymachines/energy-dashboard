@@ -75,7 +75,180 @@ describe('constraint editor scalar fields in °C', () => {
     expect(root.querySelector<HTMLInputElement>('input[name="min_temp_f"]')!.value).toBe('16');
     save(el);
     await flush(el);
-    expect(bodies).toEqual([{ max_temp_f: 131, min_temp_f: 60 }]);
+    // Every save carries all seven keys — the API replaces the whole
+    // constraints object, so an omitted key would be erased.
+    expect(bodies).toEqual([
+      {
+        max_temp_f: 131,
+        min_temp_f: 60,
+        floor_temp_f: 120,
+        sanitize_enabled: true,
+        sanitize_temp_f: 140,
+        sanitize_hold_minutes: 60,
+        sanitize_interval_days: 2,
+      },
+    ]);
+  });
+
+  it('water heater floor and sanitize fields seed their defaults when no constraints row exists', async () => {
+    stubFetch();
+    const el = mount({
+      applianceId: 'wh-1',
+      applianceType: 'water_heater',
+      currentConstraints: {},
+      temperatureUnit: 'F',
+      open: true,
+    });
+    await flush(el);
+    const root = el.shadowRoot!;
+    expect(root.querySelector<HTMLInputElement>('input[name="floor_temp_f"]')!.value).toBe('120');
+    expect(root.querySelector<HTMLInputElement>('input[name="sanitize_enabled"]')!.checked).toBe(true);
+    expect(root.querySelector<HTMLInputElement>('input[name="sanitize_temp_f"]')!.value).toBe('140');
+    expect(root.querySelector<HTMLInputElement>('input[name="sanitize_hold_minutes"]')!.value).toBe('60');
+    expect(root.querySelector<HTMLInputElement>('input[name="sanitize_interval_days"]')!.value).toBe('2');
+  });
+
+  it('water heater floor and sanitize fields seed the stored constraint when present', async () => {
+    stubFetch();
+    const el = mount({
+      applianceId: 'wh-1',
+      applianceType: 'water_heater',
+      currentConstraints: {
+        max_temp_f: 150,
+        min_temp_f: 110,
+        floor_temp_f: 125,
+        sanitize_enabled: false,
+        sanitize_temp_f: 145,
+        sanitize_hold_minutes: 90,
+        sanitize_interval_days: 3,
+      },
+      temperatureUnit: 'F',
+      open: true,
+    });
+    await flush(el);
+    const root = el.shadowRoot!;
+    expect(root.querySelector<HTMLInputElement>('input[name="floor_temp_f"]')!.value).toBe('125');
+    expect(root.querySelector<HTMLInputElement>('input[name="sanitize_enabled"]')!.checked).toBe(false);
+    expect(root.querySelector<HTMLInputElement>('input[name="sanitize_temp_f"]')!.value).toBe('145');
+    expect(root.querySelector<HTMLInputElement>('input[name="sanitize_hold_minutes"]')!.value).toBe('90');
+    expect(root.querySelector<HTMLInputElement>('input[name="sanitize_interval_days"]')!.value).toBe('3');
+  });
+
+  it('water heater floor temperature shows and round-trips in °C', async () => {
+    const { bodies } = stubFetch();
+    const el = mount({
+      applianceId: 'wh-1',
+      applianceType: 'water_heater',
+      currentConstraints: { max_temp_f: 150, min_temp_f: 110, floor_temp_f: 120 },
+      temperatureUnit: 'C',
+      open: true,
+    });
+    await flush(el);
+    // 120 °F stored, untouched — displays as a whole-degree °C.
+    expect(el.shadowRoot!.querySelector<HTMLInputElement>('input[name="floor_temp_f"]')!.value).toBe('49');
+    type(el, 'floor_temp_f', '50');
+    await flush(el);
+    save(el);
+    await flush(el);
+    expect(bodies[0]!['floor_temp_f']).toBe(122);
+  });
+
+  it('water heater cycle temperature shows and round-trips in °C', async () => {
+    const { bodies } = stubFetch();
+    const el = mount({
+      applianceId: 'wh-1',
+      applianceType: 'water_heater',
+      currentConstraints: { max_temp_f: 150, min_temp_f: 110, sanitize_temp_f: 140 },
+      temperatureUnit: 'C',
+      open: true,
+    });
+    await flush(el);
+    // 140 °F stored, untouched — displays as a whole-degree °C.
+    expect(el.shadowRoot!.querySelector<HTMLInputElement>('input[name="sanitize_temp_f"]')!.value).toBe('60');
+    type(el, 'sanitize_temp_f', '65');
+    await flush(el);
+    save(el);
+    await flush(el);
+    expect(bodies[0]!['sanitize_temp_f']).toBe(149);
+  });
+
+  it('water heater floor temperature is range-checked in °C', async () => {
+    stubFetch();
+    const el = mount({
+      applianceId: 'wh-1',
+      applianceType: 'water_heater',
+      currentConstraints: { max_temp_f: 150, min_temp_f: 110, floor_temp_f: 120 },
+      temperatureUnit: 'C',
+      open: true,
+    });
+    await flush(el);
+    type(el, 'floor_temp_f', '5');
+    await flush(el);
+    expect(el.shadowRoot!.textContent).toContain('Must be 16–71');
+  });
+
+  it('water heater cycle temperature is range-checked in °C', async () => {
+    stubFetch();
+    const el = mount({
+      applianceId: 'wh-1',
+      applianceType: 'water_heater',
+      currentConstraints: { max_temp_f: 150, min_temp_f: 110, sanitize_temp_f: 140 },
+      temperatureUnit: 'C',
+      open: true,
+    });
+    await flush(el);
+    type(el, 'sanitize_temp_f', '5');
+    await flush(el);
+    expect(el.shadowRoot!.textContent).toContain('Must be 60–71');
+  });
+
+  it('sanitize hold minutes outside 30-180 is rejected', async () => {
+    stubFetch();
+    const el = mount({
+      applianceId: 'wh-1',
+      applianceType: 'water_heater',
+      currentConstraints: { max_temp_f: 150, min_temp_f: 110 },
+      temperatureUnit: 'F',
+      open: true,
+    });
+    await flush(el);
+    type(el, 'sanitize_hold_minutes', '10');
+    await flush(el);
+    expect(el.shadowRoot!.textContent).toContain('Must be 30–180');
+  });
+
+  it('sanitize interval days outside 1-14 or non-integer is rejected', async () => {
+    stubFetch();
+    const el = mount({
+      applianceId: 'wh-1',
+      applianceType: 'water_heater',
+      currentConstraints: { max_temp_f: 150, min_temp_f: 110 },
+      temperatureUnit: 'F',
+      open: true,
+    });
+    await flush(el);
+    type(el, 'sanitize_interval_days', '20');
+    await flush(el);
+    expect(el.shadowRoot!.textContent).toContain('Must be a whole number 1–14');
+  });
+
+  it('unchecking the sanitize checkbox sends sanitize_enabled: false', async () => {
+    const { bodies } = stubFetch();
+    const el = mount({
+      applianceId: 'wh-1',
+      applianceType: 'water_heater',
+      currentConstraints: { max_temp_f: 150, min_temp_f: 110 },
+      temperatureUnit: 'F',
+      open: true,
+    });
+    await flush(el);
+    const checkbox = el.shadowRoot!.querySelector<HTMLInputElement>('input[name="sanitize_enabled"]')!;
+    checkbox.checked = false;
+    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+    save(el);
+    await flush(el);
+    expect(bodies[0]!['sanitize_enabled']).toBe(false);
   });
 
   it('water heater min >= max errors in °C', async () => {

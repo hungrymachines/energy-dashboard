@@ -1574,6 +1574,143 @@ def test_water_heater_metric_converts_before_clamp() -> None:
     assert reading["value"] == 122.0
 
 
+# --- pool pump / hot tub readings -----------------------------
+
+
+@pytest.mark.asyncio
+async def test_capture_pool_pump_on_pushes_value_one() -> None:
+    appliance = {
+        "id": "pump-1",
+        "appliance_type": "pool_pump",
+        "config": {"entity_id": "switch.pool_pump"},
+    }
+    control = _state("on", {})
+    hass = _hass({"switch.pool_pump": control})
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        n = await readings.capture_readings(hass, _entry())
+
+    assert n == 1
+    buf = hass.data[DOMAIN]["readings_buffer"]
+    assert buf["pump-1"][0]["state"] == "ON"
+    assert buf["pump-1"][0]["value"] == 1.0
+    assert "home" not in buf or len(buf["home"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_capture_pool_pump_off_pushes_value_zero() -> None:
+    appliance = {
+        "id": "pump-1",
+        "appliance_type": "pool_pump",
+        "config": {"entity_id": "switch.pool_pump"},
+    }
+    control = _state("off", {})
+    hass = _hass({"switch.pool_pump": control})
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, _entry())
+
+    buf = hass.data[DOMAIN]["readings_buffer"]
+    assert buf["pump-1"][0]["state"] == "OFF"
+    assert buf["pump-1"][0]["value"] == 0.0
+
+
+def test_build_tub_reading_from_current_temperature_attribute() -> None:
+    control = _state("heat", {"current_temperature": 100.0, "hvac_action": "heating"})
+    hass = _hass({})
+    reading = readings._build_tub_reading(hass, control, None)
+    assert reading["value"] == 100.0
+    assert reading["state"] == "ON"
+
+
+def test_build_tub_reading_idle_action_is_off() -> None:
+    control = _state("heat", {"current_temperature": 100.0, "hvac_action": "idle"})
+    hass = _hass({})
+    reading = readings._build_tub_reading(hass, control, None)
+    assert reading["state"] == "OFF"
+
+
+def test_build_tub_reading_falls_back_to_temp_entity_id() -> None:
+    control = _state("heat", {})
+    sensor = _state("98.0", {})
+    hass = _hass({"sensor.tub_temp": sensor})
+    reading = readings._build_tub_reading(hass, control, "sensor.tub_temp")
+    assert reading["value"] == 98.0
+
+
+def test_build_tub_reading_no_source_pushes_nothing() -> None:
+    control = _state("heat", {})
+    hass = _hass({})
+    reading = readings._build_tub_reading(hass, control, None)
+    assert reading is None
+
+
+def test_build_tub_reading_no_source_even_with_entity_id_configured() -> None:
+    """temp_entity_id is set but doesn't resolve to a state -- still no
+    fabricated reading."""
+    control = _state("heat", {})
+    hass = _hass({})
+    reading = readings._build_tub_reading(hass, control, "sensor.missing")
+    assert reading is None
+
+
+@pytest.mark.parametrize("value,expected", [(10.0, 32.0), (200.0, 120.0)])
+def test_build_tub_reading_clamped_32_to_120(value: float, expected: float) -> None:
+    control = _state("heat", {"current_temperature": value})
+    hass = _hass({})
+    reading = readings._build_tub_reading(hass, control, None)
+    assert reading["value"] == expected
+
+
+def test_tub_metric_current_temperature_converts_to_fahrenheit() -> None:
+    control = _state("heat", {"current_temperature": 37.0})
+    hass = _metric(_hass({}))
+    reading = readings._build_tub_reading(hass, control, None)
+    assert reading["value"] == 98.6
+
+
+@pytest.mark.asyncio
+async def test_capture_hot_tub_appends_to_appliance_bucket() -> None:
+    appliance = {
+        "id": "tub-1",
+        "appliance_type": "hot_tub",
+        "config": {"entity_id": "climate.tub"},
+    }
+    control = _state("heat", {"current_temperature": 100.0, "hvac_action": "heating"})
+    hass = _hass({"climate.tub": control})
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        n = await readings.capture_readings(hass, _entry())
+
+    assert n == 1
+    buf = hass.data[DOMAIN]["readings_buffer"]
+    assert buf["tub-1"][0]["value"] == 100.0
+    assert buf["tub-1"][0]["state"] == "ON"
+    assert "home" not in buf or len(buf["home"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_capture_hot_tub_no_usable_temp_pushes_no_reading() -> None:
+    appliance = {
+        "id": "tub-1",
+        "appliance_type": "hot_tub",
+        "config": {"entity_id": "climate.tub"},
+    }
+    control = _state("heat", {})
+    hass = _hass({"climate.tub": control})
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        n = await readings.capture_readings(hass, _entry())
+
+    assert n == 0
+    buf = hass.data[DOMAIN].get("readings_buffer", {})
+    assert "tub-1" not in buf
+
+
 # --- out-of-range indoor temperature --------------------------
 
 

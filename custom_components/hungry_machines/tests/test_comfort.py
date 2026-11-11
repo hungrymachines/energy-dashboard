@@ -548,15 +548,22 @@ def test_release_still_needs_inside_by_margin_and_min_on_with_stepped_edge():
 
 # --- Stepping ratchet --------------------------------------
 
-def test_guard_step_clamps_immediately_when_band_is_narrow():
-    """Band 67-69: a breach at 69.6 steps down by GUARD_STEP_F (2.0) from
-    the high edge, which lands exactly on `low` — clamped on the very
-    first step."""
+def test_first_step_stops_at_the_middle_of_a_narrow_band():
+    """Band 67-69: a full GUARD_STEP_F (2.0) from the high edge would land
+    on `low`. The first step stops at the middle (68.0); only a room still
+    breached after MIN_ON_SECONDS takes the next step, down to `low`."""
     override, latch = comfort.decide(
         indoor=69.6, high=69.0, low=67.0, sched_mode="cool", latch=None, now=T0,
     )
-    assert override == ("COOL", 67.0)
-    assert latch["command_f"] == 67.0
+    assert override == ("COOL", 68.0)
+    assert latch["command_f"] == 68.0
+
+    later = T0 + timedelta(seconds=comfort.MIN_ON_SECONDS + 1)
+    override2, latch2 = comfort.decide(
+        indoor=69.6, high=69.0, low=67.0, sched_mode="cool", latch=latch, now=later,
+    )
+    assert override2 == ("COOL", 67.0)
+    assert latch2["command_f"] == 67.0
 
 
 def test_guard_steps_down_again_after_min_on_still_breached_never_below_low():
@@ -609,3 +616,137 @@ def test_guard_does_not_step_again_before_min_on_elapses():
     )
     assert override3 == ("COOL", 72.0)
     assert latch3 is latch2
+
+
+# ---------------------------------------------------------------------------
+# Narrow bands, the Auto lockout, and OFF overrides that need a running unit
+# (November 2026)
+# ---------------------------------------------------------------------------
+
+LATER = T0 + timedelta(seconds=comfort.MIN_ON_SECONDS + 1)
+
+
+def test_the_2026_11_10_cycle_no_longer_reverses():
+    """A heat pump in Auto with a 70-71.6 band. The guard used to heat to
+    71.6, overshoot, cool to 70.0, undershoot and heat again inside forty
+    minutes. Now: HEAT aims at the middle, lets go there, and the
+    overshoot that follows is not answered with cooling."""
+    band = dict(high=71.6, low=70.0, sched_mode="auto")
+
+    # 22:20 the room dips under the floor: HEAT, at the middle of the band.
+    override, latch = comfort.decide(indoor=69.9, latch=None, now=T0, **band)
+    assert override == ("HEAT", pytest.approx(70.8))
+
+    # Ten minutes on the room is back in the middle third: the guard lets go.
+    override, released = comfort.decide(
+        indoor=70.6, latch=latch, now=LATER, conditioning=comfort.IDLE, **band,
+    )
+    assert override is None and released is None
+    last = {"direction": "heat", "at": LATER}
+
+    # 22:40 the unit's own overshoot puts the room over the ceiling. It has
+    # stopped, so nothing is commanded.
+    soon = LATER + timedelta(minutes=5)
+    override, latch = comfort.decide(
+        indoor=72.0, latch=None, now=soon, conditioning=comfort.IDLE,
+        last_correction=last, **band,
+    )
+    assert override is None and latch is None
+
+    # Still heating past the ceiling: stopped, not cooled.
+    override, latch = comfort.decide(
+        indoor=72.0, latch=None, now=soon, conditioning=comfort.HEATING,
+        last_correction=last, **band,
+    )
+    assert override == ("OFF", 71.6)
+
+
+def test_the_lockout_ends_and_a_far_breach_overrides_it():
+    band = dict(high=71.6, low=70.0, sched_mode="auto")
+    last = {"direction": "heat", "at": T0}
+
+    # Two degrees past the ceiling is weather, not overshoot: cool at once.
+    override, _ = comfort.decide(
+        indoor=73.7, latch=None, now=T0 + timedelta(minutes=5),
+        conditioning=comfort.IDLE, last_correction=last, **band,
+    )
+    assert override == ("COOL", pytest.approx(70.8))
+
+    # A small breach that outlasts the lockout gets its COOL too.
+    after = T0 + timedelta(seconds=comfort.CROSS_LOCKOUT_SECONDS + 1)
+    override, _ = comfort.decide(
+        indoor=72.0, latch=None, now=after, conditioning=comfort.IDLE,
+        last_correction=last, **band,
+    )
+    assert override == ("COOL", pytest.approx(70.8))
+
+
+def test_the_lockout_only_covers_the_opposite_direction():
+    """A second dip under the floor after a HEAT correction heats again."""
+    override, _ = comfort.decide(
+        indoor=69.5, high=71.6, low=70.0, sched_mode="auto", latch=None,
+        now=T0 + timedelta(minutes=5),
+        last_correction={"direction": "heat", "at": T0},
+    )
+    assert override is not None and override[0] == "HEAT"
+
+
+def test_a_wide_band_is_unchanged():
+    """64-76: the first step is still a full GUARD_STEP_F and the release
+    margin is still RELEASE_MARGIN_F."""
+    override, latch = comfort.decide(
+        indoor=76.5, high=76.0, low=64.0, sched_mode="cool", latch=None, now=T0,
+    )
+    assert override == ("COOL", 74.0)
+    held, _ = comfort.decide(
+        indoor=75.2, high=76.0, low=64.0, sched_mode="cool", latch=latch, now=LATER,
+    )
+    assert held == ("COOL", 74.0)            # 0.8 inside is not yet 1.0
+    released, _ = comfort.decide(
+        indoor=74.9, high=76.0, low=64.0, sched_mode="cool", latch=latch, now=LATER,
+    )
+    assert released is None
+
+
+def test_floating_above_a_heat_days_ceiling_is_left_alone():
+    """A 61-66 night band under a house floating at 70 with the furnace
+    off. There is nothing to stop, so no override, and the guard does not
+    report itself in control all night."""
+    override, latch = comfort.decide(
+        indoor=70.0, high=66.0, low=61.0, sched_mode="heat", latch=None, now=T0,
+        conditioning=comfort.IDLE,
+    )
+    assert override is None and latch is None
+
+
+def test_heating_past_a_heat_days_ceiling_is_stopped_then_released():
+    args = dict(high=66.0, low=61.0, sched_mode="heat")
+    override, latch = comfort.decide(
+        indoor=70.0, latch=None, now=T0, conditioning=comfort.HEATING, **args,
+    )
+    assert override == ("OFF", 66.0)
+    # Held for the minimum time even once the unit reports idle...
+    held, _ = comfort.decide(
+        indoor=70.0, latch=latch, now=T0 + timedelta(seconds=60),
+        conditioning=comfort.IDLE, **args,
+    )
+    assert held == ("OFF", 66.0)
+    # ...then released: the room is only floating.
+    released, cleared = comfort.decide(
+        indoor=70.0, latch=latch, now=LATER, conditioning=comfort.IDLE, **args,
+    )
+    assert released is None and cleared is None
+
+
+def test_no_activity_signal_keeps_the_old_off_override():
+    """A unit that cannot say what it is doing is stopped as before."""
+    override, _ = comfort.decide(
+        indoor=70.0, high=66.0, low=61.0, sched_mode="heat", latch=None, now=T0,
+    )
+    assert override == ("OFF", 66.0)
+
+
+def test_cooling_past_a_cool_days_floor_mirrors_it():
+    args = dict(high=78.0, low=72.0, sched_mode="cool", latch=None, now=T0)
+    assert comfort.decide(indoor=70.0, conditioning=comfort.IDLE, **args)[0] is None
+    assert comfort.decide(indoor=70.0, conditioning=comfort.COOLING, **args)[0] == ("OFF", 72.0)

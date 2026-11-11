@@ -784,6 +784,34 @@ def _build_water_heater_reading(
     }
 
 
+def _build_pump_reading(control_state: Any) -> dict:
+    state_label = _on_off_state(control_state.state)
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "state": state_label,
+        "value": 1.0 if state_label == "ON" else 0.0,
+    }
+
+
+def _build_tub_reading(
+    hass: HomeAssistant, control_state: Any, temp_entity_id: str | None
+) -> dict | None:
+    attrs = control_state.attributes or {}
+    value = units.climate_attr_f(hass, attrs.get("current_temperature"))
+    if value is None and temp_entity_id:
+        temp_state = _read_state(hass, temp_entity_id)
+        if temp_state is not None:
+            value = units.sensor_state_f(hass, temp_state)
+    if value is None:
+        return None
+    hvac_action = str(attrs.get("hvac_action") or "").strip().lower()
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "state": "ON" if hvac_action == "heating" else "OFF",
+        "value": max(32.0, min(120.0, value)),
+    }
+
+
 def _buffer(hass: HomeAssistant) -> dict[str, list[dict]]:
     return hass.data.setdefault(DOMAIN, {}).setdefault(_BUFFER_KEY, {})
 
@@ -932,6 +960,19 @@ async def capture_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
         elif atype == "water_heater":
             reading = _build_water_heater_reading(
                 hass, control_state, config.get("temp_entity_id")
+            )
+            if reading is None:
+                continue
+            _append(hass, aid, reading)
+            captured += 1
+        elif atype == "pool_pump":
+            reading = _build_pump_reading(control_state)
+            _append(hass, aid, reading)
+            captured += 1
+        elif atype == "hot_tub":
+            reading = _build_tub_reading(
+                hass, control_state,
+                config.get("temp_entity_id") if isinstance(config, dict) else None,
             )
             if reading is None:
                 continue

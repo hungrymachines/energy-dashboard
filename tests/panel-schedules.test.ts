@@ -94,6 +94,37 @@ const ROBOT_SCHEDULE = {
   source: 'optimization',
 };
 
+const POOL_PUMP_SCHEDULE = {
+  appliance_id: 'pool-1',
+  appliance_type: 'pool_pump' as const,
+  name: 'Pool Pump',
+  schedule: {
+    intervals: Array<boolean>(48).fill(false).map((_, i) => i >= 16 && i < 32),
+    value_trajectory: Array.from({ length: 48 }, (_, i) => (i < 16 ? 0 : Math.min(100, (i - 16) * 10))),
+    unit: 'percent',
+    min_value: 0,
+    target_value: 100,
+    deadline_interval: 31,
+  },
+  savings_pct: 9.1,
+  source: 'optimization',
+};
+
+const HOT_TUB_SCHEDULE = {
+  appliance_id: 'tub-1',
+  appliance_type: 'hot_tub' as const,
+  name: 'Backyard Spa',
+  schedule: {
+    intervals: Array<boolean>(48).fill(false).map((_, i) => i >= 38 && i < 41),
+    temp_trajectory: Array.from({ length: 48 }, (_, i) => (i >= 36 && i < 42 ? 102 : 90)),
+    high_temps: Array<number>(48).fill(112),
+    low_temps: Array.from({ length: 48 }, (_, i) => (i >= 38 && i < 41 ? 102 : 90)),
+    unit: 'fahrenheit',
+  },
+  savings_pct: 6.3,
+  source: 'optimization',
+};
+
 // a solar schedule row carries no control-entity intervals —
 // just this array's generation curve plus whole-home surplus/export facts.
 const SOLAR_SCHEDULE = {
@@ -223,12 +254,12 @@ describe('hungry-machines-panel dashboard', () => {
     // example card for every appliance type they haven't registered yet
     // ("Not Connected" placeholders). The fixture registers hvac +
     // ev_charger, so the dashboard adds home_battery + water_heater +
-    // solar + robot examples. Solar uses a chart-less tile, so the
-    // optimization chart count is 2 (real) + 3 (battery, water_heater,
-    // robot example) = 5.
+    // solar + robot + pool_pump + hot_tub examples. Solar uses a
+    // chart-less tile, so the optimization chart count is 2 (real) + 5
+    // (battery, water_heater, robot, pool_pump, hot_tub example) = 7.
     expect(root.querySelectorAll('.cards > .card[data-appliance-type]').length).toBe(2);
-    expect(root.querySelectorAll('.cards > .card-shell.example').length).toBe(4);
-    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(5);
+    expect(root.querySelectorAll('.cards > .card-shell.example').length).toBe(6);
+    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(7);
     expect(root.querySelectorAll('hm-schedule-chart').length).toBe(0);
 
     const content = root.querySelector('section.content')!;
@@ -394,12 +425,12 @@ describe('hungry-machines-panel dashboard', () => {
     const root = el.shadowRoot!;
     const content = root.querySelector('section.content')!;
     // v2.5: with zero registered appliances we render the full
-    // 6-type set as example "Not Connected" cards so the user can see
+    // 8-type set as example "Not Connected" cards so the user can see
     // each option. Solar uses a chart-less tile (just text + size),
-    // so optimization charts = 5 (hvac, ev_charger, home_battery,
-    // water_heater, robot).
-    expect(root.querySelectorAll('.cards > .card-shell.example').length).toBe(6);
-    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(5);
+    // so optimization charts = 7 (hvac, ev_charger, home_battery,
+    // water_heater, robot, pool_pump, hot_tub).
+    expect(root.querySelectorAll('.cards > .card-shell.example').length).toBe(8);
+    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(7);
     expect(root.querySelectorAll('hm-schedule-chart').length).toBe(0);
     expect(content.textContent).toContain('Not Connected');
     expect(content.textContent).toContain('Add appliance');
@@ -452,12 +483,12 @@ describe('hungry-machines-panel dashboard', () => {
     await flush(el);
 
     expect(root.querySelector('.error')).toBeNull();
-    // After retry: 2 registered (hvac + ev_charger) + 4 example types
-    // (home_battery + water_heater + solar + robot). Solar has no chart,
-    // so total optimization charts = 5.
+    // After retry: 2 registered (hvac + ev_charger) + 6 example types
+    // (home_battery + water_heater + solar + robot + pool_pump + hot_tub).
+    // Solar has no chart, so total optimization charts = 7.
     expect(root.querySelectorAll('.cards > .card[data-appliance-type]').length).toBe(2);
-    expect(root.querySelectorAll('.cards > .card-shell.example').length).toBe(4);
-    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(5);
+    expect(root.querySelectorAll('.cards > .card-shell.example').length).toBe(6);
+    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(7);
     expect(root.querySelectorAll('hm-schedule-chart').length).toBe(0);
   });
 });
@@ -708,10 +739,11 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
 
     const root = el.shadowRoot!;
     expect(root.querySelector('.error')).toBeNull();
-    // 2 real (hvac + ev_charger) + 4 example types (home_battery,
-    // water_heater, solar, robot). Solar has no chart, so total = 5.
+    // 2 real (hvac + ev_charger) + 6 example types (home_battery,
+    // water_heater, solar, robot, pool_pump, hot_tub). Solar has no
+    // chart, so total = 7.
     expect(root.querySelectorAll('.cards > .card[data-appliance-type]').length).toBe(2);
-    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(5);
+    expect(root.querySelectorAll('hm-optimization-chart').length).toBe(7);
     expect(root.querySelectorAll('hm-schedule-chart').length).toBe(0);
   });
 
@@ -792,6 +824,238 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
     expect(robotChart.lowLimits).toEqual(Array<number>(48).fill(25));
     // deadline_interval: 18 (09:00), target_value: 90 → marker dot
     expect(robotChart.targetMarker).toEqual({ interval: 18, value: 90 });
+  });
+
+  it('renders a pool pump with a percent chart and deadline marker', async () => {
+    const SCHED = {
+      date: '2025-11-18',
+      appliances: [HVAC_SCHEDULE, POOL_PUMP_SCHEDULE],
+    };
+    installFetchStub({
+      '/api/v1/schedules': SCHED,
+      '/api/v1/rates': RATES_RESPONSE,
+      '/api/v1/preferences': PREFS_DEFAULT,
+    });
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+
+    const el = mountPanel();
+    el._view = 'dashboard';
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const poolCard = root.querySelector('.card[data-appliance-type="pool_pump"]')!;
+    expect(poolCard).not.toBeNull();
+    expect(poolCard.textContent).toContain('Pool Pump');
+    const poolChart = poolCard.querySelector<
+      HTMLElement & {
+        unit?: string;
+        lowLimits?: number[];
+        targetValues?: number[];
+        targetMarker?: { interval: number; value: number; label?: string };
+      }
+    >('hm-optimization-chart')!;
+    expect(poolChart).not.toBeNull();
+    expect(poolChart.unit).toBe('percent');
+    expect(poolChart.lowLimits).toEqual(Array<number>(48).fill(0));
+    expect(poolChart.targetMarker).toEqual({ interval: 31, value: 100 });
+  });
+
+  it('renders a hot tub with a fahrenheit chart', async () => {
+    const SCHED = {
+      date: '2025-11-18',
+      appliances: [HVAC_SCHEDULE, HOT_TUB_SCHEDULE],
+    };
+    installFetchStub({
+      '/api/v1/schedules': SCHED,
+      '/api/v1/rates': RATES_RESPONSE,
+      '/api/v1/preferences': PREFS_DEFAULT,
+    });
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+
+    const el = mountPanel();
+    el._view = 'dashboard';
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const tubCard = root.querySelector('.card[data-appliance-type="hot_tub"]')!;
+    expect(tubCard).not.toBeNull();
+    expect(tubCard.textContent).toContain('Backyard Spa');
+    const tubChart = tubCard.querySelector<
+      HTMLElement & {
+        unit?: string;
+        highLimits?: number[];
+        lowLimits?: number[];
+        targetValues?: number[];
+      }
+    >('hm-optimization-chart')!;
+    expect(tubChart).not.toBeNull();
+    expect(tubChart.unit).toBe('fahrenheit');
+    expect(tubChart.highLimits).toEqual(Array<number>(48).fill(112));
+    expect(tubChart.targetValues!.length).toBe(48);
+  });
+
+  it('water heater card shows "Heats to..." when a sanitize cycle is planned today', async () => {
+    const SCHED = {
+      date: '2025-11-18',
+      appliances: [
+        {
+          ...WATER_HEATER_SCHEDULE,
+          schedule: {
+            ...WATER_HEATER_SCHEDULE.schedule,
+            sanitize: {
+              planned: true,
+              start_slot: 38,
+              hold_slots: 3,
+              temp_f: 140,
+              last_cycle_date: '2025-11-16',
+              last_cycle_verified: null,
+            },
+          },
+        },
+      ],
+    };
+    installFetchStub({
+      '/api/v1/schedules': SCHED,
+      '/api/v1/rates': RATES_RESPONSE,
+      '/api/v1/preferences': PREFS_DEFAULT,
+    });
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+
+    const el = mountPanel();
+    el._view = 'dashboard';
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const whCard = root.querySelector('.card[data-appliance-type="water_heater"]')!;
+    expect(whCard.textContent).toMatch(/Heats to 140° at 7:00 PM today/);
+    expect(whCard.textContent).not.toContain('Last');
+  });
+
+  it('water heater card shows the last cycle date when none is planned today', async () => {
+    const SCHED = {
+      date: '2025-11-18',
+      appliances: [
+        {
+          ...WATER_HEATER_SCHEDULE,
+          schedule: {
+            ...WATER_HEATER_SCHEDULE.schedule,
+            sanitize: {
+              planned: false,
+              start_slot: null,
+              hold_slots: 3,
+              temp_f: 140,
+              last_cycle_date: '2025-11-16',
+              last_cycle_verified: true,
+            },
+          },
+        },
+      ],
+    };
+    installFetchStub({
+      '/api/v1/schedules': SCHED,
+      '/api/v1/rates': RATES_RESPONSE,
+      '/api/v1/preferences': PREFS_DEFAULT,
+    });
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+
+    const el = mountPanel();
+    el._view = 'dashboard';
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const whCard = root.querySelector('.card[data-appliance-type="water_heater"]')!;
+    expect(whCard.textContent).toMatch(/Last 140° cycle: Nov 16/);
+    expect(whCard.textContent).not.toContain('did not reach');
+  });
+
+  it('water heater card warns when the last cycle did not verify at temperature', async () => {
+    const SCHED = {
+      date: '2025-11-18',
+      appliances: [
+        {
+          ...WATER_HEATER_SCHEDULE,
+          schedule: {
+            ...WATER_HEATER_SCHEDULE.schedule,
+            sanitize: {
+              planned: false,
+              start_slot: null,
+              hold_slots: 3,
+              temp_f: 140,
+              last_cycle_date: '2025-11-16',
+              last_cycle_verified: false,
+            },
+          },
+        },
+      ],
+    };
+    installFetchStub({
+      '/api/v1/schedules': SCHED,
+      '/api/v1/rates': RATES_RESPONSE,
+      '/api/v1/preferences': PREFS_DEFAULT,
+    });
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+
+    const el = mountPanel();
+    el._view = 'dashboard';
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const whCard = root.querySelector('.card[data-appliance-type="water_heater"]')!;
+    expect(whCard.textContent).toMatch(/Last 140° cycle: Nov 16/);
+    expect(whCard.textContent?.replace(/\s+/g, ' ')).toContain(
+      'The tank did not reach 140° last time. Check that its thermostat is set at least that high.',
+    );
+  });
+
+  it('water heater card shows no sanitize line when the schedule carries no sanitize object', async () => {
+    const SCHED = {
+      date: '2025-11-18',
+      appliances: [WATER_HEATER_SCHEDULE],
+    };
+    installFetchStub({
+      '/api/v1/schedules': SCHED,
+      '/api/v1/rates': RATES_RESPONSE,
+      '/api/v1/preferences': PREFS_DEFAULT,
+    });
+    setAuthState({
+      access: 'ACCESS',
+      refresh: 'REFRESH',
+      status: 'authed',
+      user: SAMPLE_USER,
+    });
+
+    const el = mountPanel();
+    el._view = 'dashboard';
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const whCard = root.querySelector('.card[data-appliance-type="water_heater"]')!;
+    expect(whCard.querySelector('.sanitize-info')).toBeNull();
   });
 });
 

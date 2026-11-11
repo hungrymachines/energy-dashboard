@@ -50,6 +50,16 @@ Apply logic per type (called once on each :00 / :30 boundary):
   (never undock, never fight the robot's own task schedule). A
   low-battery guard (entity's `battery_level` below `schedule.min_value`)
   docks regardless of slot. See `_apply_robot`.
+* `pool_pump` — same boolean → switch service mapping, joining
+  `ev_charger` / `home_battery` / `water_heater` in `_apply_switch`.
+* `hot_tub` — read `schedule.setpoint_temps[slot]` (the ready/eco target
+  the backend picked, in °F) and call `climate.set_temperature` /
+  `water_heater.set_temperature` by entity domain. The target is
+  clamped to the entity's `min_temp`/`max_temp` and snapped to its
+  `target_temp_step` the same way HVAC setpoints are, and the call is
+  skipped when the entity already reports that target within 0.1°.
+  Unlike HVAC this never commands a mode and never calls `turn_off` —
+  a tub has no off-cycle to apply. See `_apply_tub`.
 
 A misconfigured / missing entity is logged and skipped, never crashes.
 
@@ -104,6 +114,10 @@ _SLOTS_PER_DAY = 48
 # apply/watchdog calls so the hysteresis min-on-time and release deadband
 # survive between the 5-min watchdog ticks and the 30-min slot applies.
 _COMFORT_LATCH_KEY = "comfort_latch"
+# Per entity, the guard's last finished COOL/HEAT correction:
+# {"direction": "cool"|"heat", "at": datetime}. Read back by
+# `comfort.decide` so an Auto plan does not answer its own overshoot.
+_GUARD_HISTORY_KEY = "comfort_guard_history"
 
 # Widens the comfort guard's trigger thresholds during an active
 # calibration phase — mirrors the backend's own retrospective comfort
@@ -398,13 +412,18 @@ def _publish_schedule_states(hass: HomeAssistant, cache: dict[str, Any]) -> None
                 attributes[key] = value
 
         state_value: Any = "unknown"
-        if atype == "hvac":
+        # Both temperature-target types publish the slot's setpoint as the
+        # sensor's state; every switch type publishes on/off below. A type
+        # in neither group reads "unknown" in Dev Tools -> States.
+        if atype in ("hvac", "hot_tub"):
             sp = _resolve_setpoint(schedule, slot)
             if sp is not None:
                 state_value = sp
                 attributes["unit_of_measurement"] = "°F"
                 attributes["device_class"] = "temperature"
-        elif atype in ("ev_charger", "home_battery", "water_heater", "robot"):
+        elif atype in (
+            "ev_charger", "home_battery", "water_heater", "robot", "pool_pump",
+        ):
             intervals = schedule.get("intervals") or []
             if slot < len(intervals):
                 state_value = "on" if bool(intervals[slot]) else "off"
@@ -713,6 +732,27 @@ def _match_entity_option(
     return None
 
 
+_ACTION_CONDITIONING = {
+    "heating": comfort.HEATING,
+    "preheating": comfort.HEATING,
+    "cooling": comfort.COOLING,
+    "idle": comfort.IDLE,
+    "off": comfort.IDLE,
+    "fan": comfort.IDLE,
+}
+
+
+def _conditioning(hass: HomeAssistant, entity_id: str) -> str | None:
+    """What the unit says it is doing (`hvac_action`), in the guard's
+    terms, or None when the entity has no such attribute or reports
+    something else (drying, defrosting). None makes the guard act as it
+    did before it could ask."""
+    state = hass.states.get(entity_id) if hass.states else None
+    attrs = getattr(state, "attributes", None) or {} if state else {}
+    action = str(attrs.get("hvac_action") or "").strip().lower()
+    return _ACTION_CONDITIONING.get(action)
+
+
 def _log_comfort_silence(hass: HomeAssistant, entity_id: str, reason: str | None) -> None:
     """Rate-limited WARNING for a tick where the comfort guard did NOT
     act on `entity_id`, even though it might plausibly need to.
@@ -808,6 +848,7 @@ def _release_control_on_pause(
             _LOGGER.debug("verify timer cancel failed for %s: %s", entity_id, err)
     (data.get(_LAST_COMMANDED_KEY) or {}).pop(entity_id, None)
     (data.get(_COMFORT_LATCH_KEY) or {}).pop(entity_id, None)
+    (data.get(_GUARD_HISTORY_KEY) or {}).pop(entity_id, None)
     _LOGGER.info(
         "Hungry Machines released %s: plan paused until %s",
         entity_id, paused_until or "indefinitely",
@@ -1176,6 +1217,7 @@ def _comfort_band_override(
     high = _band_edge(schedule, "high_temps", slot)
     low = _band_edge(schedule, "low_temps", slot)
 
+    history = _domain_data(hass).setdefault(_GUARD_HISTORY_KEY, {})
     override, new_latch = comfort.decide(
         indoor=indoor,
         high=high,
@@ -1184,11 +1226,19 @@ def _comfort_band_override(
         latch=prev_latch,
         now=now,
         overshoot_f=overshoot_f,
+        conditioning=_conditioning(hass, entity_id),
+        last_correction=history.get(entity_id),
     )
     _persist(new_latch)
 
     was_active = bool(prev_latch and prev_latch.get("active"))
     now_active = bool(new_latch and new_latch.get("active"))
+    # Remember a COOL/HEAT correction once it ends (released, or replaced
+    # by another kind), for the Auto cross-direction lockout.
+    prev_direction = prev_latch.get("direction") if was_active else None
+    new_direction = new_latch.get("direction") if now_active else None
+    if prev_direction in ("cool", "heat") and new_direction != prev_direction:
+        history[entity_id] = {"direction": prev_direction, "at": now}
     # A latch the day's mode no longer fits is dropped and the breach judged
     # afresh, so a new direction is a new engagement and gets its own line.
     redirected = (
@@ -1648,6 +1698,10 @@ async def _apply_hvac(
                 )
                 setpoint = clamped
 
+    mode_canonical, setpoint = _heat_floor_instead_of_off(
+        hass, entity_id, schedule, slot, mode_canonical, setpoint,
+    )
+
     # Record the schedule's intent for this slot BEFORE any service
     # calls so the readings collector has a consistent ground-truth
     # snapshot of what the AC is supposed to be doing — including for
@@ -1806,6 +1860,48 @@ async def _apply_hvac(
         expected_fan=fan_label,
         slot=slot,
     )
+
+
+def _heat_floor_instead_of_off(
+    hass: HomeAssistant,
+    entity_id: str,
+    schedule: dict,
+    slot: int,
+    mode_canonical: str | None,
+    setpoint: float | None,
+) -> tuple[str | None, float | None]:
+    """On a heating day, express OFF as HEAT at the band's low edge.
+
+    A thermostat switched to `off` heats nothing until something switches
+    it back, and that something is this integration. If Home Assistant
+    stops overnight in January (a crash, a power cut to the box, a lost
+    radio), an `off` thermostat stays off; the 50 degF freeze floor only
+    runs while we do. Left in `heat` at the floor of its comfort band it
+    does nothing while the room is above that floor, which is what OFF
+    was asking for, and it keeps the house there on its own if we go
+    away.
+
+    Applies to the plan's OFF slots and to the guard's OFF override
+    alike. Only for a unit that reports `hvac_action`: the backend reads
+    a commanded HEAT as running time on a unit with no activity signal of
+    its own, and those are window units, not the central heating this is
+    for. A cooling day's OFF is left as OFF: a thermostat that stays off
+    in July costs comfort, not pipes.
+    """
+    if mode_canonical != "OFF":
+        return mode_canonical, setpoint
+    if str(schedule.get("mode") or "").strip().lower() != "heat":
+        return mode_canonical, setpoint
+    floor = _band_edge(schedule, "low_temps", slot)
+    if floor is None:
+        return mode_canonical, setpoint
+    state = hass.states.get(entity_id) if hass.states else None
+    attrs = getattr(state, "attributes", None) or {} if state else {}
+    if not attrs.get("hvac_action"):
+        return mode_canonical, setpoint
+    if "heat" not in [str(m).lower() for m in attrs.get("hvac_modes") or []]:
+        return mode_canonical, setpoint
+    return "HEAT", float(floor)
 
 
 def _payload_setpoint_f(payload: dict, ha_unit: str) -> float | None:
@@ -2032,6 +2128,74 @@ async def _apply_switch(
     except Exception as err:  # noqa: BLE001
         _LOGGER.warning(
             "Hungry Machines switch apply failed for %s: %s", entity_id, err
+        )
+
+
+# Hot tub entities are either `climate` or `water_heater` domain — both
+# expose `set_temperature`, but under their own service namespace.
+_TUB_DOMAINS = ("climate", "water_heater")
+
+
+async def _apply_tub(
+    hass: HomeAssistant, entity_id: str, schedule: dict, slot: int
+) -> None:
+    """Drive a hot tub's target temperature for `slot`.
+
+    `setpoint_temps[slot]` is the ready/eco target the backend already
+    picked for this half-hour (see SCHEDULE_OPTIMIZATION.md's hot_tub
+    section) — this function's only job is pushing it to the entity,
+    the same clamp-then-convert pipeline `_build_hvac_payload` uses for
+    HVAC. Unlike HVAC, a tub has no off-cycle to apply: this never
+    commands a mode and never calls `turn_off`, only `set_temperature`.
+    """
+    target_f = _resolve_setpoint(schedule, slot)
+    if target_f is None:
+        _LOGGER.warning(
+            "Hungry Machines hot tub %s: no setpoint_temps for slot %s; skipping",
+            entity_id,
+            slot,
+        )
+        return
+
+    state = hass.states.get(entity_id) if hass.states else None
+    if state is None:
+        _LOGGER.info(
+            "Hungry Machines hot tub: entity %s not found, skipping", entity_id
+        )
+        return
+    attrs = getattr(state, "attributes", None) or {}
+    ha_unit = units.ha_unit(hass)
+
+    # _clamp_to_entity_range's fallback range (45-95°F) is tuned for AC
+    # hardware, not a hot tub's 80-104°F ready band — only clamp when the
+    # entity actually advertises its own min_temp/max_temp, otherwise
+    # trust the backend's already-bounded target as-is.
+    safe_f = target_f
+    if attrs.get("min_temp") is not None or attrs.get("max_temp") is not None:
+        safe_f = _clamp_to_entity_range(entity_id, attrs, target_f, ha_unit)
+    if ha_unit == units.CELSIUS:
+        safe_f = _snap_to_device_step(safe_f, attrs, None)
+    target = units.from_f(safe_f, ha_unit)
+
+    try:
+        current = float(attrs.get("temperature"))
+    except (TypeError, ValueError):
+        current = None
+    if current is not None and abs(current - target) <= 0.1:
+        return
+
+    domain, _, _ = entity_id.partition(".")
+    service_domain = domain if domain in _TUB_DOMAINS else "climate"
+    try:
+        await hass.services.async_call(
+            service_domain,
+            "set_temperature",
+            {"entity_id": entity_id, "temperature": target},
+            blocking=False,
+        )
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning(
+            "Hungry Machines hot tub apply failed for %s: %s", entity_id, err
         )
 
 
@@ -2281,10 +2445,12 @@ async def apply_current_slot(
             await _apply_hvac(
                 hass, entity_id, schedule, slot, appliance_name=name,
             )
-        elif atype in ("ev_charger", "home_battery", "water_heater"):
+        elif atype in ("ev_charger", "home_battery", "water_heater", "pool_pump"):
             await _apply_switch(hass, entity_id, schedule, slot)
         elif atype == "robot":
             await _apply_robot(hass, entity_id, schedule, slot)
+        elif atype == "hot_tub":
+            await _apply_tub(hass, entity_id, schedule, slot)
         else:
             _LOGGER.info(
                 "Hungry Machines apply: unknown appliance_type=%s for %s; skipping",
