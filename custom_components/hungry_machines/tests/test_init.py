@@ -1,13 +1,13 @@
 """Tests for custom_components.hungry_machines.__init__ (control cadence).
 
-an earlier change: the comfort watchdog no longer fires at :00/:30 — the slot
+the comfort watchdog no longer fires at :00/:30 — the slot
 apply's own set-then-verify pass (`scheduler._schedule_apply_verification`,
 armed 60s after every apply) covers those boundaries instead. This only
 tests the `async_track_time_change` registrations `async_setup_entry`
 makes; the apply/verify and comfort logic themselves are covered by
 `test_scheduler.py` and `test_comfort.py`.
 
-an earlier change: both cadences now run `scheduler.check_schedule_freshness`
+both cadences now run `scheduler.check_schedule_freshness`
 (via the `_check_freshness_before` wrapper) immediately before their own
 duty. Those tests capture the registered callback and invoke it directly,
 rather than inspecting `async_track_time_change`'s call args.
@@ -182,7 +182,7 @@ async def test_comfort_watchdog_checks_freshness_before_running() -> None:
 
 @pytest.mark.asyncio
 async def test_comfort_watchdog_still_runs_when_freshness_check_raises() -> None:
-    """an earlier change AC: 'comfort duties always run even when the freshness
+    """'comfort duties always run even when the freshness
     call fails' — an unexpected exception out of check_schedule_freshness
     must not stop the comfort watchdog from running right after it."""
     hass = _hass()

@@ -225,7 +225,7 @@ export interface DiscoveryFinding {
 
 // Every type `findDevices` is willing to offer unprompted. hvac is left out
 // on purpose — a bare thermostat is too common and too ambiguous a signal
-// (half the fleet's climate entities) to surface as a one-tap suggestion.
+// (half of all climate entities) to surface as a one-tap suggestion.
 const DISCOVERABLE_TYPES = (Object.keys(RULES) as ApplianceType[]).filter(
   (t) => RULES[t] !== null && t !== 'hvac',
 );

@@ -229,7 +229,7 @@ The Python integration is a thin shim that registers the bundled JS file as a Lo
 
 ## Changelog
 
-See the [Releases page](https://github.com/hungrymachines/energy-dashboard/releases).
+See [CHANGELOG.md](CHANGELOG.md) for what's new in each release, or the [Releases page](https://github.com/hungrymachines/energy-dashboard/releases).
 
 ## License
 

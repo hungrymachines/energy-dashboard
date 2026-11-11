@@ -5,8 +5,7 @@ so they run under plain pytest without an HA test harness. The HA-coupled
 wrapper (`scheduler._comfort_band_override`) and the 5-min watchdog are
 integration-tested manually; the risk that needs automated coverage is the
 hysteresis logic (trigger / release deadband / minimum on-time) and how
-far the commanded setpoint steps toward the far band edge (an earlier change:
-a step, not a jump), which live entirely here.
+far the commanded setpoint steps toward the far band edge (a step, not a jump), which live entirely here.
 
 Run: pytest custom_components/hungry_machines/tests/test_comfort.py
 """

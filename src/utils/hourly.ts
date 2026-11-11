@@ -1,6 +1,4 @@
-// Owner-set default band, 2026-10-02. ONE shape for every surface (API, HACS
-// panel, the hub) — mirrors `app/services/comfort.py`'s DEFAULT_DAY_HOURS /
-// DEFAULT_NIGHT_OFFSETS / DEFAULT_DAY_OFFSETS. Offsets from base_temperature:
+// Default comfort band. The same shape the API uses. Offsets from base_temperature:
 //   00:00-07:59  base-2 .. base+1   (70-73 at base 72)
 //   08:00-21:59  base-5 .. base+6   (67-78 at base 72)
 //   22:00-23:59  base-2 .. base+1
@@ -49,16 +47,16 @@ export function hasCustomRates(rates: { source: 'custom' | 'zone' | 'dynamic' })
   return rates.source === 'custom';
 }
 
-// Mirrors `app/services/comfort.py: SAVINGS_OFFSETS` on the backend.
+// Mirrors the API's `SAVINGS_OFFSETS`.
 const SAVINGS_OFFSETS: Record<number, number> = { 1: 2.0, 2: 6.0, 3: 12.0 };
 
 // Tight tolerance (°F) when the user is at home — applied symmetrically
 // to high and low limits regardless of mode. Keep in sync with
-// `app/services/comfort.py: HOME_BAND_OFFSET`.
+// the API's `HOME_BAND_OFFSET`.
 const HOME_BAND_OFFSET = 1.0;
 
 // Default hourly-band shape. Mirrors
-// `app/services/comfort.py: DEFAULT_PEAK_HOURS` / `DEFAULT_PRECOOL_HOURS` /
+// the API's `DEFAULT_PEAK_HOURS` / `DEFAULT_PRECOOL_HOURS` /
 // `PEAK_HOME_OFFSET_MAX` / `PRECOOL_FLOOR_OFFSET`. Hours are local
 // wall-clock, half-open [start, end).
 export const DEFAULT_PEAK_HOURS: readonly [number, number] = [13, 21];
@@ -69,7 +67,7 @@ export const PRECOOL_FLOOR_OFFSET = 2.0;
 export type ComfortMode = 'cool' | 'heat' | 'auto';
 
 /** Parse "HH:MM" into a half-hour interval index (0-47). Bad input → 0.
- * Mirrors `app/services/comfort.py: _time_to_interval`. */
+ * Mirrors the API's `_time_to_interval`. */
 function timeToInterval(time: string): number {
   if (typeof time !== 'string' || !time.includes(':')) return 0;
   const [hStr, mStr] = time.split(':');
@@ -79,13 +77,13 @@ function timeToInterval(time: string): number {
   return hours * 2 + (Number.isFinite(minutes) && minutes >= 30 ? 1 : 0);
 }
 
-/** Mirrors `app/services/comfort.py: _is_away`. */
+/** Mirrors the API's `_is_away`. */
 function isAwayInterval(interval: number, awayStart: number, homeStart: number): boolean {
   if (awayStart <= homeStart) return interval >= awayStart && interval < homeStart;
   return interval >= awayStart || interval < homeStart;
 }
 
-/** Round to the nearest 0.5. Mirrors `app/services/comfort.py: _round_half`. */
+/** Round to the nearest 0.5. Mirrors the API's `_round_half`. */
 function roundHalf(value: number): number {
   return Math.round(value * 2) / 2;
 }
@@ -97,7 +95,7 @@ function roundHalf(value: number): number {
  * editor's hourly table and as the offline fallback for "Reset to
  * defaults" when the live `/preferences/default-bands` endpoint fails.
  *
- * Ports `app/services/comfort.py: default_hourly_bands` verbatim — the
+ * Ports the API's `default_hourly_bands` verbatim — the
  * owner-set default band (see the constants above). `savings_level`,
  * `time_away` and `time_home` are accepted for signature parity with the
  * stored preferences but no longer change the result; only

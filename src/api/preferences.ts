@@ -101,8 +101,7 @@ function buildDefaultBandsQuery(params: DefaultBandsParams): string {
   return qs ? `?${qs}` : '';
 }
 
-/** Preview the shaped default hourly band (`comfort.default_hourly_bands`,
- * an earlier change) without writing anything — every param optional, falling back
+/** Preview the shaped default hourly band without writing anything — every param optional, falling back
  * to this user's stored preferences. Powers "Reset to defaults" in the
  * constraint editor. */
 export function defaultBands(params: DefaultBandsParams = {}): Promise<DefaultBandsResponse> {

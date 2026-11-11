@@ -239,7 +239,7 @@ export class HmApplianceForm extends LitElement {
       color: var(--hm-muted, #64748B);
     }
     /* Fragment-level template bindings between sibling elements silently
-       drop under this version's happy-dom  — wrapping the
+       drop under this version's happy-dom — wrapping the
        conditional in a host element avoids it. display: contents keeps the
        wrapper invisible to layout when there is nothing to show. */
     .discovery-slot {

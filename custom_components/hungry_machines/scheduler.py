@@ -121,7 +121,7 @@ _GUARD_HISTORY_KEY = "comfort_guard_history"
 
 # Widens the comfort guard's trigger thresholds during an active
 # calibration phase — mirrors the backend's own retrospective comfort
-# cap (`COMFORT_OVERSHOOT_F` in services/calibration.py). A calibration
+# cap. A calibration
 # day gets a bigger allowance for the excursion the measurement itself
 # requires, not zero local protection.
 CALIBRATION_OVERSHOOT_F = 2.0
@@ -896,7 +896,7 @@ def _resolve_indoor_temp(
 ) -> tuple[float | None, str | None, bool]:
     """Read the room temperature the plan was written against.
 
-    an earlier change precedence: the appliance's configured room sensor is
+    Precedence: the appliance's configured room sensor is
     AUTHORITATIVE, the climate entity's own `current_temperature` is the
     second source. That order matters because the backend fits, optimizes
     and publishes a band around the room sensor's number — anything on
@@ -934,7 +934,7 @@ def get_room_target(hass: HomeAssistant, entity_id: str) -> float | None:
     ASSIGNED SENSOR to read; `setpoint_temps` is the command it believes
     produces it. `readings.py` attaches this beside the unit's own
     `target_temp` so the backend can grade the pair. Returns None for
-    legacy schedules written before an earlier change.
+    legacy schedules that lack the array.
     """
     cache = _domain_data(hass).get("schedule")
     if not isinstance(cache, dict):
@@ -1012,7 +1012,7 @@ def _track_room_target(
 
     Deliberately silent when:
       * the slot carries no room target (legacy schedule, or a plant-model
-        blob written before an earlier change),
+        blob that lack the array),
       * the comfort guard's latch is active — the guard is the safety net
         and owns the entity while engaged; walking its far-edge command
         back one degree at a time is exactly what must not happen,

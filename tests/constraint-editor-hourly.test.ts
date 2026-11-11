@@ -117,7 +117,7 @@ describe('hm-constraint-editor hourly bands (table is the primary control)', () 
 
     // base=72, savings=3 (away offset 12), away 08:00-17:00 — same
     // fixture the old flat-band test used; home hour 0 and away hour 12
-    // are unaffected by the an earlier change peak/precool shaping, so they
+    // are unaffected by the peak/precool shaping, so they
     // still pin the original expected values.
     const el = mountEditor({
       applianceId: 'hvac-1',

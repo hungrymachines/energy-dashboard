@@ -127,7 +127,7 @@ describe('hasCustomRates', () => {
 });
 
 // ---- deriveHourlyComfortBand ports comfort.default_hourly_bands
-// verbatim. Cases mirror tests/test_comfort.py 1:1 (Python
+// verbatim. Cases mirror the API's tests 1:1 (Python
 // test name in each `it` title) so the two stay in lockstep.
 
 describe('deriveHourlyComfortBand', () => {
@@ -169,7 +169,7 @@ describe('deriveHourlyComfortBand', () => {
 
   it('test_default_hourly_bands_ignores_level_away_and_home', () => {
     // ONE band for everybody. This panel used to default to level 3 (60-84
-    // away at base 72) while the hub used 2 and the API used 1.
+    // away at base 72) while the API used 1.
     const ref = deriveHourlyComfortBand({
       base_temperature: 72.0,
       savings_level: 1,
@@ -257,8 +257,7 @@ describe('deriveHourlyComfortBand', () => {
   });
 
   // --- Cross-package parity -------------------------------------------
-  // Pinned with the same names in the API tests/test_comfort.py
-  // (the source of truth) and the hub/tests/comfort.test.ts.
+  // Pinned against the API's own values.
   const PARITY_COOL_HIGH = [
     73.0, 73.0, 73.0, 73.0, 73.0, 73.0, 73.0, 73.0,
     78.0, 78.0, 78.0, 78.0, 78.0, 78.0, 78.0, 78.0,

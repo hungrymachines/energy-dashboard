@@ -1,0 +1,4197 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Hungry Machines API",
+    "version": "3.0.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health Check",
+        "operationId": "health_check_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/signup": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Signup",
+        "operationId": "signup_auth_signup_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Login",
+        "operationId": "login_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Refresh",
+        "operationId": "refresh_auth_refresh_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Get Me",
+        "operationId": "get_me_auth_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Update Me",
+        "operationId": "update_me_auth_me_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProfileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/readings": {
+      "post": {
+        "tags": [
+          "readings"
+        ],
+        "summary": "Post Readings",
+        "operationId": "post_readings_api_v1_readings_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/app__routes__readings__ReadingsBatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadingsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/preferences": {
+      "get": {
+        "tags": [
+          "preferences"
+        ],
+        "summary": "Get Preferences",
+        "operationId": "get_preferences_api_v1_preferences_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreferencesResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "preferences"
+        ],
+        "summary": "Put Preferences",
+        "operationId": "put_preferences_api_v1_preferences_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreferencesUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreferencesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/preferences/default-bands": {
+      "get": {
+        "tags": [
+          "preferences"
+        ],
+        "summary": "Get Default Bands",
+        "operationId": "get_default_bands_api_v1_preferences_default_bands_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "base_temperature",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Base Temperature"
+            }
+          },
+          {
+            "name": "savings_level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Savings Level"
+            }
+          },
+          {
+            "name": "time_away",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Away"
+            }
+          },
+          {
+            "name": "time_home",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Home"
+            }
+          },
+          {
+            "name": "optimization_mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Optimization Mode"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefaultBandsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/schedule": {
+      "get": {
+        "tags": [
+          "schedules"
+        ],
+        "summary": "Get Schedule",
+        "operationId": "get_schedule_api_v1_schedule_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appliance_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Appliance Id"
+            },
+            "description": "UUID of the HVAC appliance whose schedule to return. Optional when the user has exactly one HVAC (the legacy single-HVAC client path); required as a 400 when the user has 2+ HVACs."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/schedules": {
+      "get": {
+        "tags": [
+          "schedules"
+        ],
+        "summary": "Get All Schedules",
+        "operationId": "get_all_schedules_api_v1_schedules_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/schedules/updated-at": {
+      "get": {
+        "tags": [
+          "schedules"
+        ],
+        "summary": "Get Schedules Updated At",
+        "operationId": "get_schedules_updated_at_api_v1_schedules_updated_at_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/integration/sensors": {
+      "get": {
+        "tags": [
+          "schedules"
+        ],
+        "summary": "Get Integration Sensor Health",
+        "operationId": "get_integration_sensor_health_api_v1_integration_sensors_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/integration/health": {
+      "get": {
+        "tags": [
+          "schedules"
+        ],
+        "summary": "Get Integration Health",
+        "operationId": "get_integration_health_api_v1_integration_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/integration/health/divergence": {
+      "get": {
+        "tags": [
+          "schedules"
+        ],
+        "summary": "Get Integration Divergence",
+        "operationId": "get_integration_divergence_api_v1_integration_health_divergence_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/schedules/history": {
+      "get": {
+        "tags": [
+          "schedules"
+        ],
+        "summary": "Get Schedule History",
+        "operationId": "get_schedule_history_api_v1_schedules_history_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appliance_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Appliance Id"
+            },
+            "description": "If omitted, returns history for every appliance the user owns."
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start"
+            },
+            "description": "ISO date (YYYY-MM-DD). Default: end - 14 days."
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            },
+            "description": "ISO date (YYYY-MM-DD). Default: today."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/schedule/recompute": {
+      "post": {
+        "tags": [
+          "schedules"
+        ],
+        "summary": "Recompute Schedule",
+        "operationId": "recompute_schedule_api_v1_schedule_recompute_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/appliances": {
+      "get": {
+        "tags": [
+          "appliances"
+        ],
+        "summary": "List Appliances",
+        "operationId": "list_appliances_api_v1_appliances_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "appliances"
+        ],
+        "summary": "Create Appliance",
+        "operationId": "create_appliance_api_v1_appliances_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplianceCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/appliances/{appliance_id}": {
+      "put": {
+        "tags": [
+          "appliances"
+        ],
+        "summary": "Update Appliance",
+        "operationId": "update_appliance_api_v1_appliances__appliance_id__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appliance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Appliance Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplianceUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "appliances"
+        ],
+        "summary": "Delete Appliance",
+        "operationId": "delete_appliance_api_v1_appliances__appliance_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appliance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Appliance Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/appliances/{appliance_id}/readings": {
+      "post": {
+        "tags": [
+          "appliances"
+        ],
+        "summary": "Post Appliance Readings",
+        "operationId": "post_appliance_readings_api_v1_appliances__appliance_id__readings_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appliance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Appliance Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/app__routes__appliances__ReadingsBatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/appliances/{appliance_id}/constraints": {
+      "get": {
+        "tags": [
+          "appliances"
+        ],
+        "summary": "Get Constraints",
+        "operationId": "get_constraints_api_v1_appliances__appliance_id__constraints_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appliance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Appliance Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "appliances"
+        ],
+        "summary": "Set Constraints",
+        "operationId": "set_constraints_api_v1_appliances__appliance_id__constraints_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appliance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Appliance Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Constraints"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/appliances/{appliance_id}/schedule": {
+      "get": {
+        "tags": [
+          "appliances"
+        ],
+        "summary": "Get Appliance Schedule",
+        "operationId": "get_appliance_schedule_api_v1_appliances__appliance_id__schedule_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appliance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Appliance Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/appliances/{appliance_id}/command": {
+      "post": {
+        "tags": [
+          "appliances"
+        ],
+        "summary": "Post Appliance Command",
+        "operationId": "post_appliance_command_api_v1_appliances__appliance_id__command_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appliance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Appliance Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/appliances/{appliance_id}/preferences/default-bands": {
+      "get": {
+        "tags": [
+          "appliance-preferences"
+        ],
+        "summary": "Get Appliance Default Bands",
+        "operationId": "get_appliance_default_bands_api_v1_appliances__appliance_id__preferences_default_bands_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appliance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Appliance Id"
+            }
+          },
+          {
+            "name": "base_temperature",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Base Temperature"
+            }
+          },
+          {
+            "name": "savings_level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Savings Level"
+            }
+          },
+          {
+            "name": "time_away",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Away"
+            }
+          },
+          {
+            "name": "time_home",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Home"
+            }
+          },
+          {
+            "name": "optimization_mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Optimization Mode"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefaultBandsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/appliances/{appliance_id}/preferences": {
+      "get": {
+        "tags": [
+          "appliance-preferences"
+        ],
+        "summary": "Get Appliance Preferences",
+        "operationId": "get_appliance_preferences_api_v1_appliances__appliance_id__preferences_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appliance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Appliance Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliancePreferencesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "appliance-preferences"
+        ],
+        "summary": "Put Appliance Preferences",
+        "operationId": "put_appliance_preferences_api_v1_appliances__appliance_id__preferences_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appliance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Appliance Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppliancePreferencesUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliancePreferencesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/appliances/{appliance_id}/pause": {
+      "post": {
+        "tags": [
+          "appliance-preferences"
+        ],
+        "summary": "Pause Appliance",
+        "operationId": "pause_appliance_api_v1_appliances__appliance_id__pause_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appliance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Appliance Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PauseRequest",
+                "default": {
+                  "minutes": 120
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PauseResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/appliances/{appliance_id}/resume": {
+      "post": {
+        "tags": [
+          "appliance-preferences"
+        ],
+        "summary": "Resume Appliance",
+        "operationId": "resume_appliance_api_v1_appliances__appliance_id__resume_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appliance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Appliance Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PauseResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rates": {
+      "get": {
+        "tags": [
+          "rates"
+        ],
+        "summary": "Get Rates",
+        "operationId": "get_rates_api_v1_rates_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RatesResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "rates"
+        ],
+        "summary": "Put Rates",
+        "operationId": "put_rates_api_v1_rates_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RatesUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RatesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/rates/tariffs": {
+      "get": {
+        "tags": [
+          "rates"
+        ],
+        "summary": "List Tariffs",
+        "operationId": "list_tariffs_api_v1_rates_tariffs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "country",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Country"
+            },
+            "description": "Exact country code, case-insensitive (US, CA)."
+          },
+          {
+            "name": "region",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Region"
+            },
+            "description": "Case-insensitive substring match on region."
+          },
+          {
+            "name": "utility",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Utility"
+            },
+            "description": "Exact utility name, case-insensitive (SCE, SMUD)."
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            },
+            "description": "Free-text search — case-insensitive substring over utility, plan_name, and region."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/weather": {
+      "post": {
+        "tags": [
+          "weather"
+        ],
+        "summary": "Push Weather",
+        "operationId": "push_weather_api_v1_weather_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WeatherPush"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WeatherPushResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/calibration/status": {
+      "get": {
+        "tags": [
+          "calibration"
+        ],
+        "summary": "Get Calibration Status",
+        "operationId": "get_calibration_status_api_v1_calibration_status_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appliance_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Appliance Id"
+            },
+            "description": "UUID of the HVAC appliance. Optional when the user has exactly one HVAC; required otherwise (400 if missing)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/calibration/start": {
+      "post": {
+        "tags": [
+          "calibration"
+        ],
+        "summary": "Start Calibration",
+        "operationId": "start_calibration_api_v1_calibration_start_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_ApplianceIdBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/calibration/skip": {
+      "post": {
+        "tags": [
+          "calibration"
+        ],
+        "summary": "Skip Calibration",
+        "operationId": "skip_calibration_api_v1_calibration_skip_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_ApplianceIdBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/feedback": {
+      "post": {
+        "tags": [
+          "feedback"
+        ],
+        "summary": "Submit Feedback",
+        "operationId": "submit_feedback_api_v1_feedback_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackSubmission"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ApplianceCreate": {
+        "properties": {
+          "appliance_type": {
+            "type": "string",
+            "title": "Appliance Type"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "config": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Config",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "required": [
+          "appliance_type",
+          "name"
+        ],
+        "title": "ApplianceCreate"
+      },
+      "AppliancePreferencesResponse": {
+        "properties": {
+          "base_temperature": {
+            "type": "number",
+            "title": "Base Temperature"
+          },
+          "savings_level": {
+            "type": "integer",
+            "title": "Savings Level"
+          },
+          "time_away": {
+            "type": "string",
+            "title": "Time Away"
+          },
+          "time_home": {
+            "type": "string",
+            "title": "Time Home"
+          },
+          "optimization_mode": {
+            "type": "string",
+            "title": "Optimization Mode"
+          },
+          "hourly_high_temps_f": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly High Temps F"
+          },
+          "hourly_low_temps_f": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly Low Temps F"
+          },
+          "weekday_bands": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "additionalProperties": {
+                    "items": {
+                      "type": "number"
+                    },
+                    "type": "array"
+                  },
+                  "type": "object"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weekday Bands"
+          },
+          "optimize_hvac_fan": {
+            "type": "boolean",
+            "title": "Optimize Hvac Fan",
+            "default": false
+          },
+          "optimize_hvac_mode": {
+            "type": "boolean",
+            "title": "Optimize Hvac Mode",
+            "default": false
+          },
+          "optimization_enabled": {
+            "type": "boolean",
+            "title": "Optimization Enabled",
+            "default": true
+          },
+          "paused_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paused Until"
+          }
+        },
+        "type": "object",
+        "required": [
+          "base_temperature",
+          "savings_level",
+          "time_away",
+          "time_home",
+          "optimization_mode"
+        ],
+        "title": "AppliancePreferencesResponse"
+      },
+      "AppliancePreferencesUpdate": {
+        "properties": {
+          "base_temperature": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Temperature"
+          },
+          "savings_level": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Savings Level"
+          },
+          "time_away": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Away"
+          },
+          "time_home": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Home"
+          },
+          "optimization_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Optimization Mode"
+          },
+          "hourly_high_temps_f": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly High Temps F"
+          },
+          "hourly_low_temps_f": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly Low Temps F"
+          },
+          "weekday_bands": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "additionalProperties": {
+                    "items": {
+                      "type": "number"
+                    },
+                    "type": "array"
+                  },
+                  "type": "object"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weekday Bands"
+          },
+          "optimize_hvac_fan": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Optimize Hvac Fan"
+          },
+          "optimize_hvac_mode": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Optimize Hvac Mode"
+          },
+          "optimization_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Optimization Enabled"
+          }
+        },
+        "type": "object",
+        "title": "AppliancePreferencesUpdate"
+      },
+      "ApplianceReading": {
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "value": {
+            "type": "number",
+            "title": "Value"
+          },
+          "power_watts": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Power Watts"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "timestamp",
+          "state",
+          "value"
+        ],
+        "title": "ApplianceReading"
+      },
+      "ApplianceUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config"
+          },
+          "optimization_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Optimization Enabled"
+          }
+        },
+        "type": "object",
+        "title": "ApplianceUpdate"
+      },
+      "ClientInfo": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "hacs",
+              "node",
+              "custom"
+            ],
+            "title": "Kind"
+          },
+          "version": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Version"
+          },
+          "node_bundle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Node Bundle"
+          },
+          "ha_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ha Version"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9 ._-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "version"
+        ],
+        "title": "ClientInfo"
+      },
+      "DefaultBandsResponse": {
+        "properties": {
+          "hourly_high_temps_f": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Hourly High Temps F"
+          },
+          "hourly_low_temps_f": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Hourly Low Temps F"
+          },
+          "peak_hours": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Peak Hours"
+          },
+          "precool_hours": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Precool Hours"
+          }
+        },
+        "type": "object",
+        "required": [
+          "hourly_high_temps_f",
+          "hourly_low_temps_f",
+          "peak_hours",
+          "precool_hours"
+        ],
+        "title": "DefaultBandsResponse"
+      },
+      "DeliveryTariffOption": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "external_id": {
+            "type": "string",
+            "title": "External Id"
+          },
+          "plan_name": {
+            "type": "string",
+            "title": "Plan Name"
+          },
+          "utility": {
+            "type": "string",
+            "title": "Utility"
+          },
+          "region": {
+            "type": "string",
+            "title": "Region"
+          },
+          "period_rates": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period Rates"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "external_id",
+          "plan_name",
+          "utility",
+          "region"
+        ],
+        "title": "DeliveryTariffOption"
+      },
+      "DeviceCommand": {
+        "properties": {
+          "power": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Power"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "COOL",
+                  "HEAT",
+                  "OFF"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "target_temp_f": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Temp F"
+          },
+          "fan": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "high",
+                  "auto"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fan"
+          },
+          "hold": {
+            "type": "boolean",
+            "title": "Hold",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "DeviceCommand"
+      },
+      "DynamicZoneOption": {
+        "properties": {
+          "slug": {
+            "type": "string",
+            "title": "Slug"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          }
+        },
+        "type": "object",
+        "required": [
+          "slug",
+          "label"
+        ],
+        "title": "DynamicZoneOption"
+      },
+      "FeedbackResponse": {
+        "properties": {
+          "stored": {
+            "type": "boolean",
+            "title": "Stored"
+          }
+        },
+        "type": "object",
+        "required": [
+          "stored"
+        ],
+        "title": "FeedbackResponse"
+      },
+      "FeedbackSubmission": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "category": {
+            "type": "string",
+            "title": "Category",
+            "default": "comment"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "title": "FeedbackSubmission"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HvacScheduleBody": {
+        "properties": {
+          "intervals": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Intervals"
+          },
+          "high_temps": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "High Temps"
+          },
+          "low_temps": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Low Temps"
+          },
+          "temp_trajectory": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temp Trajectory"
+          },
+          "setpoint_temps": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Setpoint Temps"
+          }
+        },
+        "type": "object",
+        "required": [
+          "intervals",
+          "high_temps",
+          "low_temps"
+        ],
+        "title": "HvacScheduleBody"
+      },
+      "LoginRequest": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "title": "Email"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "LoginRequest"
+      },
+      "MeResponse": {
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "title": "User Id"
+          },
+          "email": {
+            "type": "string",
+            "title": "Email"
+          },
+          "location_zip": {
+            "type": "string",
+            "title": "Location Zip"
+          },
+          "home_size_sqft": {
+            "type": "integer",
+            "title": "Home Size Sqft"
+          },
+          "pricing_location": {
+            "type": "integer",
+            "title": "Pricing Location"
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Timezone"
+          },
+          "subscription_tier": {
+            "type": "string",
+            "title": "Subscription Tier"
+          },
+          "weather_entity_id": {
+            "type": "string",
+            "title": "Weather Entity Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id",
+          "email",
+          "location_zip",
+          "home_size_sqft",
+          "pricing_location",
+          "timezone",
+          "subscription_tier"
+        ],
+        "title": "MeResponse"
+      },
+      "PauseRequest": {
+        "properties": {
+          "minutes": {
+            "type": "integer",
+            "maximum": 1440,
+            "minimum": 1,
+            "title": "Minutes",
+            "default": 120
+          }
+        },
+        "type": "object",
+        "title": "PauseRequest"
+      },
+      "PauseResponse": {
+        "properties": {
+          "appliance_id": {
+            "type": "string",
+            "title": "Appliance Id"
+          },
+          "paused_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paused Until"
+          },
+          "optimization_enabled": {
+            "type": "boolean",
+            "title": "Optimization Enabled"
+          },
+          "pause_state": {
+            "type": "string",
+            "title": "Pause State"
+          }
+        },
+        "type": "object",
+        "required": [
+          "appliance_id",
+          "optimization_enabled",
+          "pause_state"
+        ],
+        "title": "PauseResponse"
+      },
+      "PreferencesResponse": {
+        "properties": {
+          "base_temperature": {
+            "type": "number",
+            "title": "Base Temperature"
+          },
+          "savings_level": {
+            "type": "integer",
+            "title": "Savings Level"
+          },
+          "time_away": {
+            "type": "string",
+            "title": "Time Away"
+          },
+          "time_home": {
+            "type": "string",
+            "title": "Time Home"
+          },
+          "optimization_mode": {
+            "type": "string",
+            "title": "Optimization Mode"
+          },
+          "hourly_high_temps_f": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly High Temps F"
+          },
+          "hourly_low_temps_f": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly Low Temps F"
+          },
+          "optimize_hvac_fan": {
+            "type": "boolean",
+            "title": "Optimize Hvac Fan",
+            "default": false
+          },
+          "optimize_hvac_mode": {
+            "type": "boolean",
+            "title": "Optimize Hvac Mode",
+            "default": false
+          },
+          "optimization_enabled": {
+            "type": "boolean",
+            "title": "Optimization Enabled",
+            "default": true
+          },
+          "newsletter_opt_in": {
+            "type": "boolean",
+            "title": "Newsletter Opt In",
+            "default": true
+          },
+          "spike_guard_enabled": {
+            "type": "boolean",
+            "title": "Spike Guard Enabled",
+            "default": true
+          },
+          "max_concurrent_appliances": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent Appliances"
+          },
+          "power_cap_kw": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Power Cap Kw"
+          },
+          "base_load_reserve_kw": {
+            "type": "number",
+            "title": "Base Load Reserve Kw",
+            "default": 0
+          },
+          "demand_charge_usd_per_kw": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Charge Usd Per Kw"
+          },
+          "demand_window_start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Window Start"
+          },
+          "demand_window_end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Window End"
+          },
+          "temperature_unit": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "F",
+                  "C"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperature Unit"
+          },
+          "chart_scale": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "standard",
+                  "dynamic"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chart Scale"
+          },
+          "solar_chart_scale": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "max",
+                  "dynamic"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Solar Chart Scale"
+          }
+        },
+        "type": "object",
+        "required": [
+          "base_temperature",
+          "savings_level",
+          "time_away",
+          "time_home",
+          "optimization_mode"
+        ],
+        "title": "PreferencesResponse"
+      },
+      "PreferencesUpdate": {
+        "properties": {
+          "base_temperature": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Temperature"
+          },
+          "savings_level": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Savings Level"
+          },
+          "time_away": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Away"
+          },
+          "time_home": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Home"
+          },
+          "optimization_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Optimization Mode"
+          },
+          "hourly_high_temps_f": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly High Temps F"
+          },
+          "hourly_low_temps_f": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly Low Temps F"
+          },
+          "optimize_hvac_fan": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Optimize Hvac Fan"
+          },
+          "optimize_hvac_mode": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Optimize Hvac Mode"
+          },
+          "optimization_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Optimization Enabled"
+          },
+          "newsletter_opt_in": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newsletter Opt In"
+          },
+          "spike_guard_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spike Guard Enabled"
+          },
+          "max_concurrent_appliances": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent Appliances"
+          },
+          "power_cap_kw": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Power Cap Kw"
+          },
+          "base_load_reserve_kw": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Load Reserve Kw"
+          },
+          "demand_charge_usd_per_kw": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Charge Usd Per Kw"
+          },
+          "demand_window_start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Window Start"
+          },
+          "demand_window_end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Window End"
+          },
+          "temperature_unit": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "F",
+                  "C"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperature Unit"
+          },
+          "chart_scale": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "standard",
+                  "dynamic"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chart Scale"
+          },
+          "solar_chart_scale": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "max",
+                  "dynamic"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Solar Chart Scale"
+          }
+        },
+        "type": "object",
+        "title": "PreferencesUpdate"
+      },
+      "PricingZoneOption": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "slug": {
+            "type": "string",
+            "title": "Slug"
+          },
+          "utility": {
+            "type": "string",
+            "title": "Utility"
+          },
+          "plan": {
+            "type": "string",
+            "title": "Plan"
+          },
+          "region": {
+            "type": "string",
+            "title": "Region"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "notes": {
+            "type": "string",
+            "title": "Notes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "slug",
+          "utility",
+          "plan",
+          "region",
+          "label",
+          "notes"
+        ],
+        "title": "PricingZoneOption"
+      },
+      "RatesResponse": {
+        "properties": {
+          "pricing_location": {
+            "type": "integer",
+            "title": "Pricing Location"
+          },
+          "intervals": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Intervals"
+          },
+          "rates_cents_per_kwh": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Rates Cents Per Kwh"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "season": {
+            "type": "string",
+            "title": "Season"
+          },
+          "hourly_rates_cents_per_kwh": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly Rates Cents Per Kwh"
+          },
+          "pricing_source": {
+            "type": "string",
+            "title": "Pricing Source"
+          },
+          "dynamic_zone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dynamic Zone"
+          },
+          "pricing_adder_cents_per_kwh": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pricing Adder Cents Per Kwh"
+          },
+          "tariff_ruleset_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tariff Ruleset Id"
+          },
+          "rate_rin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate Rin"
+          },
+          "rin_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rin Status"
+          },
+          "available_dynamic_zones": {
+            "items": {
+              "$ref": "#/components/schemas/DynamicZoneOption"
+            },
+            "type": "array",
+            "title": "Available Dynamic Zones"
+          },
+          "available_pricing_zones": {
+            "items": {
+              "$ref": "#/components/schemas/PricingZoneOption"
+            },
+            "type": "array",
+            "title": "Available Pricing Zones"
+          },
+          "adder_grid_ruleset_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adder Grid Ruleset Id"
+          },
+          "available_delivery_tariffs": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryTariffOption"
+            },
+            "type": "array",
+            "title": "Available Delivery Tariffs",
+            "default": []
+          },
+          "delivery_tod_cents": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Tod Cents"
+          },
+          "unit": {
+            "type": "string",
+            "title": "Unit",
+            "default": "cents/kWh"
+          },
+          "currency": {
+            "type": "string",
+            "title": "Currency",
+            "default": "USD"
+          },
+          "export_rates_cents_per_kwh": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Export Rates Cents Per Kwh"
+          },
+          "export_rate_mode": {
+            "type": "string",
+            "title": "Export Rate Mode",
+            "default": "retail"
+          },
+          "export_supply_available": {
+            "type": "boolean",
+            "title": "Export Supply Available",
+            "default": false
+          },
+          "export_supply_basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Export Supply Basis"
+          },
+          "effective_export_rates_cents_per_kwh": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Export Rates Cents Per Kwh"
+          }
+        },
+        "type": "object",
+        "required": [
+          "pricing_location",
+          "intervals",
+          "rates_cents_per_kwh",
+          "source",
+          "season",
+          "pricing_source",
+          "available_dynamic_zones",
+          "available_pricing_zones"
+        ],
+        "title": "RatesResponse"
+      },
+      "RatesUpdate": {
+        "properties": {
+          "hourly_rates_cents_per_kwh": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly Rates Cents Per Kwh"
+          },
+          "pricing_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pricing Source"
+          },
+          "dynamic_zone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dynamic Zone"
+          },
+          "pricing_adder_cents_per_kwh": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pricing Adder Cents Per Kwh"
+          },
+          "pricing_location": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pricing Location"
+          },
+          "tariff_ruleset_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tariff Ruleset Id"
+          },
+          "rate_rin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate Rin"
+          },
+          "adder_grid_ruleset_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adder Grid Ruleset Id"
+          },
+          "delivery_tod_cents": {
+            "title": "Delivery Tod Cents"
+          },
+          "export_rates_cents_per_kwh": {
+            "title": "Export Rates Cents Per Kwh"
+          },
+          "export_rate_mode": {
+            "title": "Export Rate Mode"
+          }
+        },
+        "type": "object",
+        "title": "RatesUpdate"
+      },
+      "ReadingsResponse": {
+        "properties": {
+          "accepted": {
+            "type": "integer",
+            "title": "Accepted"
+          }
+        },
+        "type": "object",
+        "required": [
+          "accepted"
+        ],
+        "title": "ReadingsResponse"
+      },
+      "RefreshRequest": {
+        "properties": {
+          "refresh_token": {
+            "type": "string",
+            "title": "Refresh Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "refresh_token"
+        ],
+        "title": "RefreshRequest"
+      },
+      "ScheduleResponse": {
+        "properties": {
+          "date": {
+            "type": "string",
+            "title": "Date"
+          },
+          "schedule": {
+            "$ref": "#/components/schemas/HvacScheduleBody"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "estimated_savings_pct": {
+            "type": "number",
+            "title": "Estimated Savings Pct"
+          },
+          "model_confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Confidence"
+          },
+          "generated_at": {
+            "type": "string",
+            "title": "Generated At"
+          },
+          "stale": {
+            "type": "boolean",
+            "title": "Stale",
+            "default": false
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "default": "optimization"
+          },
+          "optimization_enabled": {
+            "type": "boolean",
+            "title": "Optimization Enabled",
+            "default": true
+          },
+          "paused_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paused Until"
+          },
+          "pause_state": {
+            "type": "string",
+            "title": "Pause State",
+            "default": "active"
+          }
+        },
+        "type": "object",
+        "required": [
+          "date",
+          "schedule",
+          "mode",
+          "estimated_savings_pct",
+          "generated_at"
+        ],
+        "title": "ScheduleResponse"
+      },
+      "SensorReading": {
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "indoor_temp": {
+            "type": "number",
+            "title": "Indoor Temp"
+          },
+          "hvac_state": {
+            "type": "string",
+            "title": "Hvac State"
+          },
+          "indoor_humidity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indoor Humidity"
+          },
+          "outdoor_temp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outdoor Temp"
+          },
+          "target_temp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Temp"
+          },
+          "fan_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fan Mode"
+          },
+          "power_watts": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Power Watts"
+          },
+          "appliance_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Appliance Id"
+          },
+          "commanded_hvac_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commanded Hvac Mode"
+          },
+          "commanded_fan_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commanded Fan Mode"
+          },
+          "commanded_setpoint": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commanded Setpoint"
+          },
+          "hvac_action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hvac Action"
+          },
+          "indoor_source": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "sensor",
+                  "entity"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indoor Source"
+          },
+          "thermostat_mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 20
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thermostat Mode"
+          },
+          "override_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Active"
+          },
+          "room_target": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Room Target"
+          },
+          "setpoint_step_f": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Setpoint Step F"
+          }
+        },
+        "type": "object",
+        "required": [
+          "timestamp",
+          "indoor_temp",
+          "hvac_state"
+        ],
+        "title": "SensorReading"
+      },
+      "SignupRequest": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "title": "Email"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password"
+          },
+          "location_zip": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Zip"
+          },
+          "home_size_sqft": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Home Size Sqft"
+          },
+          "pricing_location": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pricing Location"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          },
+          "newsletter_opt_in": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newsletter Opt In"
+          }
+        },
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "SignupRequest"
+      },
+      "UpdateProfileRequest": {
+        "properties": {
+          "location_zip": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Zip"
+          },
+          "home_size_sqft": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Home Size Sqft"
+          },
+          "pricing_location": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pricing Location"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          },
+          "weather_entity_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weather Entity Id"
+          }
+        },
+        "type": "object",
+        "title": "UpdateProfileRequest"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WeatherForecast": {
+        "properties": {
+          "hourly_temps_f": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Hourly Temps F"
+          },
+          "hourly_humidity": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly Humidity"
+          },
+          "hourly_wind_mph": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly Wind Mph"
+          },
+          "forecast_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forecast Date"
+          },
+          "hourly_cloud_coverage_pct": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly Cloud Coverage Pct"
+          },
+          "hourly_precipitation_mm": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly Precipitation Mm"
+          },
+          "hourly_solar_irradiance_w": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hourly Solar Irradiance W"
+          }
+        },
+        "type": "object",
+        "required": [
+          "hourly_temps_f"
+        ],
+        "title": "WeatherForecast"
+      },
+      "WeatherPush": {
+        "properties": {
+          "forecast": {
+            "$ref": "#/components/schemas/WeatherForecast"
+          }
+        },
+        "type": "object",
+        "required": [
+          "forecast"
+        ],
+        "title": "WeatherPush"
+      },
+      "WeatherPushResponse": {
+        "properties": {
+          "accepted_hours": {
+            "type": "integer",
+            "title": "Accepted Hours"
+          },
+          "pushed_at": {
+            "type": "string",
+            "title": "Pushed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "accepted_hours",
+          "pushed_at"
+        ],
+        "title": "WeatherPushResponse"
+      },
+      "_ApplianceIdBody": {
+        "properties": {
+          "appliance_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Appliance Id"
+          }
+        },
+        "type": "object",
+        "title": "_ApplianceIdBody"
+      },
+      "app__routes__appliances__ReadingsBatch": {
+        "properties": {
+          "readings": {
+            "items": {
+              "$ref": "#/components/schemas/ApplianceReading"
+            },
+            "type": "array",
+            "title": "Readings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "readings"
+        ],
+        "title": "ReadingsBatch"
+      },
+      "app__routes__readings__ReadingsBatch": {
+        "properties": {
+          "readings": {
+            "items": {
+              "$ref": "#/components/schemas/SensorReading"
+            },
+            "type": "array",
+            "title": "Readings"
+          },
+          "client": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClientInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "readings"
+        ],
+        "title": "ReadingsBatch"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

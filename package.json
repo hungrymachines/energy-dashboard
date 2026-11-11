@@ -8,6 +8,7 @@
     "build": "rollup -c",
     "test": "vitest run",
     "dev": "rollup -c -w",
+    "trim": "node scripts/trim-openapi.mjs",
     "codegen": "openapi-typescript openapi.snapshot.json -o src/api/generated.ts",
     "check:contract": "tsc --noEmit"
   },

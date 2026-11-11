@@ -668,7 +668,7 @@ describe('hungry-machines-panel comfort overlay (US-FE-CHART-OVERLAY-01)', () =>
     // HVAC: editor seeds from the per-appliance prefs row, not from
     // appliance.config (which only has hvac_type/home_size_sqft) AND
     // not from the user-level /api/v1/preferences row. Under
-    // an earlier change the per-appliance row is the source of truth so
+    // the per-appliance row is the source of truth so
     // two HVACs under one user can hold and submit independent
     // values.
     (el as unknown as { _openEditor: (id: string, t: string) => Promise<void> })._openEditor(

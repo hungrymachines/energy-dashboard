@@ -293,7 +293,7 @@ async def test_check_schedule_freshness_skips_when_not_newer() -> None:
 async def test_check_schedule_freshness_fetches_and_applies_when_newer() -> None:
     """A server-side re-optimization (newer updated_at) → re-fetch, then
     re-apply the current slot — the apply arms its own +60s verify per
-    an earlier change, so nothing extra is needed here."""
+    the consolidated cadence, so nothing extra is needed here."""
     hass = _hass()
     hass.data[DOMAIN] = {scheduler._SCHEDULE_UPDATED_AT_KEY: "2026-09-05T10:00:00+00:00"}
     entry = _entry()
@@ -364,7 +364,7 @@ def _hvac_cache(
     Optional fan_mode_schedule / hvac_mode_schedule simulate the
     Phase C/D opt-in arrays the backend writes when the user enables
     fan or mode optimization. `indoor_temp_entity_id` simulates the
-    an earlier change aux sensor id, when configured.
+    aux sensor id, when configured.
     """
     schedule: dict = {
         "high_temps": [74.0] * 48,
@@ -451,7 +451,7 @@ async def test_apply_hvac_clamps_setpoint_below_entity_min() -> None:
     ))
     entry = _entry()
     hass.data[DOMAIN] = _hvac_cache(setpoint=59.0)  # below AC min
-    # Widen the comfort band so the new an earlier change band clamp doesn't
+    # Widen the comfort band so the band clamp doesn't
     # intercept the value first — this test is specifically about the
     # hardware-range clamp.
     hass.data[DOMAIN]["schedule"]["hvac-1"]["schedule"]["low_temps"] = [50.0] * 48
@@ -473,7 +473,7 @@ async def test_apply_hvac_clamps_setpoint_above_entity_max() -> None:
     ))
     entry = _entry()
     hass.data[DOMAIN] = _hvac_cache(setpoint=92.0)  # above AC max
-    # Widen the comfort band so the new an earlier change band clamp doesn't
+    # Widen the comfort band so the band clamp doesn't
     # intercept the value first — this test is specifically about the
     # hardware-range clamp.
     hass.data[DOMAIN]["schedule"]["hvac-1"]["schedule"]["high_temps"] = [95.0] * 48
@@ -2523,7 +2523,7 @@ async def test_comfort_guard_uses_climate_entity_when_aux_unusable() -> None:
 
 @pytest.mark.asyncio
 async def test_fetch_caches_indoor_temp_entity_id_when_configured() -> None:
-    """an earlier change added indoor_temp_entity_id to the /schedules entities
+    """indoor_temp_entity_id was added to the /schedules entities
     projection; the schedule cache must carry it through for the aux
     fallback, and stay None when the appliance has none configured."""
     hass = _hass()
@@ -3109,7 +3109,7 @@ async def test_tracking_step_respects_its_own_min_interval() -> None:
 @pytest.mark.asyncio
 async def test_tracking_step_silent_without_room_targets() -> None:
     """A legacy schedule (no `room_target_temps`) tracks nothing — the
-    pre-an earlier change watchdog behaviour, unchanged."""
+    earlier watchdog behaviour, unchanged."""
     hass = _hass(_track_state(74.0))
     entry = _entry()
     cache = _track_cache()
@@ -3138,7 +3138,7 @@ async def test_tracking_step_skips_an_off_slot() -> None:
 
 @pytest.mark.asyncio
 async def test_tracking_step_reads_the_assigned_room_sensor_first() -> None:
-    """an earlier change precedence: with a room sensor configured, the tracker
+    """Precedence: with a room sensor configured, the tracker
     judges THAT number, not the thermostat's own reading. Thermostat
     says 73.0 (on target, would be silent); the room sensor says 73.8,
     off target but still inside the band, so the tracker — not the
@@ -3189,7 +3189,7 @@ async def test_slot_apply_still_seeds_the_plan_setpoint() -> None:
 # The tests above hand `_track_room_target` a cache built by hand. This one
 # starts one step earlier, at the wire: an `/api/v1/schedules` body shaped
 # exactly like the one the API's own cross-story check reads back
-# (the API  tests/test_phase3_cross_story.py, check (a)) goes
+# (the API test suite) goes
 # through `fetch_today_schedule` and out the other side as a stepped
 # `set_temperature`. Nothing between the two halves is mocked, so a
 # projection that quietly drops `room_target_temps` — the API's, or the
@@ -3271,7 +3271,7 @@ async def test_cross_story_api_room_target_reaches_the_tracking_loop() -> None:
 
 @pytest.mark.asyncio
 async def test_cross_story_a_legacy_api_body_tracks_nothing() -> None:
-    """The same path against an API that predates an earlier change: no
+    """The same path against an API that predates room targets: no
     `room_target_temps` on the wire, so the watchdog stays silent rather
     than inventing a target out of the setpoint."""
     body = _api_schedules_body_with_room_targets()

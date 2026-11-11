@@ -141,13 +141,11 @@ async def post_home_readings(
     """POST a batch of home sensor readings to /api/v1/readings.
 
     Used for HVAC thermal-model data. The API accepts up to 100 readings
-    per call (per app/routes/readings.py:46), so an hourly batch of 12 is
+    per call, so an hourly batch of 12 is
     well within bounds.
 
     The batch carries a `client` object identifying this build (HACS vs
-    fleet node, integration version, node bundle, HA version). The
-    backend stamps it onto the user row and raises a fleet event when it
-    moves; it is display-only and never changes how a reading is stored.
+    hub, integration version, node bundle, HA version). It is display-only and never changes how a reading is stored.
     """
     if not readings:
         return False

@@ -27,7 +27,7 @@ from homeassistant.runner import RuntimeConfig  # noqa: E402
 ENTITY = "climate.hm_smoke"
 SENSOR = "sensor.hm_room"
 AUX_SENSOR = "sensor.hm_aux"
-READINGS_MIN_F, READINGS_MAX_F = 30.0, 120.0  # the API  routes/readings.py
+READINGS_MIN_F, READINGS_MAX_F = 30.0, 120.0  # the API accepts this range
 
 
 def schedule(setpoint_f: float, low_f: float, high_f: float, mode: str) -> dict:

@@ -1,8 +1,8 @@
 """Tests for custom_components.hungry_machines.version.
 
-The `client` object rides on every readings push so fleet diagnostics
+The `client` object rides on every readings push so diagnostics
 can answer "which build is this home running?". Shape is pinned by
-`ClientInfo` in the backend's `app/routes/readings.py`: `kind` is a
+`ClientInfo` in the API: `kind` is a
 Literal['hacs','node'] and `version` must be 1-40 chars, so both are
 asserted here as well as the HACS/node split itself.
 """

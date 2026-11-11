@@ -90,7 +90,7 @@ const TEST_HASS_NO_REGISTRY: DiscoveryHass = {
 // hot_tub — above findDevices' threshold, unlike TEST_HASS_DISCOVERY's
 // keyword-only (score 2) water_heater candidates — with a sibling
 // temperature sensor so picking the suggestion also exercises the
-// an earlier change companion fill.
+// Companion fill.
 const TEST_HASS_FOUND_DEVICES: DiscoveryHass = {
   states: {
     'climate.spa': { attributes: { friendly_name: 'Spa' } },

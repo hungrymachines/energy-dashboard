@@ -3,7 +3,7 @@ import { apiFetch } from './client.js';
 /**
  * Typed wrappers for /api/v1/calibration/{status,start,skip}.
  *
- * See `the API API_CONTRACT.md` ("Calibration" section) for
+ * See the API docs ("Calibration" section) for
  * payload shapes. On the first qualifying warm day the backend runs a
  * 6-hour cooling schedule (`fan_excitation`) so the thermal model gets
  * direct measurements of cool_low and cool_high; on a heating day the
@@ -28,8 +28,7 @@ export interface CalibrationDerivedRates {
   notes?: string[];
   // A setpoint_step run's derived_rates carries only these two fields —
   // no cooling slopes were measured, so the display fields above are
-  // absent (not null) on that shape. See the API 
-  // services/calibration.py DerivedRates.to_dict().
+  // absent (not null) on that shape.
   kind?: string;
   phases_observed?: number;
 }

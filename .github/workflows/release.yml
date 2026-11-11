@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - run: npm run check:contract
+
+      - run: npm test
+
+      - run: npm run build
+
+      - name: Verify built bundle exists
+        run: ls -lh custom_components/hungry_machines/frontend/hungry-machines.js
+
+      - name: Zip integration for HACS
+        run: |
+          cd custom_components/hungry_machines
+          zip -r ../../hungry_machines.zip .
+          cd ../..
+          ls -lh hungry_machines.zip
+
+      - name: Create release and attach assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            hungry_machines.zip
+            custom_components/hungry_machines/frontend/hungry-machines.js
+          fail_on_unmatched_files: true
+          generate_release_notes: false

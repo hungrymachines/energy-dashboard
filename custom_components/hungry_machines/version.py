@@ -1,17 +1,15 @@
 """Client identity — which build of which integration is talking to the API.
 
-The backend stamps `users.client_kind` / `client_version` /
-`client_node_bundle` from the `client` object on every readings push and
-raises a `client_version_change` fleet event when it moves
-(`app/routes/readings.py`). That lets fleet diagnostics answer "which
-build is this home running?" without asking the customer.
+The API records the `client` object sent on every readings push. That
+lets support answer "which build is this home running?" without asking
+the customer.
 
 Two deployments share this integration:
 
 * **HACS** — the customer installed the package into their own Home
   Assistant. Nothing sets `HM_NODE_BUNDLE`, so `kind` is `"hacs"` and
   `node_bundle` is None.
-* **Fleet node** — the Hungry Machines hub passes `HM_NODE_BUNDLE`
+* **Hub** — the Hungry Machines hub passes `HM_NODE_BUNDLE`
   into the Home Assistant container, so the bundle version rides along
   with the integration version and `kind` is `"node"`.
 
@@ -56,7 +54,7 @@ MANIFEST_VERSION = _read_manifest_version()
 def build_client_info() -> dict[str, Any]:
     """The `client` object sent with every readings push.
 
-    Shape matches `ClientInfo` in `app/routes/readings.py`: `kind` is a
+    Shape matches `ClientInfo` in the API: `kind` is a
     Literal['hacs','node'], `version` is 1-40 chars, the other two are
     optional. Read `HM_NODE_BUNDLE` per call rather than at import so a
     node that gains the variable on its next restart reports it without

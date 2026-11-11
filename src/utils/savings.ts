@@ -19,8 +19,7 @@ export function formatSavingsEstimate(pct: number): string {
 
 /**
  * Mean of the schedule's own price curve, or null when the plan doesn't
- * carry one. Backend blobs have carried `pricing_cents_48` since
- * an earlier change; plans written before that don't, and neither does a solar
+ * carry one. Newer plans carry `pricing_cents_48`; older plans don't, and neither does a solar
  * row, so callers must handle the null.
  */
 export function averagePricingCents(

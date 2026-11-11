@@ -4097,11 +4097,11 @@ export class HungryMachinesPanel extends LitElement {
    * Tile for a solar appliance.
    *
    * Solar has no control entity and no constraints to edit, but since
-   * an earlier change the nightly job writes a real schedule row for it (this
+   * the nightly job writes a real schedule row for it (this
    * array's generation curve, whole-home surplus, and — with an export
    * rate curve set — the expected export revenue). When that row is
    * present the tile renders the generation chart and the source/
-   * surplus facts; otherwise it falls back to the pre-an earlier change
+   * surplus facts; otherwise it falls back to the earlier
    * informational note (e.g. a freshly registered array before the
    * first nightly run, or the `_renderExampleApplianceCard` placeholder,
    * whose seeded entry carries an empty `schedule`).

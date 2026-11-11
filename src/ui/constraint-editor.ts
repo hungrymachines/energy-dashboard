@@ -729,7 +729,7 @@ export class HmConstraintEditor extends LitElement {
    * Reads from the live `_values` so user edits already in the form
    * (e.g. they bumped savings_level before unchecking) propagate
    * immediately. Source-of-truth derivation lives in
-   * `app/services/comfort.py: build_comfort_band` on the backend; the
+   * the API's `build_comfort_band`; the
    * frontend mirror is in `src/utils/hourly.ts: deriveHourlyComfortBand`.
    */
   private _loadDerivedHourlyBands(): void {

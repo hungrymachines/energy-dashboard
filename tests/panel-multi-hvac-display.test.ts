@@ -307,7 +307,7 @@ describe('two-HVAC dashboard display (multi-HVAC validation)', () => {
     // Each appliance's schedule row carries the band the optimizer
     // actually honored for THAT machine (74/70 vs 78/66). The account
     // row's 80/60 hourly bands are per-HVAC *seed defaults* since
-    // a schema update — the dashboard must not paint them over both
+    // the dashboard must not paint them over both
     // cards, or two machines with different bands look identical.
     const el = await mountWithPrefs(PREFS_WITH_BANDS);
     const cards = hvacCardsByName(el);

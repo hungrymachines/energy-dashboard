@@ -188,7 +188,7 @@ _VALID_HVAC_STATES = ("HEAT", "COOL", "OFF", "FAN")
 # cooling/heating the user has selected; ECO and DRY are distinct from
 # COOL because their compressor duty and target outcomes differ enough
 # to warrant separate samples in the model fitter (combined later in
-# analysis if useful). 
+# analysis if useful).
 _MODE_TO_STATE: dict[str, str] = {
     "cool": "COOL",
     "eco": "ECO", "eco_cool": "ECO", "ecocool": "ECO", "energy_saver": "ECO",
@@ -554,7 +554,7 @@ def _build_hvac_home_reading(
         "indoor_temp": indoor_temp,
         "hvac_state": _resolve_hvac_state(state),
         # The mode the thermostat is set to. hvac_state follows what the unit
-        # is doing; this is how the fleet dashboard sees a mode conflict.
+        # is doing; this is how a mode conflict gets noticed.
         "thermostat_mode": str(state.state or "").strip().lower() or None,
         # Which source the temperature came from — the backend fitter
         # treats a room sensor and a thermostat's own reading as
@@ -566,7 +566,7 @@ def _build_hvac_home_reading(
         "override_active": _override_active(hass, state.entity_id),
     }
     # Tag each reading with its HVAC appliance so the backend's
-    # per-appliance sensor stream (a schema update / an earlier change) routes
+    # per-appliance sensor stream routes
     # to the right thermal model. Older HACS clients (or pre-multi-HVAC
     # appliances missing an id) omit this and the backend stores NULL.
     if appliance_id:
@@ -579,7 +579,7 @@ def _build_hvac_home_reading(
     # what the plan wants the assigned sensor to read. The scheduler's
     # tracking step steers the first to produce the second, and the
     # backend needs both to tell a tracking error from a plan change.
-    # Omitted for schedules written before an earlier change added the array.
+    # Omitted for schedules written before the array existed.
     room_target = get_room_target(hass, state.entity_id)
     if room_target is not None:
         reading["room_target"] = room_target

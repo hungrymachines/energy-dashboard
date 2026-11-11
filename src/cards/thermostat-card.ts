@@ -301,7 +301,7 @@ export class HmThermostatCard extends LitElement {
   _savingsLevel = 3;
   /**
    * Per-appliance preferences for the resolved HVAC. Preferences are
-   * per-appliance since an earlier change — the user-level row is only a
+   * per-appliance — the user-level row is only a
    * fallback for HVACs with no row yet, so both the savings-slider
    * write and the "custom hourly limits active" hint key off this.
    */

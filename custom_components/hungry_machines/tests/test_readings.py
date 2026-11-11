@@ -1479,7 +1479,7 @@ async def test_hvac_reading_carries_room_target_beside_target_temp() -> None:
 @pytest.mark.asyncio
 async def test_hvac_reading_omits_room_target_for_a_legacy_schedule() -> None:
     """No cached schedule at all, and a cached one written before
-    an earlier change added `room_target_temps`: the key is left off entirely
+    `room_target_temps`: the key is left off entirely
     rather than sent as null."""
     appliance = {
         "id": "a-1",
@@ -1795,7 +1795,7 @@ def test_setpoint_step_f_sends_the_largest_step_the_api_accepts() -> None:
 
 @pytest.mark.parametrize("step", [3, 5, 0.001, float("inf")])
 def test_setpoint_step_f_omitted_when_the_api_would_reject_it(step) -> None:
-    # the API  validates 0 < step <= 5 and rejects the whole batch,
+    # the API validates 0 < step <= 5 and rejects the whole batch,
     # and flush_readings retries a rejected bucket forever.
     assert "setpoint_step_f" not in _step_reading(True, {"target_temp_step": step})
 
