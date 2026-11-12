@@ -5,7 +5,6 @@ import {
   hasHourlyComfortBands,
   hasCustomRates,
   deriveHourlyComfortBand,
-  PEAK_HOME_OFFSET_MAX,
 } from '../src/utils/hourly.js';
 
 describe('expandHourlyTo48', () => {

@@ -3878,3 +3878,39 @@ def test_guard_remembers_its_last_correction_for_the_auto_lockout() -> None:
     hass.states.get.return_value.attributes["current_temperature"] = 72.0
     soon = later + timedelta(minutes=5)
     assert scheduler._comfort_band_override(hass, "climate.x", schedule, 44, None, now=soon) is None
+
+
+# --- Master switch releases control; hot tub floor ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_master_switch_releases_every_hvac_unit() -> None:
+    hass = _hass()
+    await _fetch_with(hass, _paused_body(False))
+    hass.data[DOMAIN]["last_commanded"] = {"climate.living_room": {"hvac_mode": "OFF"}}
+    hass.data[DOMAIN]["comfort_latch"] = {"climate.living_room": {"active": True}}
+
+    body = _paused_body(False)
+    body["optimization_enabled"] = False
+    await _fetch_with(hass, body)
+
+    assert "climate.living_room" not in hass.data[DOMAIN]["last_commanded"]
+    assert "climate.living_room" not in hass.data[DOMAIN]["comfort_latch"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_saves_the_hvac_unit_list_for_the_freeze_floor() -> None:
+    hass = _hass()
+    entry = _entry()
+    with patch.object(scheduler.api, "get_schedules", AsyncMock(return_value=_schedules_body())), \
+            patch.object(scheduler.api, "get_schedules_updated_at", AsyncMock(return_value=None)):
+        await scheduler.fetch_today_schedule(hass, entry)
+    saved = hass.config_entries.async_update_entry.call_args.kwargs["data"]["hvac_units"]
+    assert ["climate.living_room", saved[0][1]] in saved
+
+
+@pytest.mark.asyncio
+async def test_apply_tub_keeps_the_fifty_degree_floor() -> None:
+    hass = _hass(_tub_state(temperature=95.0))
+    await scheduler._apply_tub(hass, "climate.tub", {"setpoint_temps": [45.0] * 48}, 10)
+    assert hass.services.async_call.await_args.args[2]["temperature"] == 50.0

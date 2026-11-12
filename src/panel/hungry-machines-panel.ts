@@ -3223,6 +3223,8 @@ export class HungryMachinesPanel extends LitElement {
         optimization_enabled: next,
       });
       this._persistUserPrefs();
+      // Tell the integration now, so a pause does not wait for its next check.
+      void this._triggerImmediateApply();
     } catch {
       // PUT failed — leave _preferences untouched so the toggle
       // reflects the server's actual state.
@@ -3558,6 +3560,8 @@ export class HungryMachinesPanel extends LitElement {
         const updated = await updateAppliance(id, { optimization_enabled: next });
         this._appliancesById = { ...this._appliancesById, [id]: updated };
       }
+      // Tell the integration now; the recompute below can take a while.
+      void this._triggerImmediateApply();
       // Reflect the new effective state on the chart/badges without a
       // full reload — the recompute round-trip returns fresh schedules
       // whose per-appliance optimization_enabled is the ANDed value.
@@ -4636,10 +4640,9 @@ export class HungryMachinesPanel extends LitElement {
           </div>
           <div class="dynamic-fields" ?hidden=${pricingSourceDraft !== 'dynamic'}>
             <p class="hint">
-              Dynamic prices update daily from the wholesale day-ahead market
-              (PJM, CAISO, or NYISO depending on your region). The delivery
-              charge estimate covers delivery, taxes, and supplier fees on top
-              of the hourly wholesale price.
+              Dynamic prices update daily from your region's price feed. The
+              delivery charge estimate covers delivery, taxes, and supplier
+              fees on top of the hourly price.
             </p>
             <label>
               <span class="label-text">Region</span>

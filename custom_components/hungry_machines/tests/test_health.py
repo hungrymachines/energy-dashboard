@@ -445,3 +445,102 @@ def test_idle_plans_have_no_room_target_for_the_tracker_to_chase() -> None:
     hass = _unit("heat", indoor=75.0)
     assert scheduler._track_room_target(hass, "climate.a", _idle_plan(), 10) is None
 
+
+
+# --- Freeze floor: setpoint restore, restarts, no plan ----------------------
+
+
+def _saved_entry(data: dict | None = None) -> MagicMock:
+    entry = MagicMock()
+    entry.data = dict(data or {})
+    return entry
+
+
+@pytest.mark.asyncio
+async def test_freeze_floor_puts_the_setpoint_back_too() -> None:
+    hass = _unit("off", indoor=49.0, target=64.0)
+    await scheduler._hold_freeze_floor(hass, "climate.a", "Attic")
+    state = hass.states.get("climate.a")
+    state.state = "heat"
+    state.attributes.update({"temperature": 52.0, "current_temperature": 52.0})
+
+    hass.services.async_call.reset_mock()
+    assert await scheduler._hold_freeze_floor(hass, "climate.a", "Attic") is False
+    assert _service_data(hass, "set_temperature")[0]["temperature"] == 64.0
+    assert {"entity_id": "climate.a", "hvac_mode": "off"} in _service_data(hass, "set_hvac_mode")
+
+
+@pytest.mark.asyncio
+async def test_freeze_hold_survives_a_restart() -> None:
+    hass = _unit("off", indoor=49.0, target=64.0)
+    entry = _saved_entry()
+    await scheduler._hold_freeze_floor(hass, "climate.a", "Attic", entry)
+    saved = hass.config_entries.async_update_entry.call_args.kwargs["data"]
+    assert saved["freeze_latches"] == {
+        "climate.a": {"restore_mode": "off", "restore_setpoint": 64.0},
+    }
+
+    # After a restart nothing is in memory; the entry still knows.
+    restarted = _unit("heat", indoor=52.0, target=52.0)
+    entry = _saved_entry(saved)
+    assert await scheduler._hold_freeze_floor(restarted, "climate.a", "Attic", entry) is False
+    assert _service_data(restarted, "set_temperature")[0]["temperature"] == 64.0
+    assert {"entity_id": "climate.a", "hvac_mode": "off"} in _service_data(restarted, "set_hvac_mode")
+    assert restarted.config_entries.async_update_entry.call_args.kwargs["data"]["freeze_latches"] == {}
+
+
+@pytest.mark.asyncio
+async def test_freeze_floor_runs_without_a_plan_from_the_saved_units() -> None:
+    hass = _unit("off", indoor=49.0)
+    entry = _saved_entry({"hvac_units": [["climate.a", "Attic"]]})
+    await scheduler.comfort_watchdog(hass, entry)
+    assert {"entity_id": "climate.a", "hvac_mode": "heat"} in _service_data(hass, "set_hvac_mode")
+
+
+@pytest.mark.asyncio
+async def test_freeze_floor_check_covers_every_planned_unit() -> None:
+    hass = _unit("off", indoor=49.0)
+    hass.data[DOMAIN] = {"schedule": {
+        "a1": {"appliance_type": "hvac", "entity_id": "climate.a", "name": "Attic", "schedule": {}},
+        "t1": {"appliance_type": "hot_tub", "entity_id": "climate.tub", "schedule": {}},
+    }}
+    await scheduler.freeze_floor_check(hass, _saved_entry())
+    assert [d["entity_id"] for d in _service_data(hass, "set_hvac_mode")] == ["climate.a"]
+
+
+# --- Verify retry leaves a mode the user just set ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_verify_leaves_a_unit_switched_off_after_our_mode_change() -> None:
+    hass = _unit("off")
+    await scheduler._verify_hvac_apply(
+        hass, entity_id="climate.a", expected_mode="HEAT", expected_setpoint=70.0,
+        expected_fan=None, slot=10, previous_mode="cool",
+    )
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_verify_still_resends_a_mode_that_did_not_stick() -> None:
+    hass = _unit("cool")
+    await scheduler._verify_hvac_apply(
+        hass, entity_id="climate.a", expected_mode="HEAT", expected_setpoint=70.0,
+        expected_fan=None, slot=10, previous_mode="cool",
+    )
+    assert {"entity_id": "climate.a", "hvac_mode": "heat"} in _service_data(hass, "set_hvac_mode")
+
+
+@pytest.mark.asyncio
+async def test_verify_sends_nothing_once_the_thermostat_conflicts() -> None:
+    """A setpoint-only apply, then the user moves the thermostat to heat on
+    a cooling plan: the retry must not push the setpoint again."""
+    hass = _unit("heat", target=72.0)
+    hass.data[DOMAIN] = {"schedule": {
+        "a1": {"appliance_type": "hvac", "entity_id": "climate.a", "schedule": _COOL_PLAN},
+    }}
+    await scheduler._verify_hvac_apply(
+        hass, entity_id="climate.a", expected_mode=None, expected_setpoint=78.0,
+        expected_fan=None, slot=10,
+    )
+    hass.services.async_call.assert_not_awaited()

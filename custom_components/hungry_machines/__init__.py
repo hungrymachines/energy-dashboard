@@ -71,6 +71,7 @@ from .scheduler import (
     check_schedule_freshness,
     comfort_watchdog,
     fetch_today_schedule,
+    freeze_floor_check,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -222,6 +223,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def _apply_slot(_now) -> None:
         await _check_freshness_before(hass, entry)
+        # The comfort watchdog skips :00 and :30, so the freeze floor runs
+        # here on those marks.
+        await freeze_floor_check(hass, entry)
         await apply_current_slot(hass, entry)
 
     unsubs.append(

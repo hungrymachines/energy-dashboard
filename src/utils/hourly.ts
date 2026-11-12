@@ -47,41 +47,7 @@ export function hasCustomRates(rates: { source: 'custom' | 'zone' | 'dynamic' })
   return rates.source === 'custom';
 }
 
-// Mirrors the API's `SAVINGS_OFFSETS`.
-const SAVINGS_OFFSETS: Record<number, number> = { 1: 2.0, 2: 6.0, 3: 12.0 };
-
-// Tight tolerance (°F) when the user is at home — applied symmetrically
-// to high and low limits regardless of mode. Keep in sync with
-// the API's `HOME_BAND_OFFSET`.
-const HOME_BAND_OFFSET = 1.0;
-
-// Default hourly-band shape. Mirrors
-// the API's `DEFAULT_PEAK_HOURS` / `DEFAULT_PRECOOL_HOURS` /
-// `PEAK_HOME_OFFSET_MAX` / `PRECOOL_FLOOR_OFFSET`. Hours are local
-// wall-clock, half-open [start, end).
-export const DEFAULT_PEAK_HOURS: readonly [number, number] = [13, 21];
-export const DEFAULT_PRECOOL_HOURS: readonly [number, number] = [9, 13];
-export const PEAK_HOME_OFFSET_MAX = 3.0;
-export const PRECOOL_FLOOR_OFFSET = 2.0;
-
 export type ComfortMode = 'cool' | 'heat' | 'auto';
-
-/** Parse "HH:MM" into a half-hour interval index (0-47). Bad input → 0.
- * Mirrors the API's `_time_to_interval`. */
-function timeToInterval(time: string): number {
-  if (typeof time !== 'string' || !time.includes(':')) return 0;
-  const [hStr, mStr] = time.split(':');
-  const hours = Number(hStr);
-  const minutes = Number(mStr);
-  if (!Number.isFinite(hours)) return 0;
-  return hours * 2 + (Number.isFinite(minutes) && minutes >= 30 ? 1 : 0);
-}
-
-/** Mirrors the API's `_is_away`. */
-function isAwayInterval(interval: number, awayStart: number, homeStart: number): boolean {
-  if (awayStart <= homeStart) return interval >= awayStart && interval < homeStart;
-  return interval >= awayStart || interval < homeStart;
-}
 
 /** Round to the nearest 0.5. Mirrors the API's `_round_half`. */
 function roundHalf(value: number): number {

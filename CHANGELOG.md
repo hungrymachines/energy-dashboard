@@ -12,12 +12,12 @@ Add a pool pump as its own appliance. Tell it how many hours to run each day and
 
 ### Hot tub
 
-Add a hot tub with a ready temperature, an eco temperature, and up to four soak times, each on the days of the week you choose. The tub drifts toward eco between soaks and is back at ready before the next one. Its card plots the water temperature against both limits.
+Add a hot tub with a ready temperature, an eco temperature, and up to four soak times, each on the days of the week you choose. The tub drifts toward eco between soaks, and the plan is designed to have it back at ready before the next one. Its card plots the water temperature against both limits.
 
 ### Water heater: lowest temperature and sanitize cycle
 
-- **Lowest temperature.** No plan takes the tank below it. The default is 120 °F.
-- **Sanitize cycle.** Optionally heat the tank to a temperature you choose (140 °F by default) and hold it for an hour every two days, in the cheapest half-hours that fit.
+- **Lowest temperature.** A temperature that plans are designed to keep the tank above, 120 °F by default.
+- **Sanitize cycle.** Schedules heating the tank to a temperature you choose (140 °F by default) and holding it for an hour every two days, in the cheapest half-hours that fit. On by default, and it needs the tank's own thermostat set at least that high.
 - The water heater card shows when the next cycle runs and whether the last one reached its temperature.
 
 ### Add appliances faster
@@ -29,7 +29,7 @@ Add a hot tub with a ready temperature, an eco temperature, and up to four soak 
 ### Also in this release
 
 - **Run warm-up** button on each HVAC card schedules the one-time warm-up for the next suitable day.
-- On heating days, an idle thermostat now stays in heat at the bottom of your comfort range instead of switching off, so your home holds that temperature even if Home Assistant stops.
+- On heating days, an idle thermostat now stays in heat at the bottom of your comfort range instead of switching off, so the thermostat holds that temperature on its own if Home Assistant stops.
 - Smoother comfort protection in narrow comfort ranges and in Auto mode.
 
 ## 3.11 — A comfort range for each day, and timed pauses
@@ -45,7 +45,7 @@ The HVAC editor has a new **Days** choice: one range for every day, one for week
 - Each HVAC card and the thermostat card have **Pause 2 h**, **Pause 4 h** and **Pause 6 h** buttons.
 - A paused unit is yours. The card shows when the plan resumes, and **Resume now** ends the pause early.
 - New `hungry_machines.pause` and `hungry_machines.resume` services do the same from an automation.
-- The freeze floor still protects your home during a pause.
+- The freeze floor still acts during a pause.
 
 ### Chart scales
 
@@ -66,19 +66,19 @@ With a production sensor, the card plots today's measured output over the foreca
 
 ### Choose °F or °C
 
-Settings has a **Temperature units** selector: °F, °C, or Home Assistant's own setting. The panel, cards, charts and editors all show and accept the unit you choose. Metric Home Assistant installs are now fully supported.
+Settings has a **Temperature units** selector: °F, °C, or Home Assistant's own setting. The panel, cards, charts and editors all show and accept the unit you choose. Metric Home Assistant installs are now supported.
 
 ### Auto mode chooses heating or cooling for you
 
-With a device on **Auto**, Hungry Machines switches your thermostat to heating or cooling for each day's plan, based on how your own home responds to the weather. If the room leaves your comfort range the other way, it switches to bring the room back. Prefer to choose yourself? On **Heating only** or **Cooling only**, your thermostat's mode always wins, and a thermostat you turn off stays off.
+With a device on **Auto**, Hungry Machines switches your thermostat to heating or cooling for each day's plan, based on how your own home responds to the weather. If the room leaves your comfort range the other way, it switches to bring the room back. Prefer to choose yourself? On **Heating only** or **Cooling only**, your thermostat's mode wins, and a thermostat you turn off is left off.
 
 ### Idle days
 
-On a mild day, when your home should stay inside your comfort range with nothing running, nothing runs. Comfort protection still steps in if the forecast turns out wrong.
+On a mild day, when your home should stay inside your comfort range with nothing running, no heating or cooling is planned. Comfort protection still steps in if the forecast turns out wrong.
 
 ### Freeze floor
 
-If a room falls below 50 °F, Hungry Machines heats it to 52 °F and then returns the thermostat to the way it found it, even when optimization is paused.
+If a room falls below 50 °F, Hungry Machines is designed to heat it to 52 °F and then return the thermostat to the mode it was in, even when optimization is paused. It is a backstop that works while Home Assistant is running, not a replacement for your thermostat's own freeze protection.
 
 ### Simpler export rates
 
@@ -96,7 +96,7 @@ Pick how your utility credits the solar power you send back: market price, your 
 
 ### Home power limits
 
-A new Settings section: how many appliances may run at once, a whole-home power cap, an always-on reserve, and a demand charge with an optional on-peak window. Leave any field blank for no limit. Your HVAC runs as planned, and charging and water heating shape themselves around it.
+A new Settings section: how many appliances may run at once, a whole-home power cap, an always-on reserve, and a demand charge with an optional on-peak window. Leave any field blank for no limit. HVAC is planned first, and your other appliances are planned around it.
 
 ### The hourly comfort table is now the main control
 
@@ -124,7 +124,7 @@ Smart plugs on plug-in inverters are now read correctly, and the solar picker na
 
 *September 10, 2026*
 
-- If you chose a room sensor, it is now the temperature Hungry Machines plans and protects against, ahead of the thermostat's own reading.
+- If you chose a room sensor, it is now the temperature Hungry Machines plans around and checks against, ahead of the thermostat's own reading.
 - Savings read as "est. N% savings today", with the basis on hover.
 - Diagnostics shows the integration version.
 
@@ -132,7 +132,7 @@ Smart plugs on plug-in inverters are now read correctly, and the solar picker na
 
 *September 7, 2026*
 
-On a real-time rate such as ComEd Hourly Pricing, prices sometimes run far above the day-ahead forecast. When a spike develops, Hungry Machines re-plans the rest of your day and your home picks up the new plan within minutes. Turn it off any time in Settings → **Price spike guard**. Your comfort range applies either way.
+On a real-time rate such as ComEd Hourly Pricing, prices sometimes run far above the day-ahead forecast. When a spike develops, Hungry Machines re-plans the rest of your day and your home picks up the new plan within minutes. Turn it off any time in Settings → **Price spike guard**. Plans work within your comfort range either way.
 
 ## 3.5 — Solar that learns your array
 
@@ -147,13 +147,13 @@ On a real-time rate such as ComEd Hourly Pricing, prices sometimes run far above
 
 *August 27, 2026*
 
-Every 5 minutes, Hungry Machines checks each room against the low and high limits you set. If the room crosses one, it brings the room back, without short-cycling your compressor. It works for every home with nothing to turn on, and uses your room sensor when the thermostat reports no temperature.
+Every 5 minutes, Hungry Machines checks each room against the low and high limits you set. If the room crosses one, it steps in to bring the room back, spacing its commands to avoid short-cycling your compressor. It works for every home with nothing to turn on, and uses your room sensor when the thermostat reports no temperature.
 
 ## 3.3 — Home robots
 
 *August 25, 2026*
 
-Add a robot vacuum or mower, set a daily Tasks window and a target charge, and the plan schedules dock charging in the cheapest half-hours before the window. Hungry Machines only sends the robot to its dock. It never starts a task.
+Add a robot vacuum or mower, set a daily Tasks window and a target charge, and the plan schedules dock charging in the cheapest half-hours before the window. Hungry Machines only sends the robot to its dock. It does not start tasks.
 
 ## 3.2 — Per-device control
 

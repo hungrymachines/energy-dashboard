@@ -80,6 +80,8 @@ describe('optimization pause toggle', () => {
     }));
 
     const el = mountAuthedPanel();
+    const callService = vi.fn(async () => undefined);
+    (el as unknown as Record<string, unknown>).hass = { callService };
     await flush(el);
     const root = el.shadowRoot!;
 
@@ -92,6 +94,8 @@ describe('optimization pause toggle', () => {
     await flush(el);
 
     expect(putBodies).toEqual([{ optimization_enabled: false }]);
+    // The integration hears about the pause at once.
+    expect(callService).toHaveBeenCalledWith('hungry_machines', 'apply_now', {});
     const after = root.querySelector('.opt-toggle') as HTMLButtonElement;
     expect(after.textContent).toContain('Optimization paused');
     expect(root.querySelector('.paused-banner')).toBeTruthy();

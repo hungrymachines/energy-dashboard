@@ -22,6 +22,7 @@ import {
 } from '../api/appliance-preferences.js';
 import { get as getRates, type RatesResponse } from '../api/rates.js';
 import { hasHourlyComfortBands } from '../utils/hourly.js';
+import { formatSavingsEstimate, SAVINGS_ESTIMATE_TITLE } from '../utils/savings.js';
 
 export interface HmThermostatCardConfig {
   type?: string;
@@ -621,7 +622,7 @@ export class HmThermostatCard extends LitElement {
     const savingsPct = entry?.savings_pct;
     const savingsText =
       typeof savingsPct === 'number'
-        ? `${Math.round(savingsPct)}% savings today`
+        ? formatSavingsEstimate(savingsPct)
         : '';
 
     const name = entry?.name ?? 'Thermostat';
@@ -677,7 +678,7 @@ export class HmThermostatCard extends LitElement {
               : null}
           </div>
           ${savingsText
-            ? html`<div class="savings">${savingsText}</div>`
+            ? html`<div class="savings" title=${SAVINGS_ESTIMATE_TITLE}>${savingsText}</div>`
             : null}
         </div>
         ${this._scheduleError

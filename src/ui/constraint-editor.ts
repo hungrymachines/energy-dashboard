@@ -1709,7 +1709,7 @@ export class HmConstraintEditor extends LitElement {
                     : null}
                 </label>
                 <label>
-                  <span class="label-text">Never plan below (${unitLabel(unit)})</span>
+                  <span class="label-text">Lowest planned temperature (${unitLabel(unit)})</span>
                   <input
                     name="floor_temp_f"
                     type="number"

@@ -96,6 +96,7 @@ import logging
 from datetime import datetime, timezone
 
 from homeassistant.util import dt as dt_util
+from collections.abc import Mapping
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -149,6 +150,65 @@ _ROOM_TRACK_LAST_KEY = "room_track_last"
 
 def _domain_data(hass: HomeAssistant) -> dict[str, Any]:
     return hass.data.setdefault(DOMAIN, {})
+
+
+# Config-entry keys for the little the freeze floor must remember across a
+# Home Assistant restart: which entities are HVAC units, and what a unit
+# looked like before a freeze hold took it over.
+_SAVED_HVAC_UNITS_KEY = "hvac_units"
+_SAVED_FREEZE_LATCHES_KEY = "freeze_latches"
+
+
+def _saved(entry: ConfigEntry | None, key: str) -> Any:
+    data = getattr(entry, "data", None)
+    return data.get(key) if isinstance(data, Mapping) else None
+
+
+def _save(hass: HomeAssistant, entry: ConfigEntry | None, key: str, value: Any) -> None:
+    """Store `value` on the config entry. Best effort, and a no-op when
+    nothing changed, so the entry is not rewritten every tick."""
+    data = getattr(entry, "data", None)
+    if not isinstance(data, Mapping) or data.get(key) == value:
+        return
+    try:
+        hass.config_entries.async_update_entry(entry, data={**data, key: value})
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("could not save %s: %s", key, err)
+
+
+def _hvac_units(
+    hass: HomeAssistant, entry: ConfigEntry | None
+) -> list[tuple[str, str | None]]:
+    """(entity_id, name) for every HVAC unit: from today's plan, else from
+    the list saved the last time a plan was fetched."""
+    cache = _domain_data(hass).get("schedule")
+    if isinstance(cache, dict):
+        return [
+            (info["entity_id"], info.get("name"))
+            for info in cache.values()
+            if isinstance(info, dict)
+            and info.get("appliance_type") == "hvac"
+            and isinstance(info.get("entity_id"), str)
+            and info["entity_id"]
+        ]
+    saved = _saved(entry, _SAVED_HVAC_UNITS_KEY)
+    if not isinstance(saved, list):
+        return []
+    return [
+        (unit[0], unit[1])
+        for unit in saved
+        if isinstance(unit, (list, tuple)) and len(unit) == 2 and isinstance(unit[0], str)
+    ]
+
+
+def _schedule_for_entity(hass: HomeAssistant, entity_id: str) -> dict | None:
+    cache = _domain_data(hass).get("schedule")
+    if not isinstance(cache, dict):
+        return None
+    for info in cache.values():
+        if isinstance(info, dict) and info.get("entity_id") == entity_id:
+            return info.get("schedule") or None
+    return None
 
 
 # Baseline for `check_schedule_freshness`: the server-side
@@ -299,7 +359,23 @@ async def fetch_today_schedule(
             _release_control_on_pause(
                 hass, entity_id, cache[aid]["paused_until"]
             )
+    # The master switch hands every unit back the same way a unit's own
+    # pause does. Units whose own flag is off were released above.
+    if not cache["optimization_enabled"] and previous.get("optimization_enabled") is not False:
+        for info in cache.values():
+            if (
+                isinstance(info, dict)
+                and info.get("appliance_type") == "hvac"
+                and info.get("optimization_enabled")
+                and isinstance(info.get("entity_id"), str)
+                and info["entity_id"]
+            ):
+                _release_control_on_pause(hass, info["entity_id"], None)
     _domain_data(hass)["schedule"] = cache
+    _save(
+        hass, entry, _SAVED_HVAC_UNITS_KEY,
+        [[eid, name] for eid, name in _hvac_units(hass, entry)],
+    )
     _publish_schedule_states(hass, cache)
     _arm_resume_timers(hass, entry, cache)
 
@@ -1361,6 +1437,9 @@ async def comfort_watchdog(hass: HomeAssistant, entry: ConfigEntry) -> None:
     domain_data = _domain_data(hass)
     cache = domain_data.get("schedule")
     if not isinstance(cache, dict):
+        # No plan yet (the service was unreachable at startup): the freeze
+        # floor still watches the units saved from the last plan.
+        await freeze_floor_check(hass, entry)
         return
 
     slot = _current_slot()
@@ -1380,7 +1459,7 @@ async def comfort_watchdog(hass: HomeAssistant, entry: ConfigEntry) -> None:
         if not isinstance(entity_id, str) or not entity_id:
             continue
         # Ahead of the pause and the empty-plan checks: this one never waits.
-        if await _hold_freeze_floor(hass, entity_id, name):
+        if await _hold_freeze_floor(hass, entity_id, name, entry):
             continue
         if not schedule:
             continue
@@ -1489,16 +1568,36 @@ def _report_thermostat_mode(
         )
 
 
+async def freeze_floor_check(hass: HomeAssistant, entry: ConfigEntry | None) -> None:
+    """Run the freeze floor for every HVAC unit, plan or no plan.
+
+    The watchdog covers the five-minute marks between slot boundaries; this
+    covers :00 and :30, and the case where no plan has been fetched since
+    Home Assistant started.
+    """
+    for entity_id, name in _hvac_units(hass, entry):
+        await _hold_freeze_floor(hass, entity_id, name, entry)
+
+
 async def _hold_freeze_floor(
-    hass: HomeAssistant, entity_id: str, appliance_name: str | None,
+    hass: HomeAssistant,
+    entity_id: str,
+    appliance_name: str | None,
+    entry: ConfigEntry | None = None,
 ) -> bool:
     """Keep the room above the freeze floor. True while we hold the unit.
 
     The one thing that outranks a pause and the thermostat's own mode. A
     unit already heating to a target at or above the release temperature
-    keeps its target: lowering it would only slow the recovery.
+    keeps its target: lowering it would only slow the recovery. What the
+    unit looked like before the hold is saved on the config entry, so a
+    restart mid-hold still puts it back.
     """
-    latches = _domain_data(hass).setdefault(_FREEZE_LATCH_KEY, {})
+    data = _domain_data(hass)
+    if _FREEZE_LATCH_KEY not in data:
+        saved = _saved(entry, _SAVED_FREEZE_LATCHES_KEY)
+        data[_FREEZE_LATCH_KEY] = dict(saved) if isinstance(saved, Mapping) else {}
+    latches = data[_FREEZE_LATCH_KEY]
     holding = entity_id in latches
     indoor, _aux_entity_id, _aux_used = _resolve_indoor_temp(hass, entity_id)
     if indoor is None:
@@ -1510,7 +1609,25 @@ async def _hold_freeze_floor(
     mode = str(getattr(state, "state", "") or "").strip().lower()
 
     if holding and indoor >= comfort.FREEZE_RELEASE_F:
-        restore = latches.pop(entity_id)["restore_mode"]
+        latch = latches.pop(entity_id)
+        _save(hass, entry, _SAVED_FREEZE_LATCHES_KEY, dict(latches))
+        restore = latch.get("restore_mode")
+        # The setpoint first, while the unit is still in heat and takes it.
+        restore_setpoint = latch.get("restore_setpoint")
+        if restore_setpoint is not None:
+            payload = _build_hvac_payload(
+                entity_id, state, float(restore_setpoint), assumed_mode="HEAT",
+                ha_unit=units.ha_unit(hass),
+            )
+            if payload is not None:
+                try:
+                    await hass.services.async_call(
+                        "climate", "set_temperature", payload, blocking=False,
+                    )
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.warning(
+                        "freeze floor setpoint restore failed for %s: %s", entity_id, err,
+                    )
         # Directly, not through _maybe_set_hvac_mode: that only speaks the
         # plan's modes, and the thermostat may have been in its own Auto.
         if restore != "heat" and restore in [
@@ -1543,8 +1660,10 @@ async def _hold_freeze_floor(
         )
         return False
 
+    target = units.climate_attr_f(hass, attrs.get("temperature"))
     if not holding:
-        latches[entity_id] = {"restore_mode": mode}
+        latches[entity_id] = {"restore_mode": mode, "restore_setpoint": target}
+        _save(hass, entry, _SAVED_FREEZE_LATCHES_KEY, dict(latches))
     health.report(
         hass, key, False,
         "%s reads %.1f°F, below the %.0f°F freeze floor. Heating to %.0f°F "
@@ -1554,7 +1673,6 @@ async def _hold_freeze_floor(
     )
     if mode != "heat":
         await _maybe_set_hvac_mode(hass, entity_id, attrs, "HEAT", _current_slot())
-    target = units.climate_attr_f(hass, attrs.get("temperature"))
     if mode == "heat" and target is not None and target >= comfort.FREEZE_RELEASE_F:
         return True
     payload = _build_hvac_payload(
@@ -1588,6 +1706,8 @@ async def _apply_hvac(
     """
     if entity_id in _domain_data(hass).get(_FREEZE_LATCH_KEY, {}):
         return
+    state_before = hass.states.get(entity_id) if hass.states else None
+    mode_before = str(getattr(state_before, "state", "") or "").strip().lower() or None
     setpoint = _resolve_setpoint(schedule, slot)
     if setpoint_override is not None:
         setpoint = setpoint_override
@@ -1768,6 +1888,7 @@ async def _apply_hvac(
                 expected_setpoint=None,
                 expected_fan=None,
                 slot=slot,
+                previous_mode=mode_before,
             )
         return
 
@@ -1859,6 +1980,7 @@ async def _apply_hvac(
         expected_setpoint=_payload_setpoint_f(payload, units.ha_unit(hass)),
         expected_fan=fan_label,
         slot=slot,
+        previous_mode=mode_before,
     )
 
 
@@ -1922,6 +2044,7 @@ def _schedule_apply_verification(
     expected_setpoint: float | None,
     expected_fan: str | None,
     slot: int,
+    previous_mode: str | None = None,
 ) -> None:
     """Arm a one-shot verification for a just-applied slot.
 
@@ -1937,6 +2060,7 @@ def _schedule_apply_verification(
             expected_setpoint=expected_setpoint,
             expected_fan=expected_fan,
             slot=slot,
+            previous_mode=previous_mode,
         )
 
     try:
@@ -1959,11 +2083,18 @@ async def _verify_hvac_apply(
     expected_setpoint: float | None,
     expected_fan: str | None,
     slot: int,
+    previous_mode: str | None = None,
 ) -> None:
-    """Re-read the entity ~2.5 min after an apply and re-send anything
+    """Re-read the entity a minute after an apply and re-send anything
     that didn't stick. One retry, no re-verification — persistent
     disobedience surfaces through the divergence report instead of an
-    infinite command loop fighting the unit (or the user)."""
+    infinite command loop fighting the unit (or the user).
+
+    A command that didn't stick leaves the unit where it was. A mode that
+    is neither what we sent nor what the unit had before means someone
+    changed it in that minute, and theirs stands. `previous_mode` is the
+    mode read just before the apply.
+    """
     (_domain_data(hass).get(_VERIFY_TIMERS_KEY) or {}).pop(entity_id, None)
     if _unit_paused(hass, entity_id):
         return
@@ -1972,6 +2103,23 @@ async def _verify_hvac_apply(
         return
     attrs = getattr(state, "attributes", None) or {}
     reported_mode = str(getattr(state, "state", "") or "").strip().lower()
+
+    if expected_mode is None:
+        # We sent no mode, so the thermostat's mode is the user's. If it now
+        # conflicts with the plan, it wins here as it does at every apply.
+        schedule = _schedule_for_entity(hass, entity_id)
+        if schedule and _overruling_mode(hass, entity_id, schedule) is not None:
+            return
+    elif previous_mode is not None:
+        sent = expected_mode.strip().lower()
+        sent = "cool" if sent in ("eco", "dry") else sent
+        if reported_mode not in (sent, previous_mode, "", "unavailable", "unknown"):
+            _LOGGER.info(
+                "Hungry Machines HVAC verify slot=%d: %s was set to %r after "
+                "our command; leaving it",
+                slot, entity_id, reported_mode,
+            )
+            return
 
     fixes: list[str] = []
 
@@ -2173,6 +2321,8 @@ async def _apply_tub(
     safe_f = target_f
     if attrs.get("min_temp") is not None or attrs.get("max_temp") is not None:
         safe_f = _clamp_to_entity_range(entity_id, attrs, target_f, ha_unit)
+    # Same floor the thermostat path keeps, whatever the plan carries.
+    safe_f = max(safe_f, comfort.FREEZE_FLOOR_F)
     if ha_unit == units.CELSIUS:
         safe_f = _snap_to_device_step(safe_f, attrs, None)
     target = units.from_f(safe_f, ha_unit)

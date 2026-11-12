@@ -466,7 +466,7 @@ describe('hm-thermostat-card', () => {
     const mode = root.querySelector('.card-head .mode-badge');
     expect(mode!.getAttribute('data-mode')).toBe('cool');
     // Savings line uses the same wording as the panel card.
-    expect(root.querySelector('.savings')!.textContent).toContain('savings today');
+    expect(root.querySelector('.savings')!.textContent).toMatch(/^est\. \d+% savings today$/);
   });
 
   it('selects the configured HVAC by appliance_id when the user has multiple', async () => {
