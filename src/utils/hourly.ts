@@ -54,6 +54,47 @@ function roundHalf(value: number): number {
   return Math.round(value * 2) / 2;
 }
 
+/** Quick-preset range (°F either side of the base temperature) for the
+ * hours you are away: 1 = tight, 2 = default, 3 = wide. */
+export const PRESET_AWAY_OFFSETS: Readonly<Record<number, number>> = { 1: 2.0, 2: 5.0, 3: 10.0 };
+
+/** Quick-preset range (°F either side of the base) for the hours you are home. */
+export const PRESET_HOME_OFFSET = 1.0;
+
+/** "HH:MM" to an hour of the day (0-23). Bad input gives the fallback. */
+function hourOf(time: string, fallback: number): number {
+  const match = /^(\d{1,2}):\d{2}$/.exec(String(time ?? '').trim());
+  const hours = match ? Number(match[1]) : NaN;
+  return hours >= 0 && hours <= 23 ? hours : fallback;
+}
+
+/**
+ * The quick preset: a 24-hour band around `base_temperature` that is
+ * narrow while you are home and wider, by the chosen level, from the hour
+ * you leave to the hour you return. An away window that wraps midnight
+ * (leave 22:00, home 06:00) works too. Each value is rounded to 0.5.
+ */
+export function presetHourlyBand(opts: {
+  base_temperature: number;
+  level: number;
+  time_away: string;
+  time_home: string;
+}): { high: number[]; low: number[] } {
+  const base = Number.isFinite(opts.base_temperature) ? opts.base_temperature : 72;
+  const awayOffset = PRESET_AWAY_OFFSETS[opts.level] ?? PRESET_AWAY_OFFSETS[2];
+  const away = hourOf(opts.time_away, 8);
+  const home = hourOf(opts.time_home, 17);
+  const high: number[] = new Array(24);
+  const low: number[] = new Array(24);
+  for (let h = 0; h < 24; h++) {
+    const isAway = away <= home ? h >= away && h < home : h >= away || h < home;
+    const offset = isAway ? awayOffset : PRESET_HOME_OFFSET;
+    high[h] = roundHalf(base + offset);
+    low[h] = roundHalf(base - offset);
+  }
+  return { high, low };
+}
+
 /**
  * Derive the 24-hour default comfort-band shape the optimizer would use
  * for a given base temperature, savings level, home/away schedule, and

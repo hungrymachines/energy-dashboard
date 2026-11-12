@@ -7,8 +7,11 @@ import {
 import type { ApplianceType } from '../api/appliances.js';
 import type { BandPrefs } from '../utils/day-bands.js';
 import {
+  PRESET_AWAY_OFFSETS,
+  PRESET_HOME_OFFSET,
   deriveHourlyComfortBand,
   hasHourlyComfortBands,
+  presetHourlyBand,
   type ComfortMode,
 } from '../utils/hourly.js';
 import {
@@ -24,6 +27,7 @@ import {
 import {
   displayTemp,
   fToC,
+  formatDelta,
   limitsFor,
   parseTempInput,
   unitLabel,
@@ -386,14 +390,16 @@ export class HmConstraintEditor extends LitElement {
     .day-copy .copy-targets {
       display: contents;
     }
-    button.reset-defaults {
+    button.reset-defaults,
+    button.fill-preset {
       background: transparent;
       border: 1px solid var(--hm-primary, #1E3A8A);
       color: var(--hm-primary, #1E3A8A);
       font-weight: 600;
       margin-top: 4px;
     }
-    button.reset-defaults[disabled] {
+    button.reset-defaults[disabled],
+    button.fill-preset[disabled] {
       opacity: 0.55;
       cursor: not-allowed;
     }
@@ -1398,6 +1404,24 @@ export class HmConstraintEditor extends LitElement {
     }
   }
 
+  /** Fill the band on screen from the quick preset: narrow while you are
+   * home, wider by the chosen level while you are away. Local arithmetic,
+   * no request; nothing is stored until Save. */
+  private _onFillPreset(): void {
+    const v = this._values;
+    const level = toNumber(v['savings_level']) ?? 2;
+    const { high, low } = presetHourlyBand({
+      base_temperature: this._scalarCellF('base_temperature').f ?? 72,
+      level,
+      time_away: v['time_away'] || '08:00',
+      time_home: v['time_home'] || '17:00',
+    });
+    this._dirty = true;
+    this._resetError = null;
+    this._setHourlyFromF(high, low);
+    this._errors = this._validate(this._values);
+  }
+
   private _onCancel(): void {
     this.open = false;
     this.dispatchEvent(
@@ -1521,6 +1545,12 @@ export class HmConstraintEditor extends LitElement {
       this._hourlyHigh = next;
       this._errors = this._validate(this._values);
     };
+    const presetLevel = toNumber(v['savings_level']) ?? 2;
+    const presetLabel = `${['Tight', 'Default', 'Wide'][presetLevel - 1] ?? 'Default'} (±${formatDelta(
+      PRESET_AWAY_OFFSETS[presetLevel] ?? PRESET_AWAY_OFFSETS[2],
+      this.temperatureUnit,
+      this.temperatureUnit === 'C' ? 1 : 0,
+    )})`;
     const onResetDefaults = () => {
       void this._onResetDefaults();
     };
@@ -2046,11 +2076,11 @@ export class HmConstraintEditor extends LitElement {
           ${type === 'hvac'
             ? html`
                 <fieldset class="opt-toggles defaults-group">
-                  <legend>Defaults</legend>
+                  <legend>Quick preset</legend>
                   <p class="opt-toggles-help">
-                    These feed the hourly table below — edit them and
-                    click "Reset to defaults" to refill it, or edit the
-                    table directly.
+                    Fill the hourly table below in one step: a narrow
+                    range while you are home and a wider one while you
+                    are away. You can still edit any hour afterward.
                   </p>
                   <label>
                     <span class="label-text">Base temperature (${unitLabel(unit)})</span>
@@ -2066,7 +2096,7 @@ export class HmConstraintEditor extends LitElement {
                       : null}
                   </label>
                   <label>
-                    <span class="label-text">Savings level (1–3)</span>
+                    <span class="label-text">Comfort range while away</span>
                     <div class="slider-row">
                       <input
                         name="savings_level"
@@ -2077,8 +2107,9 @@ export class HmConstraintEditor extends LitElement {
                         .value=${v['savings_level'] ?? '1'}
                         @input=${onNum('savings_level')}
                       />
-                      <span class="slider-value">${v['savings_level'] ?? '1'}</span>
+                      <span class="slider-value">${presetLabel}</span>
                     </div>
+                    <small class="label-text">While you are home the range is ±${formatDelta(PRESET_HOME_OFFSET, unit, unit === 'C' ? 1 : 0)}.</small>
                     ${errs['savings_level']
                       ? html`<div class="field-error">${errs['savings_level']}</div>`
                       : null}
@@ -2115,6 +2146,13 @@ export class HmConstraintEditor extends LitElement {
                       ? html`<div class="field-error">${errs['time_home']}</div>`
                       : null}
                   </label>
+                  <button
+                    class="fill-preset"
+                    type="button"
+                    @click=${() => this._onFillPreset()}
+                  >
+                    Fill table from preset
+                  </button>
                   <button
                     class="reset-defaults"
                     type="button"

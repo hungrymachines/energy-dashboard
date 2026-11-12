@@ -140,7 +140,7 @@ describe('hm-constraint-editor hourly bands (table is the primary control)', () 
     expect(root.textContent).not.toContain('Comfort schedule style');
 
     // Defaults group is present with its own fields.
-    expect(root.textContent).toContain('Defaults');
+    expect(root.textContent).toContain('Quick preset');
     expect(root.querySelector('input[name="base_temperature"]')).not.toBeNull();
     expect(root.querySelector('input[name="savings_level"]')).not.toBeNull();
     expect(root.querySelector('input[name="time_away"]')).not.toBeNull();
@@ -428,6 +428,37 @@ describe('hm-constraint-editor hourly bands (table is the primary control)', () 
     // fallback-filled arrays.
     const save = saveButton(root);
     expect(save.disabled).toBe(false);
+  });
+
+  it('"Fill table from preset" fills the table locally from level and away/home times', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: {
+        base_temperature: 72,
+        savings_level: 3,
+        time_away: '08:00',
+        time_home: '17:00',
+        optimization_mode: 'auto',
+      },
+      open: true,
+    });
+    await flush(el);
+    const root = el.shadowRoot!;
+    expect(root.textContent).toContain('Wide (±10 °F)');
+    const before = calls.length;
+
+    root.querySelector<HTMLButtonElement>('button.fill-preset')!.click();
+    await flush(el);
+
+    const val = (name: string) => root.querySelector<HTMLInputElement>(`input[name="${name}"]`)!.value;
+    expect([val('hourly_low_7'), val('hourly_high_7')]).toEqual(['71', '73']);
+    expect([val('hourly_low_12'), val('hourly_high_12')]).toEqual(['62', '82']);
+    expect([val('hourly_low_17'), val('hourly_high_17')]).toEqual(['71', '73']);
+    // Local arithmetic: no request went out.
+    expect(calls.length).toBe(before);
+    expect(saveButton(root).disabled).toBe(false);
   });
 
   it('(h) a late currentConstraints reassignment does NOT revert an in-progress table edit', async () => {

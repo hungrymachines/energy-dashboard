@@ -5,6 +5,7 @@ import {
   hasHourlyComfortBands,
   hasCustomRates,
   deriveHourlyComfortBand,
+  presetHourlyBand,
 } from '../src/utils/hourly.js';
 
 describe('expandHourlyTo48', () => {
@@ -300,5 +301,36 @@ describe('deriveHourlyComfortBand', () => {
     });
     expect(high).toEqual(PARITY_HEAT_HIGH);
     expect(low).toEqual(PARITY_HEAT_LOW);
+  });
+});
+
+describe('presetHourlyBand (quick preset)', () => {
+  const at = (level: number, away = '08:00', home = '17:00') =>
+    presetHourlyBand({ base_temperature: 72, level, time_away: away, time_home: home });
+
+  it('is ±1 °F at home and ±2 / ±5 / ±10 °F while away', () => {
+    for (const [level, offset] of [[1, 2], [2, 5], [3, 10]] as const) {
+      const { high, low } = at(level);
+      // Home: before 08:00 and from 17:00.
+      expect([low[7], high[7]]).toEqual([71, 73]);
+      expect([low[17], high[17]]).toEqual([71, 73]);
+      // Away: 08:00 up to, not including, 17:00.
+      expect([low[8], high[8]]).toEqual([72 - offset, 72 + offset]);
+      expect([low[16], high[16]]).toEqual([72 - offset, 72 + offset]);
+    }
+  });
+
+  it('handles an away window that wraps midnight', () => {
+    const { high } = at(2, '22:00', '06:00');
+    expect(high[23]).toBe(77);
+    expect(high[5]).toBe(77);
+    expect(high[6]).toBe(73);
+    expect(high[21]).toBe(73);
+  });
+
+  it('falls back to the default level and hours on bad input', () => {
+    const { high, low } = at(9, 'nope', '');
+    expect([low[12], high[12]]).toEqual([67, 77]);
+    expect([low[20], high[20]]).toEqual([71, 73]);
   });
 });
