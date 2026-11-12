@@ -54,6 +54,11 @@ export interface ApplianceScheduleEntry {
    * unit switched off, 'master' = account-wide pause. */
   pause_state?: 'active' | 'timed' | 'manual' | 'master';
   integration_health?: InlineIntegrationHealth;
+  /** Home Assistant entity ids set on the appliance, e.g. `entity_id`,
+   * `indoor_temp_entity_id`. Only the ones that are set. */
+  entities?: Record<string, string>;
+  /** True when the plan shown is not dated today. Absent otherwise. */
+  stale?: boolean;
 }
 
 export interface SchedulesResponse {

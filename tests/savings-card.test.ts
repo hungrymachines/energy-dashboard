@@ -111,6 +111,11 @@ async function flush(el: CardEl): Promise<void> {
   }
 }
 
+
+function rowOf(el: CardEl, id: string): Element {
+  return el.shadowRoot!.querySelector(`.row[data-appliance-id="${id}"]`)!;
+}
+
 describe('hm-savings-card', () => {
   beforeEach(() => {
     setApiBase('https://api.example.test');
@@ -139,17 +144,62 @@ describe('hm-savings-card', () => {
     setAuthState({});
   });
 
-  it('renders the average savings across appliances as a rounded percent', async () => {
+  it("lists each appliance with its own estimate and no home-wide average", async () => {
     installFetchStub();
     const el = mountCard();
     el.setConfig({ type: 'custom:hm-savings-card' });
     await flush(el);
 
     const root = el.shadowRoot!;
-    const savings = root.querySelector('.savings');
-    expect(savings).not.toBeNull();
-    // (18 + 32) / 2 = 25
-    expect(savings!.textContent).toMatch(/25%\s+savings today/);
+    expect(root.querySelectorAll('.row').length).toBe(2);
+    expect(rowOf(el, 'hvac-1').querySelector('.row-name')!.textContent).toBe('Living Room AC');
+    expect(rowOf(el, 'hvac-1').querySelector('.row-savings')!.textContent).toBe('est. 18%');
+    expect(rowOf(el, 'ev-1').querySelector('.row-savings')!.textContent).toBe('est. 32%');
+    // (18 + 32) / 2 = 25 was the old headline. Each estimate is a share of
+    // that appliance's own cost, so no combined figure is shown.
+    expect(root.textContent).not.toContain('25%');
+    expect(root.querySelector('.savings')).toBeNull();
+  });
+
+  it('leaves solar and dehumidifier out: they get no plan and no estimate', async () => {
+    installFetchStub({
+      date: '2025-11-18',
+      appliances: [
+        HVAC_APPLIANCE,
+        { appliance_id: 'pv-1', appliance_type: 'solar', name: 'Roof', schedule: { generation_kwh: 12 }, savings_pct: 0, source: 'optimization' },
+        { appliance_id: 'dh-1', appliance_type: 'dehumidifier', name: 'Basement', schedule: {}, savings_pct: 0, source: 'defaults' },
+      ],
+    });
+    const el = mountCard();
+    el.setConfig({ type: 'custom:hm-savings-card' });
+    await flush(el);
+
+    const names = [...el.shadowRoot!.querySelectorAll('.row-name')].map((n) => n.textContent);
+    expect(names).toEqual(['Living Room AC']);
+  });
+
+  it('reads a power sensor that reports in kW', async () => {
+    installFetchStub();
+    const hass = {
+      states: {
+        'sensor.home_power': { state: '1.5', attributes: { unit_of_measurement: 'kW' } },
+      },
+    };
+    const el = mountCard({ hass });
+    el.setConfig({ type: 'custom:hm-savings-card', entities: { power: 'sensor.home_power' } });
+    await flush(el);
+
+    expect(el.shadowRoot!.querySelector('.power-value')!.textContent).toContain('1.5 kW');
+  });
+
+  it('hides the power row when the sensor is unavailable', async () => {
+    installFetchStub();
+    const hass = { states: { 'sensor.home_power': { state: 'unavailable' } } };
+    const el = mountCard({ hass });
+    el.setConfig({ type: 'custom:hm-savings-card', entities: { power: 'sensor.home_power' } });
+    await flush(el);
+
+    expect(el.shadowRoot!.querySelector('.power-row')!.hasAttribute('hidden')).toBe(true);
   });
 
   it('converts home power > 1000 W into "1.5 kW" using the configured hass entity', async () => {
@@ -175,17 +225,146 @@ describe('hm-savings-card', () => {
     expect(power!.textContent).toContain('1.5 kW');
   });
 
-  it('renders the next scheduled run HH:MM (interval 28 → 14:00) with appliance name', async () => {
+  it('shows when each on/off appliance next runs, in local clock time', async () => {
     installFetchStub();
     const el = mountCard();
     el.setConfig({ type: 'custom:hm-savings-card' });
     await flush(el);
 
-    const root = el.shadowRoot!;
-    const nextValue = root.querySelector('.next-value');
-    expect(nextValue).not.toBeNull();
-    expect(nextValue!.textContent).toContain('Tesla Model 3');
-    expect(nextValue!.textContent).toContain('14:00');
+    // Interval 28 is 14:00; the clock is fixed at 08:00.
+    expect(rowOf(el, 'ev-1').querySelector('.row-status')!.textContent).toBe(
+      `Next run at ${new Date(2025, 10, 18, 14, 0).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`,
+    );
+    // An HVAC plan has no on/off runs, so a normal day adds no status line.
+    expect(rowOf(el, 'hvac-1').querySelector('.row-status')).toBeNull();
+  });
+
+  it('says "Scheduled now" in a half-hour the plan has on', async () => {
+    installFetchStub({
+      date: '2025-11-18',
+      appliances: [
+        {
+          ...EV_APPLIANCE,
+          schedule: { ...EV_APPLIANCE.schedule, intervals: Array<boolean>(48).fill(false).map((_, i) => i === 16) },
+        },
+      ],
+    });
+    const el = mountCard();
+    el.setConfig({ type: 'custom:hm-savings-card' });
+    await flush(el);
+
+    expect(rowOf(el, 'ev-1').querySelector('.row-status')!.textContent).toBe('Scheduled now');
+  });
+
+  it('shows a paused appliance as paused, with a bare em dash for the estimate', async () => {
+    installFetchStub({
+      date: '2025-11-18',
+      appliances: [
+        { ...HVAC_APPLIANCE, savings_pct: 0, optimization_enabled: false, pause_state: 'manual' },
+        { ...EV_APPLIANCE, optimization_enabled: false },
+      ],
+    });
+    const el = mountCard();
+    el.setConfig({ type: 'custom:hm-savings-card' });
+    await flush(el);
+
+    for (const id of ['hvac-1', 'ev-1']) {
+      expect(rowOf(el, id).querySelector('.row-status')!.textContent).toBe('Paused');
+      const savings = rowOf(el, id).querySelector('.row-savings')!;
+      expect(savings.textContent).toBe('\u2014');
+      expect(savings.getAttribute('title')).toBe('');
+    }
+  });
+
+  it('shows "No plan yet" for an appliance with no schedule', async () => {
+    installFetchStub({
+      date: '2025-11-18',
+      appliances: [{ ...EV_APPLIANCE, schedule: {}, savings_pct: 0, source: 'defaults' }],
+    });
+    const el = mountCard();
+    el.setConfig({ type: 'custom:hm-savings-card' });
+    await flush(el);
+
+    expect(rowOf(el, 'ev-1').querySelector('.row-status')!.textContent).toBe('No plan yet');
+    expect(rowOf(el, 'ev-1').querySelector('.row-savings')!.textContent).toBe('\u2014');
+  });
+
+  it('shows an HVAC sensor problem on its row in the whole-home list', async () => {
+    installFetchStub({
+      date: '2025-11-18',
+      appliances: [
+        {
+          ...HVAC_APPLIANCE,
+          integration_health: { status: 'stale_data', message: 'No readings for 40 minutes.' },
+        },
+      ],
+    });
+    const el = mountCard();
+    el.setConfig({ type: 'custom:hm-savings-card' });
+    await flush(el);
+
+    const status = rowOf(el, 'hvac-1').querySelector('.row-status')!;
+    expect(status.getAttribute('data-health')).toBe('stale_data');
+    expect(status.textContent).toBe('No readings for 40 minutes.');
+  });
+
+  it('asks for the plans again once they are five minutes old, driven by hass updates', async () => {
+    const calls = installFetchStub();
+    const el = mountCard({ hass: { states: {} } });
+    el.setConfig({ type: 'custom:hm-savings-card' });
+    await flush(el);
+    expect(calls.length).toBe(1);
+
+    el.hass = { states: {} };
+    await flush(el);
+    expect(calls.length).toBe(1);
+
+    vi.setSystemTime(new Date(2025, 10, 18, 8, 6, 0));
+    el.hass = { states: {} };
+    await flush(el);
+    expect(calls.length).toBe(2);
+  });
+
+  it('keeps the plans on screen when a refresh fails, and waits a minute to retry', async () => {
+    const calls = installFetchStub();
+    const el = mountCard({ hass: { states: {} } });
+    el.setConfig({ type: 'custom:hm-savings-card' });
+    await flush(el);
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+      calls.push({ url: String(input), init: undefined });
+      return new Response('{"detail":"boom"}', { status: 500, headers: { 'Content-Type': 'application/json' } });
+    }));
+    vi.setSystemTime(new Date(2025, 10, 18, 8, 6, 0));
+    el.hass = { states: {} };
+    await flush(el);
+    const afterFailure = calls.length;
+    expect(afterFailure).toBeGreaterThan(1);
+    expect(el.shadowRoot!.querySelectorAll('.row').length).toBe(2);
+    expect(el.shadowRoot!.querySelector('.error')!.hasAttribute('hidden')).toBe(true);
+
+    // A hass update a few seconds later does not hammer the service.
+    vi.setSystemTime(new Date(2025, 10, 18, 8, 6, 10));
+    el.hass = { states: {} };
+    await flush(el);
+    expect(calls.length).toBe(afterFailure);
+  });
+
+  it('links to the panel without reloading the page', async () => {
+    installFetchStub();
+    const push = vi.spyOn(history, 'pushState').mockImplementation(() => {});
+    const moved = vi.fn();
+    window.addEventListener('location-changed', moved);
+    const el = mountCard();
+    el.setConfig({ type: 'custom:hm-savings-card' });
+    await flush(el);
+
+    const link = el.shadowRoot!.querySelector('.card-foot a') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('/hungry-machines');
+    link.click();
+    expect(push).toHaveBeenCalledWith(null, '', '/hungry-machines');
+    expect(moved).toHaveBeenCalledTimes(1);
+    window.removeEventListener('location-changed', moved);
   });
 
   it('renders the sign-in stub when the auth store is not authed', async () => {
@@ -202,23 +381,23 @@ describe('hm-savings-card', () => {
     expect(root.querySelector('.savings')).toBeNull();
   });
 
-  it('exposes getCardSize() returning 2', () => {
+  it('reports its size: 3 rows for the list, 2 when scoped to one appliance', () => {
     const el = mountCard();
+    expect(el.getCardSize()).toBe(3);
+    el.setConfig({ type: 'custom:hm-savings-card', appliance_id: 'ev-1' });
     expect(el.getCardSize()).toBe(2);
   });
 
-  // the headline number is the model's baseline minus the plan
-  // at the plan's price curve, so both modes label it an estimate.
-  it("prefixes the whole-home headline with 'est.' and titles it as an estimate", async () => {
+  // Each number is the model's baseline minus the plan at the plan's
+  // price curve, so every surface labels it an estimate.
+  it("titles the list and each row's figure as an estimate", async () => {
     installFetchStub();
     const el = mountCard();
     el.setConfig({ type: 'custom:hm-savings-card' });
     await flush(el);
 
-    const savings = el.shadowRoot!.querySelector('.savings')!;
-    // (18 + 32) / 2 = 25 — unchanged.
-    expect(savings.textContent?.trim()).toBe('est. 25% savings today');
-    expect(savings.getAttribute('title')).toBe(
+    expect(el.shadowRoot!.querySelector('.title')!.textContent).toBe('Estimated savings today');
+    expect(rowOf(el, 'ev-1').querySelector('.row-savings')!.getAttribute('title')).toBe(
       "Estimated from the model's baseline at the plan's price curve",
     );
   });
@@ -254,18 +433,27 @@ describe('hm-savings-card', () => {
     );
   });
 
-  it('leaves the em dash bare — no estimate title when there is no number', async () => {
+  it('with no appliances, says where to add one', async () => {
     installFetchStub({ date: '2025-11-18', appliances: [] });
     const el = mountCard();
     el.setConfig({ type: 'custom:hm-savings-card' });
     await flush(el);
 
-    const savings = el.shadowRoot!.querySelector('.savings')!;
-    expect(savings.textContent?.trim()).toBe('\u2014');
-    expect(savings.getAttribute('title')).toBe('');
+    expect(el.shadowRoot!.querySelector('.row')).toBeNull();
+    expect(el.shadowRoot!.querySelector('.empty')!.textContent).toContain('Add an appliance');
   });
 
-  it('scoped by appliance_id renders that one appliance\'s savings (not the average)', async () => {
+  it('an appliance_id that matches nothing says so and shows no other figures', async () => {
+    installFetchStub();
+    const el = mountCard();
+    el.setConfig({ type: 'custom:hm-savings-card', appliance_id: 'gone' });
+    await flush(el);
+
+    expect(el.shadowRoot!.querySelector('.row')).toBeNull();
+    expect(el.shadowRoot!.querySelector('.empty')!.textContent).toContain('No appliance matches');
+  });
+
+  it('scoped by appliance_id renders that one appliance only', async () => {
     installFetchStub({
       date: '2025-11-18',
       appliances: [
@@ -281,12 +469,20 @@ describe('hm-savings-card', () => {
     await flush(el);
 
     const root = el.shadowRoot!;
-    expect(root.querySelector('.scope-name')!.textContent?.trim()).toBe('Bedroom');
-    expect(root.querySelector('.savings')!.textContent).toMatch(/34%/);
-    // Scoped mode suppresses the "next scheduled run" line — that's a
-    // whole-home metric, not a per-HVAC one.
-    expect(root.querySelector('.next-label')).toBeNull();
-    expect(root.querySelector('.next-value')).toBeNull();
+    expect(root.querySelector('.title')!.textContent?.trim()).toBe('Bedroom');
+    expect(root.querySelector('.savings')!.textContent).toBe('est. 34% savings today');
+    expect(root.querySelector('.row')).toBeNull();
+  });
+
+  it('scoped to an on/off appliance, shows its next run', async () => {
+    installFetchStub();
+    const el = mountCard();
+    el.setConfig({ type: 'custom:hm-savings-card', appliance_id: 'ev-1' });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(root.querySelector('.savings')!.textContent).toBe('est. 32% savings today');
+    expect(root.querySelector('.next-run')!.textContent).toMatch(/^Next run at /);
   });
 
   it('scoped card shows integration_health verdict (frozen_sensor)', async () => {
@@ -347,27 +543,7 @@ describe('hm-savings-card', () => {
     expect(badge!.hasAttribute('hidden')).toBe(true);
   });
 
-  it('without appliance_id, two-HVAC user still gets the whole-home average', async () => {
-    installFetchStub({
-      date: '2025-11-18',
-      appliances: [
-        { ...HVAC_APPLIANCE, appliance_id: 'hvac-a', savings_pct: 10 },
-        { ...HVAC_APPLIANCE, appliance_id: 'hvac-b', savings_pct: 30 },
-        EV_APPLIANCE,
-      ],
-    });
-    const el = mountCard();
-    el.setConfig({ type: 'custom:hm-savings-card' });
-    await flush(el);
-
-    const root = el.shadowRoot!;
-    // (10 + 30 + 32) / 3 = 24
-    expect(root.querySelector('.savings')!.textContent).toMatch(/24%/);
-    // Whole-home mode preserves the next-run line.
-    expect(root.querySelector('.next-value')).not.toBeNull();
-  });
-
-  it('renders "No upcoming runs." when no non-HVAC schedule has a true interval', async () => {
+  it('says "No more runs today" when nothing later in the day is on', async () => {
     installFetchStub({
       date: '2025-11-18',
       appliances: [
@@ -376,7 +552,8 @@ describe('hm-savings-card', () => {
           ...EV_APPLIANCE,
           schedule: {
             ...EV_APPLIANCE.schedule,
-            intervals: Array<boolean>(48).fill(false),
+            // On at 02:00 only, which is before the fixed 08:00 clock.
+            intervals: Array<boolean>(48).fill(false).map((_, i) => i === 4),
           },
         },
       ],
@@ -385,7 +562,6 @@ describe('hm-savings-card', () => {
     el.setConfig({ type: 'custom:hm-savings-card' });
     await flush(el);
 
-    const nextValue = el.shadowRoot!.querySelector('.next-value');
-    expect(nextValue!.textContent).toContain('No upcoming runs.');
+    expect(rowOf(el, 'ev-1').querySelector('.row-status')!.textContent).toBe('No more runs today');
   });
 });

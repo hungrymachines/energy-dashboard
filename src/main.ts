@@ -57,14 +57,14 @@ if (!existing.has('hm-thermostat-card')) {
   window.customCards.push({
     type: 'hm-thermostat-card',
     name: 'Hungry Machines Thermostat',
-    description: "Live indoor/outdoor temp and today's optimized HVAC schedule.",
+    description: "Live temperature, today's plan and timed pause for one HVAC.",
   });
 }
 if (!existing.has('hm-savings-card')) {
   window.customCards.push({
     type: 'hm-savings-card',
     name: 'Hungry Machines Savings',
-    description: "Today's estimated savings and next scheduled device run.",
+    description: "Today's estimated savings and next run for each appliance.",
   });
 }
 

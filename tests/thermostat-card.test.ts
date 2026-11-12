@@ -3,6 +3,7 @@ import { HmThermostatCard } from '../src/cards/thermostat-card.js';
 import { HmOptimizationChart } from '../src/ui/optimization-chart.js';
 import { authStore, type AuthState } from '../src/store.js';
 import { clearTokens, setApiBase, setTokens } from '../src/api/client.js';
+import { temperatureUnitStore } from '../src/utils/temperature.js';
 
 if (!customElements.get('hm-optimization-chart')) {
   customElements.define('hm-optimization-chart', HmOptimizationChart);
@@ -152,6 +153,8 @@ describe('hm-thermostat-card', () => {
     localStorage.clear();
     clearTokens();
     setAuthState({});
+    temperatureUnitStore.setPreference(null);
+    temperatureUnitStore.setHaUnit(null);
   });
 
   it('renders the configured indoor temperature entity value', async () => {
@@ -187,233 +190,254 @@ describe('hm-thermostat-card', () => {
     expect(outdoor!.textContent).toContain('55');
   });
 
-  it('debounces slider changes and PUTs the per-appliance preferences after 500ms', async () => {
-    const calls = installFetchStub();
-    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] });
-
-    const el = mountCard({
-      hass: {
-        states: {
-          'sensor.living_room_temp': {
-            entity_id: 'sensor.living_room_temp',
-            state: '72',
-          },
+  it('with no entities configured, shows the indoor sensor mapped to the appliance', async () => {
+    installFetchStub(
+      makeSchedules([
+        makeHvacAppliance({
+          entities: { entity_id: 'climate.living', indoor_temp_entity_id: 'sensor.back_room' },
+        }),
+      ]),
+    );
+    const hass = {
+      states: {
+        'sensor.back_room': { state: '69.6', attributes: { unit_of_measurement: '°F' } },
+        'climate.living': {
+          state: 'cool',
+          attributes: { current_temperature: 75, temperature: 74, hvac_action: 'cooling' },
         },
       },
-    });
-    el.setConfig({
-      type: 'custom:hm-thermostat-card',
-      entities: { indoor_temp: 'sensor.living_room_temp' },
-    });
-    await flush(el);
-
-    const root = el.shadowRoot!;
-    const slider = root.querySelector<HTMLInputElement>('input[name="savings_level"]');
-    expect(slider).not.toBeNull();
-
-    // Clear any prior calls so we only capture the PUT triggered by the slider.
-    const startIdx = calls.length;
-
-    slider!.value = '2';
-    slider!.dispatchEvent(new Event('input', { bubbles: true }));
-
-    // Before timer fires, no PUT.
-    const beforePut = calls.slice(startIdx).find(
-      (c) => c.url.includes('/preferences') && c.init?.method === 'PUT',
-    );
-    expect(beforePut).toBeUndefined();
-
-    await vi.advanceTimersByTimeAsync(500);
-    await flush(el);
-
-    // The write targets the PER-APPLIANCE preferences row — the nightly
-    // optimizer ignores the user-level savings_level once an
-    // appliance_preferences row exists.
-    const putCall = calls.slice(startIdx).find(
-      (c) =>
-        c.url.endsWith('/api/v1/appliances/hvac-1/preferences') &&
-        c.init?.method === 'PUT',
-    );
-    expect(putCall).toBeDefined();
-    const body = JSON.parse(String(putCall!.init!.body));
-    expect(body).toEqual({ savings_level: 2 });
-  });
-
-  it('renders the savings slider with max="3" (matches backend [1,3] range)', async () => {
-    installFetchStub();
-    const el = mountCard({
-      hass: {
-        states: {
-          'sensor.living_room_temp': {
-            entity_id: 'sensor.living_room_temp',
-            state: '72',
-          },
-        },
-      },
-    });
-    el.setConfig({
-      type: 'custom:hm-thermostat-card',
-      entities: { indoor_temp: 'sensor.living_room_temp' },
-    });
-    await flush(el);
-
-    const slider = el.shadowRoot!.querySelector<HTMLInputElement>(
-      'input[name="savings_level"]',
-    );
-    expect(slider).not.toBeNull();
-    expect(slider!.getAttribute('max')).toBe('3');
-    expect(slider!.getAttribute('min')).toBe('1');
-  });
-
-  it('seeds the slider from the PER-APPLIANCE preferences row, not the user-level one', async () => {
-    // User-level says savings_level 2 (the PREFERENCES_RESPONSE fixture);
-    // this HVAC's own row says 1. The card must show the appliance value.
-    installFetchStub(makeSchedules([makeHvacAppliance()]), {
-      ...PREFERENCES_RESPONSE,
-      savings_level: 1,
-    });
-    const el = mountCard({
-      hass: {
-        states: {
-          'sensor.living_room_temp': {
-            entity_id: 'sensor.living_room_temp',
-            state: '72',
-          },
-        },
-      },
-    });
-    el.setConfig({
-      type: 'custom:hm-thermostat-card',
-      entities: { indoor_temp: 'sensor.living_room_temp' },
-    });
-    await flush(el);
-
-    const sliderValue = el.shadowRoot!.querySelector('.slider-value');
-    expect(sliderValue!.textContent).toBe('1');
-  });
-
-  it('disables the savings slider and shows a hint when custom hourly limits are active', async () => {
-    installFetchStub(makeSchedules([makeHvacAppliance()]), {
-      ...PREFERENCES_RESPONSE,
-      hourly_low_temps_f: Array<number>(24).fill(68),
-      hourly_high_temps_f: Array<number>(24).fill(78),
-    });
-    const el = mountCard({
-      hass: {
-        states: {
-          'sensor.living_room_temp': {
-            entity_id: 'sensor.living_room_temp',
-            state: '72',
-          },
-        },
-      },
-    });
-    el.setConfig({
-      type: 'custom:hm-thermostat-card',
-      entities: { indoor_temp: 'sensor.living_room_temp' },
-    });
-    await flush(el);
-
-    const root = el.shadowRoot!;
-    const slider = root.querySelector<HTMLInputElement>(
-      'input[name="savings_level"]',
-    );
-    expect(slider).not.toBeNull();
-    expect(slider!.disabled).toBe(true);
-    expect(root.querySelector('.bands-hint')).not.toBeNull();
-    expect(root.querySelector('.bands-hint')!.textContent).toContain(
-      'Custom hourly limits',
-    );
-  });
-
-  it('adds the "Some days have their own" hint when weekday_bands is non-empty', async () => {
-    const day = {
-      hourly_high_temps_f: Array<number>(24).fill(80),
-      hourly_low_temps_f: Array<number>(24).fill(66),
     };
+    const el = mountCard({ hass });
+    el.setConfig({ type: 'custom:hm-thermostat-card' });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(root.querySelector('.indoor')!.textContent).toBe('70°');
+    expect(root.querySelector('.thermostat')!.textContent).toBe('Set to 74° · cooling');
+  });
+
+  it("falls back to the thermostat's own reading when no sensor is mapped", async () => {
+    installFetchStub(
+      makeSchedules([makeHvacAppliance({ entities: { entity_id: 'climate.living' } })]),
+    );
+    const hass = {
+      states: {
+        'climate.living': {
+          state: 'heat_cool',
+          attributes: { current_temperature: 71, target_temp_low: 68, target_temp_high: 75 },
+        },
+      },
+    };
+    const el = mountCard({ hass });
+    el.setConfig({ type: 'custom:hm-thermostat-card' });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(root.querySelector('.indoor')!.textContent).toBe('71°');
+    expect(root.querySelector('.thermostat')!.textContent).toBe('Set to 68° to 75°');
+  });
+
+  it('converts thermostat readings from a metric Home Assistant', async () => {
+    installFetchStub(
+      makeSchedules([makeHvacAppliance({ entities: { entity_id: 'climate.living' } })]),
+    );
+    const hass = {
+      config: { unit_system: { temperature: '°C' } },
+      states: {
+        'climate.living': { state: 'cool', attributes: { current_temperature: 20, temperature: 25 } },
+      },
+    };
+    const el = mountCard({ hass });
+    el.setConfig({ type: 'custom:hm-thermostat-card' });
+    await flush(el);
+    temperatureUnitStore.setPreference('F');
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(root.querySelector('.indoor')!.textContent).toBe('68°');
+    expect(root.querySelector('.thermostat')!.textContent).toBe('Set to 77°');
+  });
+
+  it('says the thermostat is off and shows no readout when nothing is available', async () => {
+    installFetchStub(
+      makeSchedules([makeHvacAppliance({ entities: { entity_id: 'climate.living' } })]),
+    );
+    const el = mountCard({ hass: { states: { 'climate.living': { state: 'off', attributes: {} } } } });
+    el.setConfig({ type: 'custom:hm-thermostat-card' });
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    expect(root.querySelector('.indoor')).toBeNull();
+    expect(root.querySelector('.thermostat')!.textContent).toBe('Thermostat off');
+  });
+
+  it('has no savings slider', async () => {
+    installFetchStub();
+    const el = mountCard({ hass: { states: {} } });
+    el.setConfig({ type: 'custom:hm-thermostat-card' });
+    await flush(el);
+
+    expect(el.shadowRoot!.querySelector('input[type="range"]')).toBeNull();
+  });
+
+  it("draws the appliance's saved comfort band over the one stored with the plan", async () => {
     installFetchStub(makeSchedules([makeHvacAppliance()]), {
       ...PREFERENCES_RESPONSE,
-      hourly_low_temps_f: Array<number>(24).fill(68),
       hourly_high_temps_f: Array<number>(24).fill(78),
-      weekday_bands: { sat: day },
+      hourly_low_temps_f: Array<number>(24).fill(67),
     });
-    const el = mountCard({
-      hass: {
-        states: {
-          'sensor.living_room_temp': { entity_id: 'sensor.living_room_temp', state: '72' },
+    const el = mountCard({ hass: { states: {} } });
+    el.setConfig({ type: 'custom:hm-thermostat-card' });
+    await flush(el);
+
+    const chart = el.shadowRoot!.querySelector(
+      'hm-optimization-chart',
+    ) as unknown as HmOptimizationChart;
+    expect(chart.highLimits).toEqual(Array<number>(48).fill(78));
+    expect(chart.lowLimits).toEqual(Array<number>(48).fill(67));
+  });
+
+  it("draws today's own band when the day has one", async () => {
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2026, 10, 14, 9, 0, 0)); // a Saturday
+    installFetchStub(makeSchedules([makeHvacAppliance()]), {
+      ...PREFERENCES_RESPONSE,
+      hourly_high_temps_f: Array<number>(24).fill(78),
+      hourly_low_temps_f: Array<number>(24).fill(67),
+      weekday_bands: {
+        sat: {
+          hourly_high_temps_f: Array<number>(24).fill(80),
+          hourly_low_temps_f: Array<number>(24).fill(65),
         },
       },
     });
-    el.setConfig({
-      type: 'custom:hm-thermostat-card',
-      entities: { indoor_temp: 'sensor.living_room_temp' },
-    });
+    const el = mountCard({ hass: { states: {} } });
+    el.setConfig({ type: 'custom:hm-thermostat-card' });
     await flush(el);
-    expect(el.shadowRoot!.querySelector('.bands-hint')!.textContent).toContain(
-      'Some days have their own',
-    );
+
+    const chart = el.shadowRoot!.querySelector(
+      'hm-optimization-chart',
+    ) as unknown as HmOptimizationChart;
+    expect(chart.highLimits).toEqual(Array<number>(48).fill(80));
+    expect(chart.lowLimits).toEqual(Array<number>(48).fill(65));
   });
 
-  it('_clampLevel clamps above 3 down to 3 and below 1 up to 1', () => {
-    const el = mountCard();
-    const clamp = (
-      el as unknown as { _clampLevel: (n: number) => number }
-    )._clampLevel.bind(el);
-    expect(clamp(5)).toBe(3);
-    expect(clamp(4)).toBe(3);
-    expect(clamp(0)).toBe(1);
-    expect(clamp(-1)).toBe(1);
-    expect(clamp(2)).toBe(2);
-    // Non-finite falls back to default 3.
-    expect(clamp(Number.NaN)).toBe(3);
+  it("keeps the plan's band when the appliance has no saved hourly band", async () => {
+    installFetchStub();
+    const el = mountCard({ hass: { states: {} } });
+    el.setConfig({ type: 'custom:hm-thermostat-card' });
+    await flush(el);
+
+    const chart = el.shadowRoot!.querySelector(
+      'hm-optimization-chart',
+    ) as unknown as HmOptimizationChart;
+    expect(chart.highLimits).toEqual(Array<number>(48).fill(74));
+    expect(chart.lowLimits).toEqual(Array<number>(48).fill(70));
   });
 
-  it('clamps a slider drag to 4 down to 3 before persisting', async () => {
-    const calls = installFetchStub();
-    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] });
+  describe('status note and mode badge', () => {
+    async function noteFor(entry: Record<string, unknown>): Promise<ShadowRoot> {
+      installFetchStub(makeSchedules([makeHvacAppliance(entry)]));
+      const el = mountCard({ hass: { states: {} } });
+      el.setConfig({ type: 'custom:hm-thermostat-card' });
+      await flush(el);
+      return el.shadowRoot!;
+    }
+    const plan = makeHvacAppliance().schedule as Record<string, unknown>;
 
-    const el = mountCard({
-      hass: {
-        states: {
-          'sensor.living_room_temp': {
-            entity_id: 'sensor.living_room_temp',
-            state: '72',
+    it('a normal plan day has no note', async () => {
+      const root = await noteFor({});
+      expect(root.querySelector('.status-note')).toBeNull();
+    });
+
+    it('an idle day says so and badges the card idle', async () => {
+      const root = await noteFor({ schedule: { ...plan, idle_day: true } });
+      expect(root.querySelector('.status-note')!.textContent).toContain('Idle day');
+      expect(root.querySelector('.mode-badge')!.textContent).toBe('idle');
+    });
+
+    it('a warm-up test day says so', async () => {
+      const root = await noteFor({ schedule: { ...plan, calibration: { kind: 'fan' } } });
+      expect(root.querySelector('.status-note')!.textContent).toContain('warm-up test');
+    });
+
+    it('a plan from an earlier day says so', async () => {
+      const root = await noteFor({ stale: true });
+      expect(root.querySelector('.status-note')!.textContent).toContain('not ready yet');
+    });
+
+    it('no plan: says so, with no mode badge and no savings figure', async () => {
+      const root = await noteFor({ schedule: {}, savings_pct: 0, source: 'defaults' });
+      expect(root.querySelector('.status-note')!.textContent).toBe('No plan for this unit yet.');
+      expect(root.querySelector('.mode-badge')).toBeNull();
+      expect(root.querySelector('.savings')).toBeNull();
+    });
+
+    it('a paused unit or home says so and shows no savings figure', async () => {
+      const unit = await noteFor({ pause_state: 'manual', savings_pct: 0 });
+      expect(unit.querySelector('.status-note')!.textContent).toContain('paused for this unit');
+      expect(unit.querySelector('.savings')).toBeNull();
+      document.body.innerHTML = '';
+      const home = await noteFor({ pause_state: 'master', savings_pct: 0 });
+      expect(home.querySelector('.status-note')!.textContent).toContain('paused for the whole home');
+    });
+  });
+
+  it("names the plan's average price in the savings hover text", async () => {
+    installFetchStub(
+      makeSchedules([
+        makeHvacAppliance({
+          schedule: {
+            ...(makeHvacAppliance().schedule as Record<string, unknown>),
+            pricing_cents_48: Array.from({ length: 48 }, (_, i) => (i < 24 ? 10 : 20)),
           },
-        },
-      },
-    });
-    el.setConfig({
-      type: 'custom:hm-thermostat-card',
-      entities: { indoor_temp: 'sensor.living_room_temp' },
-    });
+        }),
+      ]),
+    );
+    const el = mountCard({ hass: { states: {} } });
+    el.setConfig({ type: 'custom:hm-thermostat-card' });
     await flush(el);
 
-    const slider = el.shadowRoot!.querySelector<HTMLInputElement>(
-      'input[name="savings_level"]',
+    expect(el.shadowRoot!.querySelector('.savings')!.getAttribute('title')).toContain(
+      '(avg 15.0 ¢/kWh)',
     );
-    expect(slider).not.toBeNull();
+  });
 
-    const startIdx = calls.length;
-    // Browsers honor the input element's max attribute, but we still defend
-    // in code. Simulate a value out of range slipping through.
-    slider!.value = '4';
-    slider!.dispatchEvent(new Event('input', { bubbles: true }));
+  it('asks for the plan again once it is five minutes old, driven by hass updates', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2026, 10, 12, 9, 0, 0));
+    const calls = installFetchStub();
+    const el = mountCard({ hass: { states: {} } });
+    el.setConfig({ type: 'custom:hm-thermostat-card' });
+    await flush(el);
+    const schedulesCalls = () => calls.filter((c) => c.url.endsWith('/api/v1/schedules')).length;
+    expect(schedulesCalls()).toBe(1);
 
-    await vi.advanceTimersByTimeAsync(500);
+    el.hass = { states: {} };
+    await flush(el);
+    expect(schedulesCalls()).toBe(1);
+
+    vi.setSystemTime(new Date(2026, 10, 12, 9, 6, 0));
+    el.hass = { states: {} };
+    await flush(el);
+    expect(schedulesCalls()).toBe(2);
+  });
+
+  it('links to the panel without reloading the page', async () => {
+    installFetchStub();
+    const push = vi.spyOn(history, 'pushState').mockImplementation(() => {});
+    const moved = vi.fn();
+    window.addEventListener('location-changed', moved);
+    const el = mountCard({ hass: { states: {} } });
+    el.setConfig({ type: 'custom:hm-thermostat-card' });
     await flush(el);
 
-    const putCall = calls.slice(startIdx).find(
-      (c) =>
-        c.url.endsWith('/api/v1/appliances/hvac-1/preferences') &&
-        c.init?.method === 'PUT',
-    );
-    expect(putCall).toBeDefined();
-    const body = JSON.parse(String(putCall!.init!.body));
-    expect(body).toEqual({ savings_level: 3 });
-
-    // The visible slider value also reflects the clamp.
-    const sliderValue = el.shadowRoot!.querySelector('.slider-value');
-    expect(sliderValue!.textContent).toBe('3');
+    const link = el.shadowRoot!.querySelector('.card-foot a') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('/hungry-machines');
+    link.click();
+    expect(push).toHaveBeenCalledWith(null, '', '/hungry-machines');
+    expect(moved).toHaveBeenCalledTimes(1);
+    window.removeEventListener('location-changed', moved);
   });
 
   it('renders the sign-in stub when the auth store is not authed', async () => {

@@ -19,10 +19,10 @@ Questions: [info@hungrymachines.io](mailto:info@hungrymachines.io).
 ## What you get
 
 - **`hungry-machines-panel`** — full-page sidebar entry. Sign in, then **add the appliances you want optimized** (one or more HVACs, plus an EV charger, home battery, water heater, hot tub, pool pump, home robot, or solar array, and a dehumidifier if you want its readings recorded), map each one to its Home Assistant entities, edit the comfort and charge constraints the optimizer respects, choose your pricing, and review a diagnostics view that flags sensor and command problems.
-- **`hm-thermostat-card`** — Lovelace card with current indoor/outdoor temperature, an optimization chart (your comfort limits and the planned setpoints over the day's prices). Pin it to one HVAC with `appliance_id` when you run more than one.
-- **`hm-savings-card`** — Lovelace card with today's estimated savings, current home power draw, and the next scheduled run of an appliance other than HVAC. Scope it to a single appliance with `appliance_id`, or leave it whole-home.
+- **`hm-thermostat-card`** — Lovelace card for one HVAC: the room temperature now, what the thermostat is set to, today's estimated savings, the timed-pause buttons, and the optimization chart (your comfort limits and the planned setpoints over the day's prices). Pin it to one HVAC with `appliance_id` when you run more than one.
+- **`hm-savings-card`** — Lovelace card that lists each appliance with today's estimated savings and when it is next scheduled to run, plus your home's power draw if you name a sensor. Scope it to a single appliance with `appliance_id`.
 
-All three share one sign-in. Sign in once via the panel and the cards activate everywhere on your dashboard — your token persists in your browser's localStorage. The thermostat card, and the savings card when it is scoped to one appliance, show a small health badge when that appliance's sensor data looks stale, stuck or missing.
+All three share one sign-in. Sign in once via the panel and the cards activate everywhere on your dashboard — your token persists in your browser's localStorage. Both cards say so when an HVAC's sensor data looks stale, stuck or missing, and when a unit is paused, has an idle day or has no plan yet. They reload the plan about every five minutes while the dashboard is open, and each links back to the panel.
 
 ## How it works
 
@@ -82,26 +82,31 @@ Each appliance card then shows today's optimized schedule, an **Edit constraints
 
 ### Step 5 — Add the cards (optional)
 
-The panel is the primary surface; the cards are extras for your existing dashboards. In any Lovelace dashboard, click **Add card → Search "Hungry Machines"**, then fill in the entity IDs that match your home:
+The panel is the primary surface; the cards are extras for your existing dashboards. In any Lovelace dashboard, click **Add card → Search "Hungry Machines"**. Both cards work with no options:
 
 ```yaml
 type: custom:hm-thermostat-card
 # Optional: pick a specific HVAC when you have more than one registered.
-# With exactly one HVAC the card auto-resolves and this can be omitted.
+# With exactly one HVAC the card finds it and this can be omitted.
 # appliance_id: 11111111-2222-3333-4444-555555555555
-entities:
-  indoor_temp: sensor.living_room_temp
-  outdoor_temp: sensor.outside_temp
+# Optional. The room temperature comes from the indoor sensor you mapped
+# to the HVAC in the panel, or the thermostat's own reading. Name a
+# different sensor here, and an outdoor one to show alongside it.
+# entities:
+#   indoor_temp: sensor.living_room_temp
+#   outdoor_temp: sensor.outside_temp
 ```
 
 ```yaml
 type: custom:hm-savings-card
-# Optional: scope the savings figure to one appliance and show its
-# health badge. Omitted → whole-home average + next scheduled run.
+# Optional: show one appliance instead of the list.
 # appliance_id: 11111111-2222-3333-4444-555555555555
-entities:
-  power: sensor.home_power
+# Optional: a power sensor, in W or kW, to show your home's draw.
+# entities:
+#   power: sensor.home_power
 ```
+
+Each figure on the savings card is an estimate for that one appliance: a share of what the model predicts it would have cost to run without the plan. The card lists them and does not combine them into a whole-home number.
 
 Sign-in is shared with the panel — once you've signed in, the cards light up immediately.
 
@@ -127,7 +132,7 @@ Everything you'd expect to tune lives inside the panel's **Settings** tab:
 
 Comfort and charge constraints are edited per-appliance from the **Dashboard** — each appliance card has an **Edit constraints** button that opens a per-type editor, plus a **pause toggle** that excludes that one appliance from optimization without deleting it until you switch it back on (a master optimization switch in the Dashboard header pauses everything). HVAC cards add a timed pause that ends by itself; [Pausing a unit](#pausing-a-unit) covers both kinds:
 
-- **HVAC** — a low/high comfort limit for every one of the 24 hours, in your chosen unit. That table is what the panel edits and what every save sends. Above it, **Days** sets how many bands the unit keeps: **Every day** keeps one; **Weekdays and weekends** keeps one for Monday to Friday and one for Saturday and Sunday, each behind its own chip; **Each day** shows seven chips, M to S, and lets any day have its own band. A dashed chip has the same band as the day you are looking at, and **Copy this day to…** copies the shown band to the days you tick. Days run midnight to midnight in your home's time zone. Moving to a preset with fewer bands warns you when a day's own band would be replaced, and nothing changes until you save. **Reset to defaults** fills only the band on screen. The dashboard chart and the thermostat card show today's band. Above the table, a **Defaults** group holds your base temperature and the **Reset to defaults** button, which refills the band from that base: for cooling, base −2/+1 °F overnight and base −5/+6 °F from 08:00 to 22:00, mirrored for heating. A home that has never edited an hour gets the same shape. A separate **HVAC mode** select sets Auto, Cooling only, Heating only or Off.
+- **HVAC** — a low/high comfort limit for every one of the 24 hours, in your chosen unit. That table is what the panel edits and what every save sends. Above it, **Days** sets how many bands the unit keeps: **Every day** keeps one; **Weekdays and weekends** keeps one for Monday to Friday and one for Saturday and Sunday, each behind its own chip; **Each day** shows seven chips, M to S, and lets any day have its own band. A dashed chip has the same band as the day you are looking at, and **Copy this day to…** copies the shown band to the days you tick. Days run midnight to midnight in your home's time zone. Moving to a preset with fewer bands warns you when a day's own band would be replaced, and nothing changes until you save. **Reset to defaults** fills only the band on screen. The dashboard chart and the thermostat card show today's band. Above the table, a **Quick preset** group fills it in one step. Set your base temperature, the times you usually leave and return, and a comfort range for the hours you are away: Tight (±2 °F), Default (±5 °F) or Wide (±10 °F). **Fill table from preset** then writes a band of ±1 °F around your base while you are home and the wider range while you are away, and you can still edit any hour. **Reset to defaults** in the same group refills the band with the standard shape instead: for cooling, base −2/+1 °F overnight and base −5/+6 °F from 08:00 to 22:00, mirrored for heating. A home that has never edited an hour gets that standard shape. A separate **HVAC mode** select sets Auto, Cooling only, Heating only or Off.
 - **EV charger** — target charge %, minimum charge %, current charge %, deadline time (HH:MM by which the target must be reached).
 - **Home battery** — target charge %, minimum charge %, deadline time.
 - **Water heater** — minimum and maximum tank temperature, a **Lowest planned temperature** (120 °F by default) that plans are designed to stay above, and a sanitize cycle, on by default, that schedules heating the tank to a temperature you choose and holding it (140 °F for an hour every two days by default). The cycle only works if the tank's own thermostat is set at least that high. Both are scheduling features built on a model of your tank. The model does not see how much hot water you use, so the real tank can run cooler than planned. They do not replace the tank's own thermostat or mixing valve, or the manufacturer's guidance on scalding and Legionella.

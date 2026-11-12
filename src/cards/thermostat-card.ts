@@ -5,37 +5,45 @@ import { chartScaleStore } from '../utils/chart-scale.js';
 import {
   getAllSchedules,
   type ApplianceScheduleEntry,
-  type InlineIntegrationHealth,
   type SchedulesResponse,
 } from '../api/schedules.js';
-import {
-  get as getPreferences,
-  update as updatePreferences,
-  type Preferences,
-} from '../api/preferences.js';
+import { get as getPreferences, type Preferences } from '../api/preferences.js';
 import {
   get as getAppliancePreferences,
-  update as updateAppliancePreferences,
   pause as pauseUnit,
   resume as resumeUnit,
   type AppliancePreferences,
 } from '../api/appliance-preferences.js';
 import { get as getRates, type RatesResponse } from '../api/rates.js';
-import { hasHourlyComfortBands } from '../utils/hourly.js';
-import { formatSavingsEstimate, SAVINGS_ESTIMATE_TITLE } from '../utils/savings.js';
+import { expandHourlyTo48, hasHourlyComfortBands } from '../utils/hourly.js';
+import { resolveDayBand, todayIsoLocal, weekdayKeyOf } from '../utils/day-bands.js';
+import { formatSavingsEstimate, savingsEstimateTitle } from '../utils/savings.js';
+import {
+  CARD_REFRESH_MS,
+  CARD_RETRY_MS,
+  PANEL_PATH,
+  healthLabel,
+  openPanel,
+  pausedUntilLabel,
+} from '../utils/cards.js';
 
 export interface HmThermostatCardConfig {
   type?: string;
   /**
    * UUID of the HVAC appliance this card represents. Required when the
    * user has more than one HVAC registered; with exactly one HVAC the
-   * card resolves to it automatically (back-compat).
+   * card resolves to it automatically.
    */
   appliance_id?: string;
+  /**
+   * Both optional. The indoor reading defaults to the sensor mapped to
+   * the appliance in the panel, else the thermostat's own reading; set
+   * `indoor_temp` to show a different one. There is no default outdoor
+   * reading.
+   */
   entities?: {
     indoor_temp?: string;
     outdoor_temp?: string;
-    hvac_action?: string;
   };
 }
 
@@ -50,25 +58,14 @@ type HassLike = {
   callService?: (domain: string, service: string, data?: Record<string, unknown>) => Promise<unknown>;
 };
 
-const SCHEDULE_TTL_MS = 5 * 60 * 1000;
-const PREFERENCES_DEBOUNCE_MS = 500;
-
 /**
- * Lovelace card on the HA Overview that mirrors the per-appliance card
- * from the Hungry Machines dashboard panel — same `.card` chrome,
- * badge + name header, savings line, and the rich
- * `<hm-optimization-chart>` (price bars + comfort band + setpoint line).
+ * Lovelace card that mirrors one HVAC card from the Hungry Machines
+ * panel: the same chrome, the savings estimate, the timed-pause row and
+ * the optimization chart (price bars, comfort band, planned setpoints).
  *
- * Adds two affordances the panel card doesn't have, since this lives on
- * the user's main HA Overview where their actual indoor/outdoor sensors
- * are reachable through `hass.states`:
- *   * Current indoor / outdoor temperature readout (live, not from the
- *     schedule), pulled from `config.entities.indoor_temp` /
- *     `config.entities.outdoor_temp`.
- *   * In-place "Savings level" slider that PUTs `/api/v1/preferences`
- *     on debounce — the panel exposes the same control inside the
- *     constraint editor, but jumping to the panel from the overview
- *     would be heavy for a 1-tap change.
+ * It adds what a dashboard has and the panel card does not: the live
+ * indoor temperature and what the thermostat is set to right now, read
+ * from `hass.states`. Editing stays in the panel, one tap away.
  */
 export class HmThermostatCard extends LitElement {
   static override styles = css`
@@ -143,9 +140,6 @@ export class HmThermostatCard extends LitElement {
     .card-head .mode-badge[data-mode='heat'] {
       background: var(--hm-error, #DC2626);
     }
-    .card-head .mode-badge[data-mode='off'] {
-      background: var(--hm-muted, #64748B);
-    }
     /* Current temp + savings row, two metrics side-by-side. */
     .metrics {
       display: grid;
@@ -175,14 +169,6 @@ export class HmThermostatCard extends LitElement {
       font-size: 1.1rem;
       text-align: right;
     }
-    .missing-entity {
-      font-size: 13px;
-      color: var(--hm-muted, #64748B);
-    }
-    .missing-entity a {
-      color: var(--hm-primary, #1E3A8A);
-      text-decoration: underline;
-    }
     .chart-error {
       color: var(--hm-error, #DC2626);
       font-size: 12px;
@@ -190,10 +176,8 @@ export class HmThermostatCard extends LitElement {
       background: rgba(220, 38, 38, 0.06);
       border-radius: 8px;
     }
-    /* Per-appliance integration-health badge inlined from /schedules
-      . Hidden when status is 'healthy' or missing so a
-       working card stays clean; muted-red chip for any non-healthy
-       verdict. */
+    /* Sensor-health badge. Hidden when the status is 'healthy' or
+       missing, so a working card stays clean. */
     .health-badge {
       display: inline-flex;
       align-items: center;
@@ -252,33 +236,27 @@ export class HmThermostatCard extends LitElement {
       font-family: ui-monospace, monospace;
       font-size: 12px;
     }
-    .slider-row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding-top: 10px;
-      border-top: 1px solid rgba(100, 116, 139, 0.2);
+    .thermostat {
+      font-size: 0.85rem;
+      color: var(--hm-muted, #64748B);
     }
-    .slider-row label {
+    .status-note {
       font-size: 13px;
-      color: var(--hm-text, #0F172A);
-      font-weight: 600;
-    }
-    .slider-row input[type='range'] {
-      flex: 1;
-      accent-color: var(--hm-primary, #1E3A8A);
-    }
-    .slider-value {
-      width: 20px;
-      text-align: center;
-      font-weight: 700;
-      color: var(--hm-primary, #1E3A8A);
-    }
-    .bands-hint {
-      font-size: 12px;
       line-height: 1.4;
       color: var(--hm-muted, #64748B);
-      padding: 0 4px;
+    }
+    .card-foot {
+      padding-top: 10px;
+      border-top: 1px solid rgba(100, 116, 139, 0.2);
+      font-size: 13px;
+    }
+    .card-foot a {
+      color: var(--hm-primary, #1E3A8A);
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .card-foot a:hover {
+      text-decoration: underline;
     }
   `;
 
@@ -288,7 +266,6 @@ export class HmThermostatCard extends LitElement {
     _schedules: { state: true },
     _rates: { state: true },
     _scheduleError: { state: true },
-    _savingsLevel: { state: true },
     _appliancePrefs: { state: true },
     _pauseBusy: { state: true },
     _pauseError: { state: true },
@@ -299,12 +276,9 @@ export class HmThermostatCard extends LitElement {
   _schedules: SchedulesResponse | null = null;
   _rates: RatesResponse | null = null;
   _scheduleError: string | null = null;
-  _savingsLevel = 3;
   /**
-   * Per-appliance preferences for the resolved HVAC. Preferences are
-   * per-appliance — the user-level row is only a
-   * fallback for HVACs with no row yet, so both the savings-slider
-   * write and the "custom hourly limits active" hint key off this.
+   * Preferences of the resolved HVAC. Its saved comfort band is drawn
+   * on the chart, so an edit shows here before the next plan is made.
    */
   _appliancePrefs: AppliancePreferences | null = null;
   _pauseBusy = false;
@@ -318,7 +292,6 @@ export class HmThermostatCard extends LitElement {
   private _unsubscribeUnit: (() => void) | null = null;
   private _unsubscribeChartScale: (() => void) | null = null;
   private _scheduleFetchedAt = 0;
-  private _preferencesTimer: ReturnType<typeof setTimeout> | null = null;
 
   setConfig(config: HmThermostatCardConfig | undefined): void {
     this._config = config ?? {};
@@ -350,7 +323,13 @@ export class HmThermostatCard extends LitElement {
   }
 
   override willUpdate(changed: Map<PropertyKey, unknown>): void {
-    if (changed.has('hass')) temperatureUnitStore.setHaUnit(haUnitFrom(this.hass));
+    if (changed.has('hass')) {
+      temperatureUnitStore.setHaUnit(haUnitFrom(this.hass));
+      // Home Assistant hands the card a new `hass` on every state change,
+      // which makes it the clock for a card left open all day: the plan
+      // is asked for again once the one in hand is five minutes old.
+      void this._loadIfAuthed();
+    }
   }
 
   override disconnectedCallback(): void {
@@ -367,20 +346,15 @@ export class HmThermostatCard extends LitElement {
       this._unsubscribe();
       this._unsubscribe = null;
     }
-    if (this._preferencesTimer !== null) {
-      clearTimeout(this._preferencesTimer);
-      this._preferencesTimer = null;
-    }
   }
 
   private async _loadIfAuthed(): Promise<void> {
     if (this._auth.status !== 'authed') return;
     const now = Date.now();
-    if (this._scheduleFetchedAt && now - this._scheduleFetchedAt < SCHEDULE_TTL_MS) {
+    if (this._scheduleFetchedAt && now - this._scheduleFetchedAt < CARD_REFRESH_MS) {
       return;
     }
     this._scheduleFetchedAt = now;
-    this._scheduleError = null;
     try {
       const [schedules, preferences, rates] = await Promise.all([
         getAllSchedules(),
@@ -388,47 +362,42 @@ export class HmThermostatCard extends LitElement {
         getRates().catch(() => null as RatesResponse | null),
       ]);
       this._schedules = schedules;
-      this._rates = rates;
-      temperatureUnitStore.setPreference(preferences?.temperature_unit ?? null);
-      chartScaleStore.setFromPreferences(preferences);
-      if (preferences && typeof preferences.savings_level === 'number') {
-        this._savingsLevel = this._clampLevel(preferences.savings_level);
+      this._scheduleError = null;
+      // A failed refresh keeps the price bars already on the chart.
+      if (rates) this._rates = rates;
+      if (preferences) {
+        temperatureUnitStore.setPreference(preferences.temperature_unit ?? null);
+        chartScaleStore.setFromPreferences(preferences);
       }
-      // Preferences live on the per-appliance row; the
-      // user-level value read above is only the fallback for an HVAC
-      // that has no row yet. Without this, the slider showed — and
-      // wrote — a user-level value the optimizer never reads once a
-      // per-appliance row exists.
       const appliance = this._resolveAppliance();
       if (appliance) {
         try {
           const prefs = await getAppliancePreferences(appliance.appliance_id);
           this._appliancePrefs = prefs;
           this._appliancePrefsFor = appliance.appliance_id;
-          if (typeof prefs.savings_level === 'number') {
-            this._savingsLevel = this._clampLevel(prefs.savings_level);
-          }
         } catch {
-          // Best-effort: keep the user-level seed; the write path
-          // still targets the per-appliance endpoint.
+          // Best-effort: the chart falls back to the band in the plan.
         }
       } else {
         this._appliancePrefs = null;
         this._appliancePrefsFor = null;
       }
     } catch (err) {
-      this._scheduleError =
-        err instanceof Error && err.message
-          ? err.message
-          : 'Could not load schedule';
-      this._scheduleFetchedAt = 0;
+      // With a plan already on screen, keep showing it and try again soon.
+      if (!this._schedules) {
+        this._scheduleError =
+          err instanceof Error && err.message
+            ? err.message
+            : 'Could not load schedule';
+      }
+      this._scheduleFetchedAt = now - CARD_REFRESH_MS + CARD_RETRY_MS;
     }
   }
 
   /**
    * Resolve which HVAC appliance this card targets:
    *   - `appliance_id` in card config → match by id
-   *   - exactly one HVAC, no id → back-compat resolve to that one
+   *   - exactly one HVAC, no id → that one
    *   - 2+ HVACs, no id → null (caller renders a "configure appliance_id"
    *     stub so we don't silently show the wrong room)
    *   - zero HVACs → null
@@ -483,14 +452,9 @@ export class HmThermostatCard extends LitElement {
     const busy = this._pauseBusy;
     const error = this._pauseError;
     if (state === 'timed') {
-      const until = entry.paused_until ? new Date(entry.paused_until) : null;
-      const label =
-        until && !Number.isNaN(until.getTime())
-          ? `Paused until ${until.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
-          : 'Paused';
       return html`
         <div class="pause-row">
-          <span class="paused-until">${label}</span>
+          <span class="paused-until">${pausedUntilLabel(entry.paused_until)}</span>
           <button
             type="button"
             name="resume_now"
@@ -525,43 +489,6 @@ export class HmThermostatCard extends LitElement {
     return hvacs.length >= 2 && !this._config.appliance_id;
   }
 
-  private _clampLevel(n: number): number {
-    if (!Number.isFinite(n)) return 3;
-    const rounded = Math.round(n);
-    if (rounded < 1) return 1;
-    if (rounded > 3) return 3;
-    return rounded;
-  }
-
-  private _onSavingsInput(e: Event): void {
-    const target = e.target as HTMLInputElement;
-    const raw = Number(target.value);
-    const level = this._clampLevel(raw);
-    this._savingsLevel = level;
-    if (this._preferencesTimer !== null) {
-      clearTimeout(this._preferencesTimer);
-    }
-    this._preferencesTimer = setTimeout(() => {
-      this._preferencesTimer = null;
-      // Write to the per-appliance row when this card resolves to an
-      // HVAC — the nightly optimizer reads per-appliance preferences
-      // and ignores the user-level value once a row exists, so the
-      // user-level PUT alone was a silent no-op.
-      const appliance = this._resolveAppliance();
-      const write = appliance
-        ? updateAppliancePreferences(appliance.appliance_id, {
-            savings_level: level,
-          }).then((prefs) => {
-            this._appliancePrefs = prefs;
-            this._appliancePrefsFor = appliance.appliance_id;
-          })
-        : updatePreferences({ savings_level: level }).then(() => undefined);
-      void write.catch(() => {
-        /* swallow — retry on next change */
-      });
-    }, PREFERENCES_DEBOUNCE_MS);
-  }
-
   private _readEntityState(entityId: string | undefined): string | null {
     if (!entityId) return null;
     const states = this.hass?.states;
@@ -585,6 +512,73 @@ export class HmThermostatCard extends LitElement {
     return `${liveTemp(n, source, temperatureUnitStore.state.unit)}°`;
   }
 
+  /** A thermostat attribute, which Home Assistant reports in its own unit. */
+  private _formatClimateTemp(value: unknown): string | null {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+    const source = temperatureUnitStore.state.haUnit ?? 'F';
+    return `${liveTemp(value, source, temperatureUnitStore.state.unit)}°`;
+  }
+
+  /**
+   * The indoor reading to show, in this order: the entity named in the
+   * card config, the indoor sensor mapped to the appliance, then the
+   * thermostat's own reading. Null when none of them is available.
+   */
+  private _indoorReadout(entry: ApplianceScheduleEntry | null): string | null {
+    const configured = this._config.entities?.indoor_temp;
+    if (configured) return this._formatTemp(configured, this._readEntityState(configured));
+    const sensor = entry?.entities?.['indoor_temp_entity_id'];
+    const sensorRaw = this._readEntityState(sensor);
+    if (sensorRaw !== null && Number.isFinite(Number(sensorRaw))) {
+      return this._formatTemp(sensor, sensorRaw);
+    }
+    const climate = this.hass?.states?.[entry?.entities?.['entity_id'] ?? ''];
+    return this._formatClimateTemp(climate?.attributes?.['current_temperature']);
+  }
+
+  /** "Set to 74° · cooling", from the thermostat's live state. */
+  private _thermostatReadout(entry: ApplianceScheduleEntry | null): string | null {
+    const climate = this.hass?.states?.[entry?.entities?.['entity_id'] ?? ''];
+    if (!climate) return null;
+    const attrs = climate.attributes ?? {};
+    const single = this._formatClimateTemp(attrs['temperature']);
+    const low = this._formatClimateTemp(attrs['target_temp_low']);
+    const high = this._formatClimateTemp(attrs['target_temp_high']);
+    const parts: string[] = [];
+    if (climate.state === 'off') parts.push('Thermostat off');
+    else if (single) parts.push(`Set to ${single}`);
+    else if (low && high) parts.push(`Set to ${low} to ${high}`);
+    const action = attrs['hvac_action'];
+    if (typeof action === 'string' && action && action !== 'off') parts.push(action);
+    return parts.length > 0 ? parts.join(' · ') : null;
+  }
+
+  /** One line under the readouts for a day that is not a normal plan day. */
+  private _statusNote(entry: ApplianceScheduleEntry | null): string {
+    if (!entry) return '';
+    if (entry.pause_state === 'master') {
+      return 'Optimization is paused for the whole home. Turn it back on in the panel.';
+    }
+    if (entry.pause_state === 'manual') {
+      return 'Optimization is paused for this unit. Turn it back on in the panel.';
+    }
+    const sched = entry.schedule ?? {};
+    if (entry.source === 'defaults' || Object.keys(sched).length === 0) {
+      return 'No plan for this unit yet.';
+    }
+    if (entry.stale) return "Today's plan is not ready yet. Showing the most recent one.";
+    if (sched['calibration']) return 'A warm-up test is planned for today, 09:00 to 15:00.';
+    if (sched['idle_day'] === true) {
+      return 'Idle day: no heating or cooling is planned.';
+    }
+    return '';
+  }
+
+  private _onOpenPanel(e: Event): void {
+    e.preventDefault();
+    openPanel();
+  }
+
   override render(): TemplateResult {
     if (this._auth.status !== 'authed') {
       return html`
@@ -595,24 +589,37 @@ export class HmThermostatCard extends LitElement {
     }
 
     const entities = this._config.entities ?? {};
-    const indoorRaw = this._readEntityState(entities.indoor_temp);
     const outdoorRaw = this._readEntityState(entities.outdoor_temp);
-    const indoorConfigured = !!entities.indoor_temp;
 
     const entry = this._resolveAppliance();
     const multiHvacUnresolved = this._isMultiHvacUnresolved();
     const sched = (entry?.schedule ?? {}) as Record<string, unknown>;
+    // A stored plan is 'cool' or 'heat'. With no plan there is no mode to
+    // show, so the badge is left out.
     const modeRaw = sched['mode'];
-    const mode =
-      (typeof modeRaw === 'string' ? modeRaw : '').toLowerCase() || 'auto';
+    const planMode = typeof modeRaw === 'string' ? modeRaw.toLowerCase() : '';
+    const mode = sched['idle_day'] === true ? 'idle' : planMode;
 
     const ratesArr = this._rates?.rates_cents_per_kwh;
     const rates: number[] =
       Array.isArray(ratesArr) && ratesArr.length === 48
         ? ratesArr
         : new Array(48).fill(0);
-    const highLimits = this._asNumberArray(sched['high_temps']);
-    const lowLimits = this._asNumberArray(sched['low_temps']);
+    // The appliance's saved comfort band wins over the one stored with
+    // the plan, as it does in the panel, so an edit shows without waiting
+    // for the next plan. A day with its own band shows that band.
+    const prefs =
+      entry && this._appliancePrefsFor === entry.appliance_id ? this._appliancePrefs : null;
+    const dayBand =
+      prefs && hasHourlyComfortBands(prefs)
+        ? resolveDayBand(prefs, weekdayKeyOf(todayIsoLocal()))
+        : null;
+    const highLimits = dayBand
+      ? expandHourlyTo48(dayBand.high)
+      : this._asNumberArray(sched['high_temps']);
+    const lowLimits = dayBand
+      ? expandHourlyTo48(dayBand.low)
+      : this._asNumberArray(sched['low_temps']);
     // Prefer the backend's clamped per-interval setpoints. Falls back to
     // temp_trajectory for legacy schedule rows.
     const targetValues =
@@ -620,57 +627,48 @@ export class HmThermostatCard extends LitElement {
       this._asNumberArray(sched['temp_trajectory']);
 
     const savingsPct = entry?.savings_pct;
+    // A paused unit has no plan running, so there is no estimate to show.
+    const hasPlan =
+      !!entry &&
+      entry.source !== 'defaults' &&
+      entry.pause_state !== 'manual' &&
+      entry.pause_state !== 'master';
     const savingsText =
-      typeof savingsPct === 'number'
-        ? formatSavingsEstimate(savingsPct)
-        : '';
+      hasPlan && typeof savingsPct === 'number' ? formatSavingsEstimate(savingsPct) : '';
 
     const name = entry?.name ?? 'Thermostat';
     const health = entry?.integration_health;
     const healthHidden = !health || health.status === 'healthy';
-    // The savings slider only drives the SIMPLE comfort schedule.
-    // When this appliance runs custom hourly limits, say so instead of
-    // presenting a control that silently does nothing.
-    const customBandsActive =
-      !!entry &&
-      this._appliancePrefsFor === entry.appliance_id &&
-      !!this._appliancePrefs &&
-      hasHourlyComfortBands(this._appliancePrefs);
-    const dayBandsActive =
-      !!entry &&
-      this._appliancePrefsFor === entry.appliance_id &&
-      Object.keys(this._appliancePrefs?.weekday_bands ?? {}).length > 0;
+    const indoor = this._indoorReadout(entry);
+    const thermostat = this._thermostatReadout(entry);
+    const statusNote = this._statusNote(entry);
 
     return html`
       <div class="card" data-appliance-type="hvac">
         <div class="card-head">
           <span class="badge" aria-hidden="true">HVAC</span>
           <span class="name">${name}</span>
-          <span class="mode-badge" data-mode=${mode}>${mode}</span>
+          ${mode ? html`<span class="mode-badge" data-mode=${mode}>${mode}</span>` : null}
         </div>
         <div
           class="health-badge"
           data-status=${health?.status ?? 'healthy'}
           ?hidden=${healthHidden}
         >
-          ${this._healthLabel(health)}
+          ${healthLabel(health)}
         </div>
         ${this._renderPauseRow(entry ?? null)}
         ${multiHvacUnresolved
           ? html`<div class="multi-hvac-stub">
               You have multiple HVAC appliances. Add
               <code>appliance_id</code> to this card's config to pick
-              which one it controls.
+              which one it shows.
             </div>`
           : null}
         <div class="metrics">
           <div class="indoor-wrap">
-            ${indoorConfigured
-              ? html`<span class="indoor">${this._formatTemp(entities.indoor_temp, indoorRaw)}</span>`
-              : html`<span class="missing-entity">
-                  Indoor temperature entity not set.
-                  <a href="#hm-panel">Configure in HM panel</a>
-                </span>`}
+            ${indoor !== null ? html`<span class="indoor">${indoor}</span>` : null}
+            ${thermostat !== null ? html`<span class="thermostat">${thermostat}</span>` : null}
             ${entities.outdoor_temp
               ? html`<span class="outdoor">
                   Outside ${this._formatTemp(entities.outdoor_temp, outdoorRaw)}
@@ -678,9 +676,10 @@ export class HmThermostatCard extends LitElement {
               : null}
           </div>
           ${savingsText
-            ? html`<div class="savings" title=${SAVINGS_ESTIMATE_TITLE}>${savingsText}</div>`
+            ? html`<div class="savings" title=${savingsEstimateTitle(sched)}>${savingsText}</div>`
             : null}
         </div>
+        ${statusNote ? html`<div class="status-note">${statusNote}</div>` : null}
         ${this._scheduleError
           ? html`<div class="chart-error">${this._scheduleError}</div>`
           : html`<hm-optimization-chart
@@ -695,46 +694,13 @@ export class HmThermostatCard extends LitElement {
               .scale=${chartScaleStore.state.temperature}
               .size=${'medium'}
             ></hm-optimization-chart>`}
-        <div class="slider-row">
-          <label for="hm-savings-level">Savings level</label>
-          <input
-            id="hm-savings-level"
-            name="savings_level"
-            type="range"
-            min="1"
-            max="3"
-            step="1"
-            ?disabled=${customBandsActive}
-            .value=${String(this._savingsLevel)}
-            @input=${(e: Event) => this._onSavingsInput(e)}
-          />
-          <span class="slider-value">${this._savingsLevel}</span>
+        <div class="card-foot">
+          <a href=${PANEL_PATH} @click=${(e: Event) => this._onOpenPanel(e)}>
+            Edit comfort range in Hungry Machines
+          </a>
         </div>
-        ${customBandsActive || dayBandsActive
-          ? html`<div class="bands-hint">
-              Custom hourly limits are active for this device, so the
-              savings level doesn't apply. Switch back to the simple
-              schedule in the Hungry Machines panel to use it.
-              ${dayBandsActive ? 'Some days have their own.' : ''}
-            </div>`
-          : null}
       </div>
     `;
-  }
-
-  private _healthLabel(health: InlineIntegrationHealth | undefined): string {
-    if (!health) return '';
-    if (health.message) return health.message;
-    switch (health.status) {
-      case 'stale_data':
-        return 'Sensor data is stale.';
-      case 'frozen_sensor':
-        return 'Indoor sensor appears stuck.';
-      case 'no_data':
-        return 'No recent sensor data.';
-      default:
-        return '';
-    }
   }
 
   /**
