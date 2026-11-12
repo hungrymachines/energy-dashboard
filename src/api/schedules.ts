@@ -22,6 +22,8 @@ export interface HvacScheduleResponse {
   pause_state: 'active' | 'timed' | 'manual' | 'master';
 }
 
+import type { BandCheck } from '../utils/band-check.js';
+
 export type IntegrationHealthStatus =
   | 'healthy'
   | 'stale_data'
@@ -38,6 +40,9 @@ export interface InlineIntegrationHealth {
   distinct_indoor_temps?: number | null;
   distinct_hvac_states?: number | null;
   lookback_hours?: number;
+  /** Comfort ranges too narrow for this unit to hold; null or absent when
+   * the unit's own sensor has no measured difference from the room's. */
+  band_check?: BandCheck | null;
 }
 
 export interface ApplianceScheduleEntry {

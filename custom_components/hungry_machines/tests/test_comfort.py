@@ -593,62 +593,6 @@ def test_guard_steps_down_again_after_min_on_still_breached_never_below_low():
     assert override4 == ("COOL", 70.0)  # stays clamped, never below low
 
 
-def _hold(latch, n, **kw):
-    """Run `n` more holds on a still-breached room; return the commands."""
-    out = []
-    for _ in range(n):
-        now = latch["since"] + timedelta(seconds=comfort.MIN_ON_SECONDS + 1)
-        override, latch = comfort.decide(latch=latch, now=now, **kw)
-        out.append(override)
-    return out, latch
-
-
-def test_idle_unit_in_a_band_narrower_than_its_sensor_gap_steps_past_the_far_edge():
-    """Band 69-70, room 71.8, the unit idle at every setpoint the band
-    allows: its own sensor reads cooler than the room. The command keeps
-    stepping, GUARD_PAST_FAR_F beyond `low` at most."""
-    kw = dict(indoor=71.8, high=70.0, low=69.0, sched_mode="cool", conditioning=comfort.IDLE)
-    first, latch = comfort.decide(latch=None, now=T0, **kw)
-    assert first == ("COOL", 69.5)            # the first step stops at mid-band
-    got, _ = _hold(latch, 4, **kw)
-    assert got == [("COOL", 67.5), ("COOL", 65.5), ("COOL", 65.0), ("COOL", 65.0)]
-
-
-def test_running_unit_is_still_clamped_at_the_far_edge():
-    """A unit that is cooling and losing is at its limit. A lower setpoint
-    buys nothing and overshoots later."""
-    kw = dict(indoor=71.8, high=70.0, low=69.0, sched_mode="cool", conditioning=comfort.COOLING)
-    _, latch = comfort.decide(latch=None, now=T0, **kw)
-    got, _ = _hold(latch, 3, **kw)
-    assert got == [("COOL", 69.0)] * 3
-    # and with no signal at all, as before
-    kw["conditioning"] = None
-    _, latch = comfort.decide(latch=None, now=T0, **kw)
-    assert _hold(latch, 2, **kw)[0] == [("COOL", 69.0)] * 2
-
-
-def test_command_past_the_far_edge_is_not_pulled_back_once_the_unit_starts():
-    """Stepped to 67.5 while idle, the unit starts. Clamping back to 69
-    would satisfy its sensor and stop it again."""
-    kw = dict(indoor=71.8, high=70.0, low=69.0, sched_mode="cool")
-    _, latch = comfort.decide(latch=None, now=T0, conditioning=comfort.IDLE, **kw)
-    got, latch = _hold(latch, 1, conditioning=comfort.IDLE, **kw)
-    assert got == [("COOL", 67.5)]
-    got, latch = _hold(latch, 2, conditioning=comfort.COOLING, **kw)
-    assert got == [("COOL", 67.5)] * 2
-    # the room comes back inside by the margin: released on the room's reading
-    kw["indoor"] = 69.6
-    assert _hold(latch, 1, conditioning=comfort.COOLING, **kw)[0] == [None]
-
-
-def test_idle_heat_steps_past_the_ceiling_the_same_way():
-    kw = dict(indoor=66.0, high=69.0, low=68.0, sched_mode="heat", conditioning=comfort.IDLE)
-    first, latch = comfort.decide(latch=None, now=T0, **kw)
-    assert first == ("HEAT", 68.5)
-    got, _ = _hold(latch, 4, **kw)
-    assert got == [("HEAT", 70.5), ("HEAT", 72.5), ("HEAT", 73.0), ("HEAT", 73.0)]
-
-
 def test_guard_does_not_step_again_before_min_on_elapses():
     """A step resets the hold clock — a tick soon after a step, still
     breached, does not step again until another full MIN_ON_SECONDS."""

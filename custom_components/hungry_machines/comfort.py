@@ -72,20 +72,6 @@ control" of half the day. When the caller can say what the unit is doing
 the direction that caused the breach. With no such signal the override
 fires as before.
 
-A band narrower than the sensor gap (November 2026). The far-edge clamp
-assumes a unit set to the far edge will run. A window unit whose own
-sensor reads cooler than the room does not: set to 69 in a 69-70 band it
-sat idle, satisfied, while the room sensor read 71.8. On one such unit
-that was 10 to 45 % of the readings of every scheduled day in October and
-November, guard engaged throughout. So the clamp gives way in exactly that
-case: while the unit is idle (`conditioning`) and the room is still past
-the breached edge after a hold, the command keeps stepping, up to
-`GUARD_PAST_FAR_F` beyond the far edge. The release rule is unchanged and
-reads the room, so the room is still handed back the moment it is inside
-the breached edge by the margin. Once past the far edge the command is
-not pulled back to it while the breach lasts: that would stop the unit
-again. With no `conditioning` signal the clamp holds as before.
-
 `overshoot_f` widens both trigger thresholds (not the release thresholds)
 by this many degrees. The caller passes a non-zero value during
 calibration: the plan may deliberately produce a bounded excursion while
@@ -111,12 +97,6 @@ RELEASE_MARGIN_F = 1.0
 # module docstring. Escalates by this many degrees every MIN_ON_SECONDS
 # the room is still past the breached edge, clamped at the far edge.
 GUARD_STEP_F = 2.0
-
-# How far past the far edge the command may step while the unit sits idle
-# and the room is still past the breached edge: the unit's own sensor
-# disagrees with the room's by more than the band is wide. Measured gaps
-# run 1.4 to 3 °F on the window units that needed this.
-GUARD_PAST_FAR_F = 4.0
 
 # Minimum time to hold an override once engaged, regardless of how fast
 # the room comes back — a hard floor on compressor cycle length.
@@ -198,23 +178,6 @@ def _first_step(breached: float, far: Optional[float], sign: float) -> float:
         return stepped
     mid = (breached + far) / 2.0
     return min(stepped, mid) if sign > 0 else max(stepped, mid)
-
-
-def _next_step(
-    command_f: float, far: Optional[float], sign: float, conditioning: Optional[str],
-) -> float:
-    """The setpoint after one more hold with the room still past the
-    breached edge: another `GUARD_STEP_F` toward the far edge and no
-    further. An idle unit is one whose own sensor is already satisfied, so
-    for it the limit moves `GUARD_PAST_FAR_F` beyond the far edge. A
-    command already past the far edge is kept, never pulled back to it."""
-    stepped = command_f + sign * GUARD_STEP_F
-    if far is None:
-        return stepped
-    limit = far + sign * (GUARD_PAST_FAR_F if conditioning == IDLE else 0.0)
-    if sign > 0:
-        return max(command_f, min(limit, stepped))
-    return min(command_f, max(limit, stepped))
 
 
 def _locked_out(
@@ -306,7 +269,9 @@ def decide(
         if command_f is None:
             command_f = _first_step(high, low, -1.0)
         if indoor > high and held_long_enough:
-            command_f = _next_step(command_f, low, -1.0, conditioning)
+            command_f = command_f - GUARD_STEP_F
+            if low is not None:
+                command_f = max(low, command_f)
             return ("COOL", command_f), {
                 "active": True, "direction": "cool", "since": now,
                 "command_f": command_f,
@@ -322,7 +287,9 @@ def decide(
         if command_f is None:
             command_f = _first_step(low, high, 1.0)
         if indoor < low and held_long_enough:
-            command_f = _next_step(command_f, high, 1.0, conditioning)
+            command_f = command_f + GUARD_STEP_F
+            if high is not None:
+                command_f = min(high, command_f)
             return ("HEAT", command_f), {
                 "active": True, "direction": "heat", "since": now,
                 "command_f": command_f,

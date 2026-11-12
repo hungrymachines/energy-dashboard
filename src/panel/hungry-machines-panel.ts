@@ -1,3 +1,4 @@
+import type { BandCheck } from '../utils/band-check.js';
 import { LitElement, html, css, type TemplateResult } from 'lit';
 import { live } from 'lit/directives/live.js';
 import { authStore, type AuthState } from '../store.js';
@@ -2727,6 +2728,15 @@ export class HungryMachinesPanel extends LitElement {
     this._pricingError = null;
   }
 
+  /** The narrow-range advice for the unit the editor is open on, from
+   * the health block its schedule entry already carries. */
+  private _editorBandCheck(): BandCheck | null {
+    const entry = (this._schedules?.appliances ?? []).find(
+      (a) => a.appliance_id === this._editorApplianceId,
+    );
+    return entry?.integration_health?.band_check ?? null;
+  }
+
   private async _openEditor(applianceId: string, type: ApplianceType): Promise<void> {
     this._editorApplianceId = applianceId;
     this._editorApplianceType = type;
@@ -3054,6 +3064,7 @@ export class HungryMachinesPanel extends LitElement {
         .applianceType=${this._editorApplianceType}
         .currentConstraints=${this._editorConstraints}
         .temperatureUnit=${temperatureUnitStore.state.unit}
+        .bandCheck=${this._editorBandCheck()}
         .open=${this._editorOpen}
         @constraints-saved=${(e: CustomEvent) => this._onConstraintsSaved(e)}
         @constraints-cancelled=${() => this._onEditorClosed()}

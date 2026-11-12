@@ -391,6 +391,94 @@ describe('hm-diagnostics-panel', () => {
     expect(lines).toEqual(['Integration —', 'API build —']);
   });
 
+  describe('per-unit rows', () => {
+    const DIVERGENCE = {
+      lookback_hours: 24, sample_count: 0, commanded_coverage_pct: 0, power_coverage_pct: 0,
+      entity_coverage_pct: 0, commanded_vs_entity_mode_agreement_pct: null,
+      commanded_vs_power_mode_agreement_pct: null, entity_vs_power_mode_agreement_pct: null,
+      setpoint_offset_avg_f: null, setpoint_offset_max_f: null, fan_match_pct: null,
+      power_obeyed_pct: null, verdict: 'no_data', human_readable: 'No readings received.',
+    };
+
+    function stubUnits(appliances: unknown[]) {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: string | URL | Request) => {
+          const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+          if (url.includes('/integration/health/divergence')) return jsonResponse(DIVERGENCE);
+          if (url.includes('/integration/sensors')) return jsonResponse({ sensors: [] });
+          if (url.endsWith('/integration/health')) {
+            return jsonResponse({ status: 'healthy', message: '', appliances });
+          }
+          return jsonResponse({});
+        }),
+      );
+    }
+
+    it('lists the hours whose comfort range is narrower than the unit can hold', async () => {
+      stubUnits([
+        {
+          appliance_id: 'a-1', name: 'Front AC', status: 'healthy', message: 'Integration is healthy.',
+          band_check: {
+            sensor_gap_f: 1.4, min_width_f: 2.5,
+            narrow: [
+              { day: 'every', start_hour: 0, end_hour: 8, width_f: 1.0 },
+              { day: 'sun', start_hour: 22, end_hour: 24, width_f: 2.0 },
+            ],
+          },
+        },
+        { appliance_id: 'a-2', name: 'Office AC', status: 'healthy', message: '', band_check: { sensor_gap_f: 1.8, min_width_f: 3.0, narrow: [] } },
+      ]);
+      const el = mountPanel();
+      await flush(el);
+
+      const ranges = el.shadowRoot!.querySelector('details.range-details') as HTMLDetailsElement;
+      expect(ranges.hidden).toBe(false);
+      const badge = ranges.querySelector('summary .summary-badge')!;
+      expect(badge.classList.contains('intermittent')).toBe(true);
+      expect(badge.textContent).toContain('1 too narrow');
+      const text = ranges.textContent!.replace(/\s+/g, ' ');
+      expect(text).toContain('Front AC');
+      expect(text).toContain('00:00–08:00 (1.0 °F wide)');
+      expect(text).toContain('Sun 22:00–24:00 (2.0 °F wide)');
+      expect(text).toContain('narrower than 2.5 °F');
+      expect(text).toContain('at least 3.0 °F wide');
+    });
+
+    it('hides the comfort-range row when no unit has a measured sensor difference', async () => {
+      stubUnits([{ appliance_id: 'a-1', name: 'Central', status: 'healthy', message: '', band_check: null }]);
+      const el = mountPanel();
+      await flush(el);
+      const ranges = el.shadowRoot!.querySelector('details.range-details') as HTMLDetailsElement;
+      expect(ranges.hidden).toBe(true);
+      const readings = el.shadowRoot!.querySelector('details.readings-details')!;
+      expect(readings.querySelector('summary .summary-badge')!.textContent).toContain('OK');
+    });
+
+    it('names a unit whose readings have stopped', async () => {
+      stubUnits([
+        { appliance_id: 'a-1', name: 'Office AC', status: 'healthy', message: 'Integration is healthy.' },
+        { appliance_id: 'a-2', name: 'Front AC', status: 'no_data', message: 'No readings received from this HVAC in the last 6 hours.' },
+      ]);
+      const el = mountPanel();
+      await flush(el);
+      const readings = el.shadowRoot!.querySelector('details.readings-details')!;
+      const badge = readings.querySelector('summary .summary-badge')!;
+      expect(badge.classList.contains('bad')).toBe(true);
+      expect(badge.textContent).toContain('1 unit needs attention');
+      expect(readings.textContent).toContain('No readings received from this HVAC');
+    });
+
+    it('renders neither row against a server that sends no per-unit list', async () => {
+      _stubFetchWithHealth({ status: 'ok', version: '2.4.1' });
+      const el = mountPanel();
+      await flush(el);
+      expect(el.shadowRoot!.querySelector('details.readings-details')).toBeNull();
+      expect(el.shadowRoot!.querySelector('details.range-details')).toBeNull();
+      expect(el.shadowRoot!.querySelector('details.check-details')).not.toBeNull();
+    });
+  });
+
   it('shows a graceful fallback when the fetch fails', async () => {
     vi.stubGlobal(
       'fetch',

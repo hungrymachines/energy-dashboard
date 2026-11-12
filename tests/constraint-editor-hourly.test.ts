@@ -555,6 +555,104 @@ describe('hm-constraint-editor hourly bands (table is the primary control)', () 
   });
 });
 
+describe('hm-constraint-editor narrow-range advice', () => {
+  beforeEach(() => {
+    setApiBase('https://api.example.test');
+    setTokens({ access: 'ACCESS', refresh: 'REFRESH' });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    document.body.innerHTML = '';
+    clearTokens();
+  });
+
+  const stored = {
+    base_temperature: 72,
+    savings_level: 2,
+    optimization_mode: 'cool',
+    hourly_low_temps_f: Array(24).fill(69),
+    hourly_high_temps_f: [...Array(4).fill(70), ...Array(4).fill(71), ...Array(16).fill(74)],
+  };
+
+  it('names the hours narrower than the unit can hold, marks their rows, and still saves', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: stored,
+      bandCheck: { sensor_gap_f: 1.4, min_width_f: 2.5, narrow: [] },
+      open: true,
+    });
+    await flush(el);
+    const root = el.shadowRoot!;
+    const note = root.querySelector<HTMLElement>('.narrow-note')!;
+    expect(note.hidden).toBe(false);
+    const text = note.textContent!.replace(/\s+/g, ' ');
+    expect(text).toContain('about 1.4 °F from your room sensor');
+    expect(text).toContain('narrower than 2.5 °F');
+    expect(text).toContain('Narrower here: 00:00–08:00.');
+    expect(root.querySelectorAll('tr.narrow').length).toBe(8);
+
+    const save = root.querySelector<HTMLButtonElement>('button.save')!;
+    expect(save.disabled).toBe(false);
+    save.click();
+    await flush(el);
+    expect(calls.some(([, init]) => init?.method === 'PUT')).toBe(true);
+  });
+
+  it('clears as the range is widened', async () => {
+    captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: { ...stored, hourly_high_temps_f: [70, ...Array(23).fill(74)] },
+      bandCheck: { sensor_gap_f: 1.4, min_width_f: 2.5, narrow: [] },
+      open: true,
+    });
+    await flush(el);
+    const root = el.shadowRoot!;
+    expect(root.querySelectorAll('tr.narrow').length).toBe(1);
+    const high = root.querySelector<HTMLInputElement>('input[name="hourly_high_0"]')!;
+    high.value = '71.5';
+    high.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush(el);
+    expect(root.querySelectorAll('tr.narrow').length).toBe(0);
+    expect(root.querySelector<HTMLElement>('.narrow-note')!.hidden).toBe(true);
+  });
+
+  it('says nothing for a unit with no measured sensor difference', async () => {
+    captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: stored,
+      open: true,
+    });
+    await flush(el);
+    expect(el.shadowRoot!.querySelector<HTMLElement>('.narrow-note')!.hidden).toBe(true);
+    expect(el.shadowRoot!.querySelectorAll('tr.narrow').length).toBe(0);
+  });
+
+  it('judges the width in °F when the table shows °C', async () => {
+    captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: stored,
+      temperatureUnit: 'C',
+      bandCheck: { sensor_gap_f: 1.4, min_width_f: 2.5, narrow: [] },
+      open: true,
+    });
+    await flush(el);
+    const root = el.shadowRoot!;
+    // 69-70 and 69-71 °F are narrow; 69-74 is not, in either unit.
+    expect(root.querySelectorAll('tr.narrow').length).toBe(8);
+    expect(root.querySelector('.narrow-note')!.textContent).toContain('narrower than 1.4 °C');
+  });
+});
+
 describe('hm-constraint-editor hourly bands in °C', () => {
   const storedHigh: number[] = Array.from({ length: 24 }, (_, i) => (i === 3 ? 90 : 73.4));
   const storedLow: number[] = Array.from({ length: 24 }, (_, i) => (i === 3 ? 50 : 69.8));

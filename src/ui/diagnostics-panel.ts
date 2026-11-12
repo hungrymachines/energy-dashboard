@@ -1,9 +1,11 @@
 import { LitElement, html, css } from 'lit';
 import * as diagnostics from '../api/diagnostics.js';
 import type {
+  ApplianceHealth,
   DivergenceReport,
   ConfiguredSensor,
 } from '../api/diagnostics.js';
+import { bandCheckReason, runLabel } from '../utils/band-check.js';
 import { formatDelta, temperatureUnitStore } from '../utils/temperature.js';
 import { getIntegrationVersion } from '../utils/version.js';
 
@@ -19,6 +21,12 @@ import { getIntegrationVersion } from '../utils/version.js';
  * misbehaving thermostats (the Tuya / mini-split scenario the
  * reconciler was built for) get a one-line "your thermostat reports
  * unreliable state" explanation without having to mine SQL.
+ *
+ * Two more collapsed rows come from `/api/v1/integration/health`, one
+ * line per heating or cooling unit: "Readings" (are they arriving, and
+ * do they change) and "Comfort ranges" (hours whose range is narrower
+ * than the unit can hold). Each is left out when the server sends
+ * nothing for it.
  *
  * Pulls its own data on connect; emits no events. Re-fetch by setting
  * the `refresh-key` attribute (the panel bumps this when it
@@ -210,7 +218,8 @@ export class HmDiagnosticsPanel extends LitElement {
     .sensor-details[open] > .sensor-grid {
       margin-top: 8px;
     }
-    .diag-body {
+    .diag-body,
+    .diag-part {
       display: contents;
     }
     .versions {
@@ -226,6 +235,7 @@ export class HmDiagnosticsPanel extends LitElement {
   static override properties = {
     _report: { state: true },
     _sensors: { state: true },
+    _units: { state: true },
     _apiBuild: { state: true },
     _loading: { state: true },
     _error: { state: true },
@@ -234,6 +244,7 @@ export class HmDiagnosticsPanel extends LitElement {
 
   _report: DivergenceReport | null = null;
   _sensors: ConfiguredSensor[] | null = null;
+  _units: ApplianceHealth[] | null = null;
   _apiBuild: string | null = null;
   _loading = false;
   _error: string | null = null;
@@ -256,13 +267,20 @@ export class HmDiagnosticsPanel extends LitElement {
   private async _load(): Promise<void> {
     this._loading = true;
     this._error = null;
-    // Fetch divergence + sensor health + the API build in parallel —
-    // they're independent endpoints and the panel renders all three.
-    const [report, sensors, health] = await Promise.allSettled([
+    // Fetch divergence + sensor health + the API build + per-unit
+    // health in parallel — they're independent endpoints.
+    const [report, sensors, health, link] = await Promise.allSettled([
       diagnostics.getDivergenceReport(),
       diagnostics.getSensorHealth(),
       diagnostics.getApiHealth(),
+      diagnostics.getIntegrationHealth(),
     ]);
+    // Per-unit rows are optional in every way: a failed call, an older
+    // server or a home with no such unit all render nothing.
+    this._units =
+      link.status === 'fulfilled' && Array.isArray(link.value?.appliances)
+        ? link.value.appliances
+        : null;
     if (report.status === 'fulfilled') {
       this._report = report.value;
     } else {
@@ -310,10 +328,10 @@ export class HmDiagnosticsPanel extends LitElement {
   }
 
   private _renderBody() {
-    if (this._loading && !this._report && !this._sensors) {
+    if (this._loading && !this._report && !this._sensors && !this._units) {
       return html`<div class="banner muted"><span class="msg">Checking integration health…</span></div>`;
     }
-    if (this._error && !this._sensors) {
+    if (this._error && !this._sensors && !this._units) {
       return html`<div class="banner muted"><span class="msg">Couldn't load diagnostics: ${this._error}</span></div>`;
     }
     // Build the report HTML inline when we have a report, otherwise
@@ -322,7 +340,8 @@ export class HmDiagnosticsPanel extends LitElement {
     // level of a render — keeping just the report inline + sensors
     // as a sibling avoids it.
     if (!this._report) {
-      return html`${this._renderSensorBlock()}`;
+      return html`<div class="diag-part">${this._renderSensorBlock()}</div>
+        <div class="diag-part">${this._renderUnitBlocks()}</div>`;
     }
     return this._renderFull(this._report);
   }
@@ -365,7 +384,8 @@ export class HmDiagnosticsPanel extends LitElement {
             `
           : null}
       </details>
-      ${this._renderSensorBlock()}
+      <div class="diag-part">${this._renderSensorBlock()}</div>
+      <div class="diag-part">${this._renderUnitBlocks()}</div>
     `;
   }
 
@@ -414,6 +434,82 @@ export class HmDiagnosticsPanel extends LitElement {
         </summary>
         <div class="sensor-grid">
           ${sensors.map((s) => this._renderSensorRow(s))}
+        </div>
+      </details>
+    `;
+  }
+
+  /** "Readings" and "Comfort ranges", one row per unit. Always one
+   * template so the surrounding parts stay aligned (see `render`). */
+  private _renderUnitBlocks() {
+    const units = this._units ?? [];
+    if (units.length === 0) return html``;
+    const unit = temperatureUnitStore.state.unit;
+
+    const offline = units.filter((u) => u.status !== 'healthy');
+    const readingsBadge =
+      offline.length === 0
+        ? { tone: 'healthy', text: 'OK' }
+        : {
+            tone: offline.some((u) => u.status === 'no_data') ? 'bad' : 'intermittent',
+            text: `${offline.length} unit${offline.length === 1 ? '' : 's'} need${offline.length === 1 ? 's' : ''} attention`,
+          };
+
+    const checked = units.filter((u) => u.band_check);
+    const narrow = checked.filter((u) => (u.band_check?.narrow ?? []).length > 0);
+    const rangeBadge =
+      narrow.length === 0
+        ? { tone: 'healthy', text: 'OK' }
+        : { tone: 'intermittent', text: `${narrow.length} too narrow` };
+
+    return html`
+      <details class="sensor-details readings-details">
+        <summary>
+          Readings
+          <span class="summary-badge ${readingsBadge.tone}">${readingsBadge.text}</span>
+        </summary>
+        <div class="sensor-grid">
+          ${units.map((u) => {
+            const ok = u.status === 'healthy';
+            const tone = ok ? 'healthy' : u.status === 'no_data' ? 'bad' : 'intermittent';
+            return html`
+              <div class="sensor-row ${tone}">
+                <span class="sensor-icon ${ok ? 'ok' : tone === 'bad' ? 'bad' : 'warn'}">${ok ? '✓' : '!'}</span>
+                <div class="sensor-body">
+                  <span class="sensor-label">${u.name || 'Unit'}</span>
+                  <div class="sensor-msg">${ok ? 'Readings are arriving and changing.' : u.message}</div>
+                </div>
+              </div>
+            `;
+          })}
+        </div>
+      </details>
+      <details class="sensor-details range-details" ?hidden=${checked.length === 0}>
+        <summary>
+          Comfort ranges
+          <span class="summary-badge ${rangeBadge.tone}">${rangeBadge.text}</span>
+        </summary>
+        <div class="sensor-grid">
+          ${checked.map((u) => {
+            const check = u.band_check!;
+            const runs = check.narrow ?? [];
+            const ok = runs.length === 0;
+            return html`
+              <div class="sensor-row ${ok ? 'healthy' : 'intermittent'}">
+                <span class="sensor-icon ${ok ? 'ok' : 'warn'}">${ok ? '✓' : '!'}</span>
+                <div class="sensor-body">
+                  <span class="sensor-label">${u.name || 'Unit'}</span>
+                  <div class="sensor-msg">
+                    ${ok
+                      ? `Every range you set is at least ${formatDelta(check.min_width_f, unit)} wide, which this unit can hold.`
+                      : `${bandCheckReason(check, unit)} Narrower now: ${runs
+                          .map((r) => `${runLabel(r)} (${formatDelta(r.width_f, unit)} wide)`)
+                          .join(', ')}. You can widen these hours in the unit's comfort settings.`}
+                  </div>
+                </div>
+              </div>
+            `;
+          })}
         </div>
       </details>
     `;

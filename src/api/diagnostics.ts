@@ -1,4 +1,5 @@
 import { apiFetch } from './client.js';
+import type { BandCheck } from '../utils/band-check.js';
 
 /**
  * Typed wrappers for `/api/v1/integration/health` and
@@ -29,6 +30,17 @@ export interface IntegrationHealth {
   distinct_hvac_states: number | null;
   message: string;
   lookback_hours: number;
+  /** One entry per heating or cooling unit. Absent on older servers. */
+  appliances?: ApplianceHealth[];
+}
+
+export interface ApplianceHealth {
+  appliance_id: string;
+  name: string | null;
+  status: IntegrationHealthStatus;
+  message: string;
+  /** Comfort ranges too narrow for this unit to hold, or null. */
+  band_check?: BandCheck | null;
 }
 
 export type DivergenceVerdict =

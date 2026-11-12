@@ -34,6 +34,12 @@ import {
   type LimitField,
   type TempUnit,
 } from '../utils/temperature.js';
+import {
+  bandCheckReason,
+  narrowHourRuns,
+  runLabel,
+  type BandCheck,
+} from '../utils/band-check.js';
 
 type OptimizationMode = 'cool' | 'heat' | 'auto' | 'off';
 
@@ -329,6 +335,19 @@ export class HmConstraintEditor extends LitElement {
       color: var(--hm-error, #DC2626);
       font-size: 12px;
     }
+    .narrow-note {
+      margin: 8px 0;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(245, 158, 11, 0.45);
+      background: rgba(245, 158, 11, 0.06);
+      color: #92400E;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    table.hourly-table tr.narrow input[type='number'] {
+      border-color: rgba(245, 158, 11, 0.8);
+    }
     .day-modes {
       display: flex;
       flex-wrap: wrap;
@@ -449,6 +468,7 @@ export class HmConstraintEditor extends LitElement {
     applianceType: { attribute: false },
     currentConstraints: { attribute: false },
     temperatureUnit: { attribute: false },
+    bandCheck: { attribute: false },
     open: { type: Boolean, reflect: true },
     _values: { state: true },
     _errors: { state: true },
@@ -472,6 +492,10 @@ export class HmConstraintEditor extends LitElement {
   applianceType: ApplianceType = 'hvac';
   currentConstraints: Record<string, unknown> | undefined = undefined;
   temperatureUnit: TempUnit = 'F';
+  /** Heating and cooling units only: the narrowest comfort range this
+   * unit can hold, when the server has measured one. Drives a note above
+   * the hourly table; it never blocks a save. */
+  bandCheck: BandCheck | null = null;
   open = false;
   _values: Record<string, string> = {};
   _errors: ErrorMap = {};
@@ -1562,6 +1586,24 @@ export class HmConstraintEditor extends LitElement {
     const hotTubLim = limitsFor('hot_tub', unit);
     const fmtHour = (i: number) =>
       `${String(i).padStart(2, '0')}:00`;
+    // Advice, never an error: a range narrower than the unit can hold
+    // still saves. Judged on what is typed, so it clears as you widen.
+    const minWidthF = type === 'hvac' ? (this.bandCheck?.min_width_f ?? null) : null;
+    const typedF = (cells: string[]) =>
+      Array.from({ length: 24 }, (_, i) => {
+        const raw = (cells[i] ?? '').trim();
+        return raw === '' ? null : parseTempInput(raw, unit);
+      });
+    const narrowRuns =
+      minWidthF !== null && minWidthF > 0
+        ? narrowHourRuns(typedF(this._hourlyLow), typedF(this._hourlyHigh), minWidthF)
+        : [];
+    const narrowHours = new Set<number>();
+    for (const r of narrowRuns) for (let h = r.start_hour; h < r.end_hour; h++) narrowHours.add(h);
+    const narrowNote =
+      narrowRuns.length > 0 && this.bandCheck
+        ? `${bandCheckReason(this.bandCheck, unit)} Narrower here: ${narrowRuns.map(runLabel).join(', ')}. You can still save it as it is.`
+        : '';
     const hasHourlyErrors =
       type === 'hvac' &&
       Object.keys(this._errors).some((k) => k.startsWith('hourly_'));
@@ -2255,6 +2297,9 @@ export class HmConstraintEditor extends LitElement {
                 <div class="hourly-bands">
                   <span class="label-text">Hourly comfort limits (${unitLabel(unit)})</span>
                   ${this._renderDays()}
+                  <div class="narrow-note" role="status" ?hidden=${narrowRuns.length === 0}>
+                    ${narrowNote}
+                  </div>
                   <div class="hourly-content">
                     <table class="hourly-table">
                       <thead>
@@ -2272,7 +2317,7 @@ export class HmConstraintEditor extends LitElement {
                           const errMsg = rowErr ?? lowErr ?? highErr ?? '';
                           const hasErr = errMsg !== '';
                           return html`
-                            <tr data-row=${String(i)}>
+                            <tr data-row=${String(i)} class=${narrowHours.has(i) ? 'narrow' : ''}>
                               <td>${fmtHour(i)}</td>
                               <td>
                                 <input
