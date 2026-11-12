@@ -2,9 +2,18 @@
 
 What's new in the Hungry Machines integration for Home Assistant. Update from HACS to get the latest release.
 
+<!-- Each release has a `summary` comment under its date: a few plain lines for announcements. It does not show on GitHub. -->
+
 ## 3.12 — Pools, hot tubs, and a form that finds your devices
 
 *November 11, 2026*
+
+<!-- summary
+- Add a pool pump, and the plan places its daily hours in the cheapest half-hours of the window you allow.
+- Add a hot tub with ready and eco temperatures and up to four soak times.
+- Water heaters get a lowest planned temperature and a scheduled sanitize cycle.
+- The add-appliance form suggests matching devices and fills in their sensors.
+-->
 
 ### Pool pump
 
@@ -32,9 +41,25 @@ Add a hot tub with a ready temperature, an eco temperature, and up to four soak 
 - On heating days, an idle thermostat now stays in heat at the bottom of your comfort range instead of switching off, so the thermostat holds that temperature on its own if Home Assistant stops.
 - Smoother comfort protection in narrow comfort ranges and in Auto mode.
 
+### 3.12.1 (unreleased)
+
+- **Quick preset** in the HVAC editor fills the hourly comfort table in one step. Set a base temperature, the times you leave and return, and a Tight, Default or Wide range for the hours you are away. Every hour stays editable.
+- The thermostat card shows the room temperature and what the thermostat is set to with no setup, and says when a unit is paused, on an idle day or on a warm-up test.
+- The savings card lists each appliance with its own estimate and its next scheduled run.
+- Pausing from the panel now takes effect within seconds.
+- The freeze floor is designed to return the thermostat to its earlier setpoint as well as its mode, including after a Home Assistant restart.
+- When a unit's own sensor reads differently from your room sensor, the comfort check can now step the setpoint further to get the unit running.
+
 ## 3.11 — A comfort range for each day, and timed pauses
 
 *November 9, 2026*
+
+<!-- summary
+- Set one comfort range for every day, one each for weekdays and weekends, or one for each day of the week.
+- Pause one HVAC unit for 2, 4 or 6 hours. The plan takes it back when the time is up.
+- Choose fixed or fitted chart scales.
+- The solar card plots measured output against the forecast.
+-->
 
 ### A comfort range for each day of the week
 
@@ -63,6 +88,13 @@ With a production sensor, the card plots today's measured output over the foreca
 ## 3.10 — Celsius, Auto mode, and idle days
 
 *November 2, 2026*
+
+<!-- summary
+- Work in °F or °C, including on metric Home Assistant installs.
+- Auto mode switches your thermostat between heating and cooling for each day's plan.
+- On a mild day, no heating or cooling is planned.
+- Simpler export rate choices for solar homes.
+-->
 
 ### Choose °F or °C
 
@@ -94,6 +126,12 @@ Pick how your utility credits the solar power you send back: market price, your 
 
 *October 7, 2026*
 
+<!-- summary
+- Home power limits: a whole-home power cap, a limit on how many appliances run at once, and demand charges.
+- The hourly comfort table is now the main comfort control.
+- Plug-in and balcony solar arrays are read correctly.
+-->
+
 ### Home power limits
 
 A new Settings section: how many appliances may run at once, a whole-home power cap, an always-on reserve, and a demand charge with an optional on-peak window. Leave any field blank for no limit. HVAC is planned first, and your other appliances are planned around it.
@@ -116,6 +154,11 @@ Smart plugs on plug-in inverters are now read correctly, and the solar picker na
 
 *September 10, 2026*
 
+<!-- summary
+- The setpoint now moves in small steps through the day to keep the room on its planned temperature.
+- Comfort protection steps gently toward your range.
+-->
+
 - Hungry Machines now adjusts the setpoint in small steps through the day to keep the room on its planned temperature.
 - Comfort protection steps gently toward your range instead of jumping across it.
 - Readings keep flowing on a slow connection.
@@ -123,6 +166,11 @@ Smart plugs on plug-in inverters are now read correctly, and the solar picker na
 ## 3.7 — Your room sensor leads
 
 *September 10, 2026*
+
+<!-- summary
+- Your room sensor is now the temperature Hungry Machines plans around.
+- Savings read as an estimate, with the basis on hover.
+-->
 
 - If you chose a room sensor, it is now the temperature Hungry Machines plans around and checks against, ahead of the thermostat's own reading.
 - Savings read as "est. N% savings today", with the basis on hover.
@@ -132,11 +180,22 @@ Smart plugs on plug-in inverters are now read correctly, and the solar picker na
 
 *September 7, 2026*
 
+<!-- summary
+- On a real-time rate such as ComEd Hourly Pricing, a developing price spike re-plans the rest of your day.
+- Turn it off any time in Settings.
+-->
+
 On a real-time rate such as ComEd Hourly Pricing, prices sometimes run far above the day-ahead forecast. When a spike develops, Hungry Machines re-plans the rest of your day and your home picks up the new plan within minutes. Turn it off any time in Settings → **Price spike guard**. Plans work within your comfort range either way.
 
 ## 3.5 — Solar that learns your array
 
 *September 4, 2026*
+
+<!-- summary
+- Point your solar appliance at a production sensor and Hungry Machines learns your array's real yield and shading.
+- A solar card plots the day's generation over the price bars.
+- Enter your export rates and plans value your daytime surplus at that price.
+-->
 
 - **Production sensor.** Point your solar appliance at a sensor reporting the array's output and Hungry Machines learns your real yield and shading.
 - **Solar card.** Plots the day's generation over the price bars with expected kWh, and names the forecast it used.
@@ -147,17 +206,32 @@ On a real-time rate such as ComEd Hourly Pricing, prices sometimes run far above
 
 *August 27, 2026*
 
+<!-- summary
+- About every 5 minutes, each room is checked against the low and high limits you set, and Hungry Machines steps in when the room crosses one.
+- It works for every home with nothing to turn on.
+-->
+
 Every 5 minutes, Hungry Machines checks each room against the low and high limits you set. If the room crosses one, it steps in to bring the room back, spacing its commands to avoid short-cycling your compressor. It works for every home with nothing to turn on, and uses your room sensor when the thermostat reports no temperature.
 
 ## 3.3 — Home robots
 
 *August 25, 2026*
 
+<!-- summary
+- Add a robot vacuum or mower, and the plan schedules dock charging in the cheapest half-hours before its Tasks window.
+- Hungry Machines only sends the robot to its dock. It does not start tasks.
+-->
+
 Add a robot vacuum or mower, set a daily Tasks window and a target charge, and the plan schedules dock charging in the cheapest half-hours before the window. Hungry Machines only sends the robot to its dock. It does not start tasks.
 
 ## 3.2 — Per-device control
 
 *July 5, 2026*
+
+<!-- summary
+- Pause one device and leave the rest running.
+- Each HVAC's own comfort range shows on the dashboard charts.
+-->
 
 - An optimization toggle on every controllable card, so you can pause one device and leave the rest running.
 - A clear choice between Simple and Custom comfort schedules.
@@ -167,11 +241,20 @@ Add a robot vacuum or mower, set a daily Tasks window and a target charge, and t
 
 *July 1, 2026*
 
+<!-- summary
+- Add a dehumidifier as an appliance. This first release records its use; planning comes later.
+-->
+
 Add a dehumidifier as an appliance. This first release records its use; planning comes later.
 
 ## 3.0 — More than one HVAC, and live prices
 
 *June 25, 2026*
+
+<!-- summary
+- Register more than one HVAC unit, each with its own plan and comfort range.
+- Follow live wholesale prices, starting with ComEd and Ameren Illinois.
+-->
 
 - **Multiple HVAC units.** Register each unit with its own thermostat and sensors. Each gets its own plan, comfort editor and pause toggle, and both cards can show one unit or the whole home.
 - **Dynamic pricing.** Follow live wholesale prices for your grid region, starting with ComEd and Ameren Illinois, plus an estimate of your delivery charge.
