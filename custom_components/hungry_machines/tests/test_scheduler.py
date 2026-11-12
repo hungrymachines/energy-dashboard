@@ -3845,6 +3845,47 @@ def test_conditioning_reads_hvac_action() -> None:
         assert scheduler._conditioning(hass, "climate.x") == expected, action
 
 
+def _metered_hass(mode: str, watts, unit: str = "W", action=None) -> MagicMock:
+    """A climate entity with no `hvac_action` of its own and a power sensor
+    configured on its appliance: the window-unit case."""
+    climate = _climate_state(mode, supports_range=False, hvac_modes=["off", "cool", "heat"])
+    if action is not None:
+        climate.attributes["hvac_action"] = action
+    power = MagicMock()
+    power.state = watts
+    power.attributes = {"unit_of_measurement": unit}
+    hass = _multi_hvac_hass({"climate.x": climate, "sensor.plug": power})
+    hass.data[DOMAIN] = {"appliances_cache": {"appliances": [
+        {"id": "a1", "config": {"entity_id": "climate.other"}},
+        {"id": "a2", "config": {"entity_id": "climate.x",
+                                "power_sensor_entity_id": "sensor.plug"}},
+    ]}}
+    return hass
+
+
+def test_conditioning_falls_back_to_the_power_sensor() -> None:
+    """Set to cool and drawing 40 W is idle: the unit's own sensor is
+    satisfied. Drawing 650 W it is cooling."""
+    assert scheduler._conditioning(_metered_hass("cool", "40"), "climate.x") == "idle"
+    assert scheduler._conditioning(_metered_hass("cool", "650"), "climate.x") == "cooling"
+    assert scheduler._conditioning(_metered_hass("heat", "650"), "climate.x") == "heating"
+    assert scheduler._conditioning(_metered_hass("cool", "0.65", "kW"), "climate.x") == "cooling"
+    assert scheduler._conditioning(_metered_hass("off", "12"), "climate.x") == "idle"
+    # running in a mode that names no direction, or no number: unknown
+    assert scheduler._conditioning(_metered_hass("heat_cool", "650"), "climate.x") is None
+    assert scheduler._conditioning(_metered_hass("cool", "unavailable"), "climate.x") is None
+    # the thermostat's own word wins when it has one
+    assert scheduler._conditioning(_metered_hass("cool", "650", action="idle"), "climate.x") == "idle"
+
+
+def test_conditioning_is_unknown_without_action_or_power_sensor() -> None:
+    hass = _metered_hass("cool", "40")
+    hass.data[DOMAIN]["appliances_cache"]["appliances"][1]["config"].pop("power_sensor_entity_id")
+    assert scheduler._conditioning(hass, "climate.x") is None
+    hass.data[DOMAIN].pop("appliances_cache")
+    assert scheduler._conditioning(hass, "climate.x") is None
+
+
 def test_guard_leaves_a_house_floating_above_a_heat_days_ceiling() -> None:
     """70 degF under a 66 ceiling with the furnace idle: no override, so
     no latch, so readings do not report the guard in control."""

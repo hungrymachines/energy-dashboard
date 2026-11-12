@@ -818,15 +818,57 @@ _ACTION_CONDITIONING = {
 }
 
 
+# A unit drawing more than this is running its compressor or element, not
+# just a fan or its display. Same figure the API uses to call a reading
+# "running" (POWER_RUNNING_THRESHOLD_W).
+_POWER_RUNNING_W = 300.0
+
+
+def _power_sensor_watts(hass: HomeAssistant, entity_id: str) -> float | None:
+    """Live watts from the power sensor configured for the appliance whose
+    climate entity is `entity_id`, or None when it has none or the sensor
+    has no number. Reads the appliance list `readings.py` keeps warm; the
+    schedule cache does not carry the power sensor."""
+    cache = _domain_data(hass).get("appliances_cache")
+    appliances = cache.get("appliances") if isinstance(cache, dict) else None
+    sensor = None
+    for appliance in appliances or []:
+        config = appliance.get("config") if isinstance(appliance, dict) else None
+        if isinstance(config, dict) and config.get("entity_id") == entity_id:
+            sensor = config.get("power_sensor_entity_id")
+            break
+    if not isinstance(sensor, str) or not sensor:
+        return None
+    state = hass.states.get(sensor) if hass.states else None
+    try:
+        watts = float(getattr(state, "state", None))
+    except (TypeError, ValueError):
+        return None
+    attrs = getattr(state, "attributes", None) or {}
+    unit = str(attrs.get("unit_of_measurement") or "").strip().lower() \
+        if isinstance(attrs, dict) else ""
+    return watts * 1000.0 if unit in ("kw", "kilowatt", "kilowatts") else watts
+
+
 def _conditioning(hass: HomeAssistant, entity_id: str) -> str | None:
-    """What the unit says it is doing (`hvac_action`), in the guard's
-    terms, or None when the entity has no such attribute or reports
-    something else (drying, defrosting). None makes the guard act as it
-    did before it could ask."""
+    """What the unit is doing, in the guard's terms, or None when nothing
+    says. `hvac_action` first. A unit that has none (window units often do
+    not) is read from its power sensor when one is configured: under
+    `_POWER_RUNNING_W` it is idle whatever mode it is set to, and over it
+    the thermostat's mode gives the direction. None makes the guard act as
+    it did before it could ask."""
     state = hass.states.get(entity_id) if hass.states else None
     attrs = getattr(state, "attributes", None) or {} if state else {}
     action = str(attrs.get("hvac_action") or "").strip().lower()
-    return _ACTION_CONDITIONING.get(action)
+    if action:
+        return _ACTION_CONDITIONING.get(action)
+    watts = _power_sensor_watts(hass, entity_id)
+    if watts is None:
+        return None
+    if watts <= _POWER_RUNNING_W:
+        return comfort.IDLE
+    mode = str(getattr(state, "state", "") or "").strip().lower()
+    return {"cool": comfort.COOLING, "heat": comfort.HEATING}.get(mode)
 
 
 def _log_comfort_silence(hass: HomeAssistant, entity_id: str, reason: str | None) -> None:
