@@ -42,6 +42,7 @@ from .scheduler import (
     _cache_age_seconds,
     _COMFORT_LATCH_KEY,
     get_last_commanded,
+    get_setpoint_offset,
     get_room_target,
 )
 
@@ -634,6 +635,15 @@ def _build_hvac_home_reading(
             reading["commanded_fan_mode"] = commanded["fan_mode"]
         if commanded.get("setpoint") is not None:
             reading["commanded_setpoint"] = commanded["setpoint"]
+    # How far from the plan's setpoint the tracking step is holding this
+    # unit, and whether it has stopped at its limit with the room still off
+    # its target. The plan's setpoint is a room temperature; this is what a
+    # unit whose own sensor disagrees with the room's turned out to need.
+    # Omitted until the step has learned something for the unit.
+    held = get_setpoint_offset(hass, state.entity_id)
+    if held is not None:
+        reading["setpoint_offset_f"] = held["offset"]
+        reading["setpoint_offset_limited"] = held["limited"]
     # Physics-grounded signal — what the AC is actually drawing in
     # watts. Only included when the user has wired up a power sensor
     # (built-in meter or smart plug). Treated by the reconciler as

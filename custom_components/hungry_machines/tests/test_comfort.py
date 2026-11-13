@@ -593,6 +593,85 @@ def test_guard_steps_down_again_after_min_on_still_breached_never_below_low():
     assert override4 == ("COOL", 70.0)  # stays clamped, never below low
 
 
+def _cool_steps(n, **kwargs):
+    """`n` COOL corrections on a 70-76 band with the room stuck at 76.1."""
+    hold = timedelta(seconds=comfort.MIN_ON_SECONDS + 1)
+    latch, out = None, []
+    for i in range(n):
+        override, latch = comfort.decide(
+            indoor=76.1, high=76.0, low=70.0, sched_mode="cool", latch=latch,
+            now=T0 + i * hold, **kwargs,
+        )
+        out.append(override[1])
+    return out
+
+
+def test_an_idle_unit_lets_the_correction_pass_the_far_edge_up_to_the_limit():
+    """Set to 70 (the low limit) and idle with the room still at 76.1: the
+    unit's own sensor is satisfied. The correction keeps going, to 67 (the
+    3 F limit) and no further."""
+    assert _cool_steps(6, conditioning=comfort.IDLE, limit_f=3.0) == [
+        74.0, 72.0, 70.0, 68.0, 67.0, 67.0,
+    ]
+
+
+def test_a_running_unit_stops_the_correction_at_the_far_edge():
+    """Cooling flat out with the room still over: a lower setpoint adds
+    nothing, so the far edge holds, as it does with no limit at all."""
+    for kwargs in (
+        {"conditioning": comfort.COOLING, "limit_f": 3.0},
+        {"conditioning": None, "limit_f": 3.0},
+        {"conditioning": comfort.IDLE},
+    ):
+        assert _cool_steps(5, **kwargs) == [74.0, 72.0, 70.0, 70.0, 70.0], kwargs
+
+
+def test_a_learned_offset_moves_every_correction_setpoint():
+    """The tracking step found this unit has to be set 2 F under the room
+    temperature wanted. The correction starts and stops 2 F lower."""
+    assert _cool_steps(5, conditioning=comfort.COOLING, offset_f=-2.0, limit_f=3.0) == [
+        72.0, 70.0, 68.0, 68.0, 68.0,
+    ]
+    # Idle on top of that still stops at the limit, not at offset plus limit.
+    assert _cool_steps(5, conditioning=comfort.IDLE, offset_f=-2.0, limit_f=3.0)[-1] == 67.0
+
+
+def test_a_command_past_the_limit_is_kept_not_pulled_back():
+    """Idle took it to 67. The unit then runs: the limit moves back to the
+    far edge, and the setpoint that got it running stays."""
+    hold = timedelta(seconds=comfort.MIN_ON_SECONDS + 1)
+    latch = {"active": True, "direction": "cool", "since": T0, "command_f": 67.0}
+    override, _ = comfort.decide(
+        indoor=76.1, high=76.0, low=70.0, sched_mode="cool", latch=latch,
+        now=T0 + hold, conditioning=comfort.COOLING, limit_f=3.0,
+    )
+    assert override == ("COOL", 67.0)
+
+
+def test_heating_mirrors_the_limit_above_the_range():
+    hold = timedelta(seconds=comfort.MIN_ON_SECONDS + 1)
+    latch, out = None, []
+    for i in range(6):
+        override, latch = comfort.decide(
+            indoor=69.9, high=76.0, low=70.0, sched_mode="heat", latch=latch,
+            now=T0 + i * hold, conditioning=comfort.IDLE, limit_f=3.0,
+        )
+        out.append(override[1])
+    assert out == [72.0, 74.0, 76.0, 78.0, 79.0, 79.0]
+
+
+def test_the_room_is_still_judged_against_the_range_itself():
+    """Release needs the room back inside 76 by the margin, whatever the
+    setpoint has been moved to."""
+    latch = {"active": True, "direction": "cool", "since": T0, "command_f": 67.0}
+    released, cleared = comfort.decide(
+        indoor=74.9, high=76.0, low=70.0, sched_mode="cool", latch=latch,
+        now=T0 + timedelta(seconds=comfort.MIN_ON_SECONDS + 1),
+        conditioning=comfort.IDLE, offset_f=-2.0, limit_f=3.0,
+    )
+    assert released is None and cleared is None
+
+
 def test_guard_does_not_step_again_before_min_on_elapses():
     """A step resets the hold clock — a tick soon after a step, still
     breached, does not step again until another full MIN_ON_SECONDS."""

@@ -415,19 +415,26 @@ describe('hm-diagnostics-panel', () => {
       );
     }
 
-    it('lists the hours whose comfort range is narrower than the unit can hold', async () => {
+    it('says what the setpoint offset does per unit and flags a difference past 3 °F', async () => {
       stubUnits([
         {
           appliance_id: 'a-1', name: 'Front AC', status: 'healthy', message: 'Integration is healthy.',
           band_check: {
-            sensor_gap_f: 1.4, min_width_f: 2.5,
+            sensor_gap_f: 4.4, offset_limit_f: 3, offset_capped: true, wide_setpoint_offset: false,
+            min_width_f: 2.5,
             narrow: [
               { day: 'every', start_hour: 0, end_hour: 8, width_f: 1.0 },
               { day: 'sun', start_hour: 22, end_hour: 24, width_f: 2.0 },
             ],
           },
         },
-        { appliance_id: 'a-2', name: 'Office AC', status: 'healthy', message: '', band_check: { sensor_gap_f: 1.8, min_width_f: 3.0, narrow: [] } },
+        {
+          appliance_id: 'a-2', name: 'Office AC', status: 'healthy', message: '',
+          band_check: {
+            sensor_gap_f: 1.8, offset_limit_f: 3, offset_capped: false, wide_setpoint_offset: false,
+            min_width_f: null, narrow: [],
+          },
+        },
       ]);
       const el = mountPanel();
       await flush(el);
@@ -436,13 +443,18 @@ describe('hm-diagnostics-panel', () => {
       expect(ranges.hidden).toBe(false);
       const badge = ranges.querySelector('summary .summary-badge')!;
       expect(badge.classList.contains('intermittent')).toBe(true);
-      expect(badge.textContent).toContain('1 too narrow');
-      const text = ranges.textContent!.replace(/\s+/g, ' ');
-      expect(text).toContain('Front AC');
-      expect(text).toContain('00:00–08:00 (1.0 °F wide)');
-      expect(text).toContain('Sun 22:00–24:00 (2.0 °F wide)');
-      expect(text).toContain('narrower than 2.5 °F');
-      expect(text).toContain('at least 3.0 °F wide');
+      expect(badge.textContent).toContain('1 to review');
+      const rows = Array.from(ranges.querySelectorAll('.sensor-row')).map((r) => ({
+        ok: r.classList.contains('healthy'),
+        text: r.textContent!.replace(/\s+/g, ' '),
+      }));
+      expect(rows[0].ok).toBe(false);
+      expect(rows[0].text).toContain('Front AC');
+      expect(rows[0].text).toContain('more than the 3.0 °F a unit may be set outside your range');
+      expect(rows[0].text).toContain('00:00–08:00 (1.0 °F wide)');
+      expect(rows[0].text).toContain('Sun 22:00–24:00 (2.0 °F wide)');
+      expect(rows[1].ok).toBe(true);
+      expect(rows[1].text).toContain('may be set up to 3.0 °F outside it');
     });
 
     it('hides the comfort-range row when no unit has a measured sensor difference', async () => {

@@ -1,4 +1,4 @@
-import type { BandCheck } from '../utils/band-check.js';
+import { liveOffsetFor, type BandCheck } from '../utils/band-check.js';
 import { LitElement, html, css, type TemplateResult } from 'lit';
 import { live } from 'lit/directives/live.js';
 import { authStore, type AuthState } from '../store.js';
@@ -3065,6 +3065,7 @@ export class HungryMachinesPanel extends LitElement {
         .currentConstraints=${this._editorConstraints}
         .temperatureUnit=${temperatureUnitStore.state.unit}
         .bandCheck=${this._editorBandCheck()}
+        .liveOffset=${this._editorApplianceId ? liveOffsetFor(this.hass, this._editorApplianceId) : null}
         .open=${this._editorOpen}
         @constraints-saved=${(e: CustomEvent) => this._onConstraintsSaved(e)}
         @constraints-cancelled=${() => this._onEditorClosed()}

@@ -2027,6 +2027,11 @@
               }
             ],
             "title": "Paused Until"
+          },
+          "wide_setpoint_offset": {
+            "type": "boolean",
+            "title": "Wide Setpoint Offset",
+            "default": false
           }
         },
         "type": "object",
@@ -2176,6 +2181,17 @@
               }
             ],
             "title": "Optimization Enabled"
+          },
+          "wide_setpoint_offset": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wide Setpoint Offset"
           }
         },
         "type": "object",
@@ -3816,6 +3832,28 @@
               }
             ],
             "title": "Setpoint Step F"
+          },
+          "setpoint_offset_f": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Setpoint Offset F"
+          },
+          "setpoint_offset_limited": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Setpoint Offset Limited"
           }
         },
         "type": "object",

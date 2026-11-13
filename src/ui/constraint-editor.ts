@@ -37,6 +37,10 @@ import {
 import {
   bandCheckReason,
   narrowHourRuns,
+  liveOffsetNote,
+  offsetNote,
+  WIDE_OFFSET_LIMIT_F,
+  type LiveOffset,
   runLabel,
   type BandCheck,
 } from '../utils/band-check.js';
@@ -335,6 +339,25 @@ export class HmConstraintEditor extends LitElement {
       color: var(--hm-error, #DC2626);
       font-size: 12px;
     }
+    .offset-note {
+      margin: 8px 0;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(100, 116, 139, 0.3);
+      background: rgba(100, 116, 139, 0.06);
+      color: var(--hm-text, #0F172A);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .offset-note.flagged {
+      border-color: rgba(245, 158, 11, 0.45);
+      background: rgba(245, 158, 11, 0.06);
+      color: #92400E;
+    }
+    .offset-note[hidden],
+    .wide-offset[hidden] {
+      display: none;
+    }
     .narrow-note {
       margin: 8px 0;
       padding: 8px 10px;
@@ -469,6 +492,7 @@ export class HmConstraintEditor extends LitElement {
     currentConstraints: { attribute: false },
     temperatureUnit: { attribute: false },
     bandCheck: { attribute: false },
+    liveOffset: { attribute: false },
     open: { type: Boolean, reflect: true },
     _values: { state: true },
     _errors: { state: true },
@@ -496,6 +520,13 @@ export class HmConstraintEditor extends LitElement {
    * unit can hold, when the server has measured one. Drives a note above
    * the hourly table; it never blocks a save. */
   bandCheck: BandCheck | null = null;
+
+  /** Heating and cooling units only: what the integration is doing to
+   * this unit's setpoint right now, read from Home Assistant. */
+  liveOffset: LiveOffset | null = null;
+
+  /** The "wide setpoint offset" option as it was when the editor opened. */
+  private _seededWideOffset = '';
   open = false;
   _values: Record<string, string> = {};
   _errors: ErrorMap = {};
@@ -988,6 +1019,9 @@ export class HmConstraintEditor extends LitElement {
         // explicitly unchecks the box.
         const optEnabledRaw = (c as Record<string, unknown>)['optimization_enabled'];
         const optEnabled = optEnabledRaw === false ? '' : '1';
+        const wideOffset =
+          (c as Record<string, unknown>)['wide_setpoint_offset'] === true ? '1' : '';
+        this._seededWideOffset = wideOffset;
         return this._seedScalars({
           base_temperature: base === null ? '72' : String(base),
           savings_level: savings === null ? '1' : String(savings),
@@ -999,6 +1033,7 @@ export class HmConstraintEditor extends LitElement {
           optimize_hvac_fan: optFan === true ? '1' : '',
           optimize_hvac_mode: optMode === true ? '1' : '',
           optimization_enabled: optEnabled,
+          wide_setpoint_offset: wideOffset,
         }, { base_temperature: base === null ? 72 : base });
       }
     }
@@ -1341,6 +1376,12 @@ export class HmConstraintEditor extends LitElement {
           // would otherwise drop a clear-back-to-true PUT.
           optimization_enabled: v['optimization_enabled'] === '1',
         };
+        // Sent only when changed, so a save that leaves it alone works
+        // against a service that does not know the option yet.
+        const wideOffset = v['wide_setpoint_offset'] ?? '';
+        if (wideOffset !== this._seededWideOffset) {
+          payload['wide_setpoint_offset'] = wideOffset === '1';
+        }
         const timeAway = v['time_away'] ?? '';
         if (timeAway !== '') payload['time_away'] = timeAway;
         const timeHome = v['time_home'] ?? '';
@@ -1604,6 +1645,29 @@ export class HmConstraintEditor extends LitElement {
       narrowRuns.length > 0 && this.bandCheck
         ? `${bandCheckReason(this.bandCheck, unit)} Narrower here: ${narrowRuns.map(runLabel).join(', ')}. You can still save it as it is.`
         : '';
+    // What is known about a unit whose own sensor disagrees with the
+    // room's: the stored difference from the service, what the
+    // integration is doing right now, and the opt-in past the 3 °F limit.
+    const wideOffsetOn = v['wide_setpoint_offset'] === '1';
+    const live = type === 'hvac' ? this.liveOffset : null;
+    const offsetText =
+      type === 'hvac'
+        ? [
+            this.bandCheck ? offsetNote(this.bandCheck, wideOffsetOn, unit) : '',
+            liveOffsetNote(live, wideOffsetOn, unit),
+          ]
+            .filter(Boolean)
+            .join(' ')
+        : '';
+    const storedPastLimit =
+      !!this.bandCheck &&
+      this.bandCheck.sensor_gap_f > (wideOffsetOn ? WIDE_OFFSET_LIMIT_F : (this.bandCheck.offset_limit_f ?? 3));
+    const offsetFlagged = storedPastLimit || !!live?.limited;
+    const showWideOffset =
+      type === 'hvac' &&
+      (offsetFlagged || !!this.bandCheck?.offset_capped || wideOffsetOn || this._seededWideOffset === '1');
+    const defaultLimitText = formatDelta(3, unit);
+    const wideLimitText = formatDelta(WIDE_OFFSET_LIMIT_F, unit);
     const hasHourlyErrors =
       type === 'hvac' &&
       Object.keys(this._errors).some((k) => k.startsWith('hourly_'));
@@ -2297,6 +2361,30 @@ export class HmConstraintEditor extends LitElement {
                 <div class="hourly-bands">
                   <span class="label-text">Hourly comfort limits (${unitLabel(unit)})</span>
                   ${this._renderDays()}
+                  <div
+                    class="offset-note ${offsetFlagged ? 'flagged' : ''}"
+                    role="status"
+                    ?hidden=${offsetText === ''}
+                  >
+                    ${offsetText}
+                  </div>
+                  <label class="opt-toggle wide-offset" ?hidden=${!showWideOffset}>
+                    <input
+                      name="wide_setpoint_offset"
+                      type="checkbox"
+                      .checked=${wideOffsetOn}
+                      @change=${(e: Event) =>
+                        this._setValue(
+                          'wide_setpoint_offset',
+                          (e.target as HTMLInputElement).checked ? '1' : '',
+                        )}
+                    />
+                    <span>
+                      <strong>Wider setpoint offset</strong> — let this unit
+                      be set up to ${wideLimitText} outside my range, instead
+                      of ${defaultLimitText}.
+                    </span>
+                  </label>
                   <div class="narrow-note" role="status" ?hidden=${narrowRuns.length === 0}>
                     ${narrowNote}
                   </div>

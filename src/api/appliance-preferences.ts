@@ -20,6 +20,9 @@ export interface AppliancePreferences {
   /** UTC ISO timestamp the timed pause ends; absent/null when not paused.
    * Written only by `pause()` / `resume()`, never by `update()`. */
   paused_until?: string | null;
+  /** Lets this unit's setpoint sit up to 6 °F outside the comfort range
+   * instead of 3 °F. Off by default. */
+  wide_setpoint_offset?: boolean;
 }
 
 export interface UpdateAppliancePreferencesBody {
@@ -36,6 +39,7 @@ export interface UpdateAppliancePreferencesBody {
   optimize_hvac_fan?: boolean;
   optimize_hvac_mode?: boolean;
   optimization_enabled?: boolean;
+  wide_setpoint_offset?: boolean;
 }
 
 export function get(applianceId: string): Promise<AppliancePreferences> {

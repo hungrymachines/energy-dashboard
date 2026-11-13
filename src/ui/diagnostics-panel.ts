@@ -5,7 +5,7 @@ import type {
   DivergenceReport,
   ConfiguredSensor,
 } from '../api/diagnostics.js';
-import { bandCheckReason, runLabel } from '../utils/band-check.js';
+import { offsetNote, runLabel } from '../utils/band-check.js';
 import { formatDelta, temperatureUnitStore } from '../utils/temperature.js';
 import { getIntegrationVersion } from '../utils/version.js';
 
@@ -456,11 +456,13 @@ export class HmDiagnosticsPanel extends LitElement {
           };
 
     const checked = units.filter((u) => u.band_check);
-    const narrow = checked.filter((u) => (u.band_check?.narrow ?? []).length > 0);
+    const flagged = checked.filter(
+      (u) => u.band_check?.offset_capped || (u.band_check?.narrow ?? []).length > 0,
+    );
     const rangeBadge =
-      narrow.length === 0
+      flagged.length === 0
         ? { tone: 'healthy', text: 'OK' }
-        : { tone: 'intermittent', text: `${narrow.length} too narrow` };
+        : { tone: 'intermittent', text: `${flagged.length} to review` };
 
     return html`
       <details class="sensor-details readings-details">
@@ -493,19 +495,21 @@ export class HmDiagnosticsPanel extends LitElement {
           ${checked.map((u) => {
             const check = u.band_check!;
             const runs = check.narrow ?? [];
-            const ok = runs.length === 0;
+            const ok = runs.length === 0 && !check.offset_capped;
+            const wide = check.wide_setpoint_offset === true;
+            const narrowText =
+              runs.length > 0
+                ? ` Narrower than this unit can hold now: ${runs
+                    .map((r) => `${runLabel(r)} (${formatDelta(r.width_f, unit)} wide)`)
+                    .join(', ')}.`
+                : '';
+            const message = `${offsetNote(check, wide, unit)}${narrowText}`;
             return html`
               <div class="sensor-row ${ok ? 'healthy' : 'intermittent'}">
                 <span class="sensor-icon ${ok ? 'ok' : 'warn'}">${ok ? '✓' : '!'}</span>
                 <div class="sensor-body">
                   <span class="sensor-label">${u.name || 'Unit'}</span>
-                  <div class="sensor-msg">
-                    ${ok
-                      ? `Every range you set is at least ${formatDelta(check.min_width_f, unit)} wide, which this unit can hold.`
-                      : `${bandCheckReason(check, unit)} Narrower now: ${runs
-                          .map((r) => `${runLabel(r)} (${formatDelta(r.width_f, unit)} wide)`)
-                          .join(', ')}. You can widen these hours in the unit's comfort settings.`}
-                  </div>
+                  <div class="sensor-msg">${message}</div>
                 </div>
               </div>
             `;

@@ -315,6 +315,41 @@ async def test_capture_hvac_attaches_commanded_values_from_cache() -> None:
 
 
 @pytest.mark.asyncio
+async def test_capture_hvac_reports_the_setpoint_offset_it_is_holding() -> None:
+    """Each reading says how far from the plan's setpoint the tracking
+    step is holding the unit, and whether it stopped at its limit, so the
+    offset can be studied per unit over time. Nothing is sent until the
+    step has learned something."""
+    appliance = {
+        "id": "a-1",
+        "appliance_type": "hvac",
+        "config": {"entity_id": "climate.living_room"},
+    }
+    state = _state("cool", {"current_temperature": 72.5, "temperature": 67.0})
+
+    hass = _hass({"climate.living_room": state})
+    hass.data.setdefault(DOMAIN, {})["room_track_offset"] = {
+        "climate.test": {"offset": -3.0, "mode": "cool", "limited": True},
+    }
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, _entry())
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert posted["setpoint_offset_f"] == -3.0
+    assert posted["setpoint_offset_limited"] is True
+
+    hass = _hass({"climate.living_room": state})
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        await readings.capture_readings(hass, _entry())
+    posted = hass.data[DOMAIN]["readings_buffer"]["home"][0]
+    assert "setpoint_offset_f" not in posted
+    assert "setpoint_offset_limited" not in posted
+
+
+@pytest.mark.asyncio
 async def test_capture_hvac_omits_commanded_fields_before_first_apply() -> None:
     """Fresh HA install / never-driven entity → no cache entry → the
     payload omits commanded_* entirely (NOT null fields). The server

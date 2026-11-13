@@ -582,7 +582,7 @@ describe('hm-constraint-editor narrow-range advice', () => {
       applianceId: 'hvac-1',
       applianceType: 'hvac',
       currentConstraints: stored,
-      bandCheck: { sensor_gap_f: 1.4, min_width_f: 2.5, narrow: [] },
+      bandCheck: { sensor_gap_f: 4.4, offset_limit_f: 3, offset_capped: true, min_width_f: 2.5, narrow: [] },
       open: true,
     });
     await flush(el);
@@ -590,7 +590,8 @@ describe('hm-constraint-editor narrow-range advice', () => {
     const note = root.querySelector<HTMLElement>('.narrow-note')!;
     expect(note.hidden).toBe(false);
     const text = note.textContent!.replace(/\s+/g, ' ');
-    expect(text).toContain('about 1.4 °F from your room sensor');
+    expect(text).toContain('about 4.4 °F cooler than your room sensor');
+    expect(text).toContain('Setpoints follow it by up to 3.0 °F');
     expect(text).toContain('narrower than 2.5 °F');
     expect(text).toContain('Narrower here: 00:00–08:00.');
     expect(root.querySelectorAll('tr.narrow').length).toBe(8);
@@ -608,7 +609,7 @@ describe('hm-constraint-editor narrow-range advice', () => {
       applianceId: 'hvac-1',
       applianceType: 'hvac',
       currentConstraints: { ...stored, hourly_high_temps_f: [70, ...Array(23).fill(74)] },
-      bandCheck: { sensor_gap_f: 1.4, min_width_f: 2.5, narrow: [] },
+      bandCheck: { sensor_gap_f: 4.4, offset_limit_f: 3, offset_capped: true, min_width_f: 2.5, narrow: [] },
       open: true,
     });
     await flush(el);
@@ -642,7 +643,7 @@ describe('hm-constraint-editor narrow-range advice', () => {
       applianceType: 'hvac',
       currentConstraints: stored,
       temperatureUnit: 'C',
-      bandCheck: { sensor_gap_f: 1.4, min_width_f: 2.5, narrow: [] },
+      bandCheck: { sensor_gap_f: 4.4, offset_limit_f: 3, offset_capped: true, min_width_f: 2.5, narrow: [] },
       open: true,
     });
     await flush(el);
@@ -650,6 +651,147 @@ describe('hm-constraint-editor narrow-range advice', () => {
     // 69-70 and 69-71 °F are narrow; 69-74 is not, in either unit.
     expect(root.querySelectorAll('tr.narrow').length).toBe(8);
     expect(root.querySelector('.narrow-note')!.textContent).toContain('narrower than 1.4 °C');
+  });
+});
+
+describe('hm-constraint-editor setpoint offset', () => {
+  beforeEach(() => {
+    setApiBase('https://api.example.test');
+    setTokens({ access: 'ACCESS', refresh: 'REFRESH' });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    document.body.innerHTML = '';
+    clearTokens();
+  });
+
+  const stored = {
+    base_temperature: 72,
+    savings_level: 2,
+    optimization_mode: 'cool',
+    hourly_low_temps_f: Array(24).fill(69),
+    hourly_high_temps_f: Array(24).fill(70),
+  };
+  const putBody = (calls: Array<[unknown, RequestInit | undefined]>) =>
+    JSON.parse(String(calls.find(([, init]) => init?.method === 'PUT')![1]!.body));
+
+  it('a difference inside 3 °F: says how far below the low limit the unit may be set, flags nothing', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: stored,
+      bandCheck: { sensor_gap_f: 2, offset_limit_f: 3, offset_capped: false, min_width_f: null, narrow: [] },
+      open: true,
+    });
+    await flush(el);
+    const root = el.shadowRoot!;
+    const note = root.querySelector<HTMLElement>('.offset-note')!;
+    expect(note.hidden).toBe(false);
+    expect(note.classList.contains('flagged')).toBe(false);
+    expect(note.textContent!.replace(/\s+/g, ' ')).toContain(
+      'the unit may be set up to 3.0 °F outside it',
+    );
+    // A 69-70 range is fine for this unit now: nothing is marked narrow.
+    expect(root.querySelectorAll('tr.narrow').length).toBe(0);
+    expect(root.querySelector<HTMLElement>('.narrow-note')!.hidden).toBe(true);
+    expect(root.querySelector<HTMLElement>('.wide-offset')!.hidden).toBe(true);
+
+    // A save that leaves the option alone does not send it.
+    root.querySelector<HTMLButtonElement>('button.save')!.click();
+    await flush(el);
+    expect('wide_setpoint_offset' in putBody(calls)).toBe(false);
+  });
+
+  it('a difference past 3 °F: flags it, offers the option, and saves it when ticked', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: { ...stored, hourly_high_temps_f: Array(24).fill(74) },
+      bandCheck: { sensor_gap_f: 4.4, offset_limit_f: 3, offset_capped: true, min_width_f: 2.5, narrow: [] },
+      open: true,
+    });
+    await flush(el);
+    const root = el.shadowRoot!;
+    const note = root.querySelector<HTMLElement>('.offset-note')!;
+    expect(note.classList.contains('flagged')).toBe(true);
+    const text = note.textContent!.replace(/\s+/g, ' ');
+    expect(text).toContain('more than the 3.0 °F a unit may be set outside your range');
+    expect(text).toContain('map a different temperature sensor');
+
+    const toggle = root.querySelector<HTMLElement>('.wide-offset')!;
+    expect(toggle.hidden).toBe(false);
+    const box = toggle.querySelector<HTMLInputElement>('input[name="wide_setpoint_offset"]')!;
+    expect(box.checked).toBe(false);
+    box.checked = true;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+    expect(note.classList.contains('flagged')).toBe(false);
+    expect(note.textContent!.replace(/\s+/g, ' ')).toContain('may be set up to 6.0 °F outside it');
+    expect(toggle.textContent!.replace(/\s+/g, ' ')).toContain('up to 6.0 °F outside my range, instead of 3.0 °F');
+
+    root.querySelector<HTMLButtonElement>('button.save')!.click();
+    await flush(el);
+    expect(putBody(calls).wide_setpoint_offset).toBe(true);
+  });
+
+  it('a unit with the option on can switch it off', async () => {
+    const { calls } = captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: { ...stored, wide_setpoint_offset: true },
+      bandCheck: {
+        sensor_gap_f: 4.4, offset_limit_f: 3, offset_capped: false, wide_setpoint_offset: true,
+        min_width_f: null, narrow: [],
+      },
+      open: true,
+    });
+    await flush(el);
+    const root = el.shadowRoot!;
+    const box = root.querySelector<HTMLInputElement>('input[name="wide_setpoint_offset"]')!;
+    expect(root.querySelector<HTMLElement>('.wide-offset')!.hidden).toBe(false);
+    expect(box.checked).toBe(true);
+    box.checked = false;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush(el);
+    root.querySelector<HTMLButtonElement>('button.save')!.click();
+    await flush(el);
+    expect(putBody(calls).wide_setpoint_offset).toBe(false);
+  });
+
+  it('a unit the integration has stopped at the limit is flagged with no stored difference at all', async () => {
+    // Heating, or a unit the service has measured nothing for: the live
+    // reading from Home Assistant is the only evidence.
+    captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1',
+      applianceType: 'hvac',
+      currentConstraints: stored,
+      liveOffset: { offset_f: 3, limited: true, limit_f: 3 },
+      open: true,
+    });
+    await flush(el);
+    const root = el.shadowRoot!;
+    const note = root.querySelector<HTMLElement>('.offset-note')!;
+    expect(note.hidden).toBe(false);
+    expect(note.classList.contains('flagged')).toBe(true);
+    expect(note.textContent!.replace(/\s+/g, ' ')).toContain('set 3.0 °F above the temperature the plan wants');
+    expect(root.querySelector<HTMLElement>('.wide-offset')!.hidden).toBe(false);
+  });
+
+  it('shows neither for a unit with no measured sensor difference', async () => {
+    captureFetch(jsonResponse({}));
+    const el = mountEditor({
+      applianceId: 'hvac-1', applianceType: 'hvac', currentConstraints: stored, open: true,
+    });
+    await flush(el);
+    const root = el.shadowRoot!;
+    expect(root.querySelector<HTMLElement>('.offset-note')!.hidden).toBe(true);
+    expect(root.querySelector<HTMLElement>('.wide-offset')!.hidden).toBe(true);
   });
 });
 

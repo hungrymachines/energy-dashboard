@@ -73,22 +73,31 @@ see `_comfort_band_override` and the pure state machine in `comfort.py`.
 Room-target tracking: the guard only acts at the band edges,
 which leaves the whole interior of the band open-loop. The nightly blob
 carries `room_target_temps[48]` beside `setpoint_temps[48]` — the target
-is what the optimizer wants the user's ASSIGNED SENSOR to read, the
-setpoint is the command it believes produces that reading, and the two
-differ by the fitted sensor gap. When the gap is wrong the room settles
-somewhere other than the plan, so the same 5-minute watchdog tick runs a
-tracking step per entity (`_track_room_target`):
+is what the plan wants the user's ASSIGNED SENSOR to read, and the
+setpoint is the same temperature as a starting command. A unit whose own
+sensor disagrees with the room's settles the room somewhere else, so the
+same 5-minute watchdog tick runs a tracking step per entity
+(`_track_room_target`):
 
-    room > target + 0.5°F  →  command max(low_temps[slot],  setpoint − 1)
-    room < target − 0.5°F  →  command min(high_temps[slot], setpoint + 1)
+    room > target + 0.5°F  →  command setpoint − 1
+    room < target − 0.5°F  →  command setpoint + 1
     otherwise              →  no service call
 
-The unit setpoint is an internal detail of that loop: the :00/:30 apply
-still seeds each slot with `setpoint_temps[slot]`, and the tracking step
-walks it from there. It never leaves `[low_temps, high_temps]`, never
-runs while the guard's latch is engaged (the guard owns the entity while
-it is the safety net), and never fires within `comfort.MIN_ON_SECONDS`
-of its own last command.
+Inside `[low_temps, high_temps]` the step is free. The comfort range is
+the room's, so the setpoint may leave it, by up to the plan's
+`setpoint_offset_limit_f` (3°F when the plan carries none), but only on
+live evidence that the unit's own sensor disagrees with the room's: the
+unit sits idle while the room is short of its target, or keeps running
+while the room is past it (`_offset_evidence`). A unit that reports no
+activity leaves the range only as far as the plan's
+`setpoint_below_low_f` allows. A setpoint already outside is not pulled
+back for want of evidence. What the step learns (setpoint minus the
+plan's) is kept per entity and added to each new slot's setpoint at the
+:00/:30 apply, so a slot starts where the last one settled; it is
+dropped when the plan's mode changes and when the unit is paused. The
+step never runs while the guard's latch is engaged (the guard owns the
+entity while it is the safety net, and takes the same offset and limit),
+and never fires within `comfort.MIN_ON_SECONDS` of its own last command.
 """
 from __future__ import annotations
 
@@ -486,6 +495,19 @@ def _publish_schedule_states(hass: HomeAssistant, cache: dict[str, Any]) -> None
             value = schedule.get(key)
             if isinstance(value, list):
                 attributes[key] = value
+
+        if atype == "hvac":
+            # How far from the plan the tracking step has moved this unit's
+            # setpoint, and whether it stopped at the limit with the room
+            # still off its target. The panel reads these to flag a unit
+            # whose own sensor sits far from the room sensor.
+            learned = (_domain_data(hass).get(_ROOM_TRACK_OFFSET_KEY) or {}).get(
+                info.get("entity_id")
+            )
+            if isinstance(learned, dict):
+                attributes["setpoint_offset_f"] = round(float(learned.get("offset") or 0.0), 1)
+                attributes["setpoint_offset_limited"] = bool(learned.get("limited"))
+            attributes["setpoint_offset_limit_f"] = _offset_limit(schedule)
 
         state_value: Any = "unknown"
         # Both temperature-target types publish the slot's setpoint as the
@@ -910,6 +932,125 @@ def _band_edge(schedule: dict, key: str, slot: int) -> float | None:
         return None
 
 
+# How far outside the comfort range a setpoint may go when the plan does
+# not say (an older service), and the most any plan may ask for.
+DEFAULT_SETPOINT_OFFSET_LIMIT_F = 3.0
+_MAX_SETPOINT_OFFSET_LIMIT_F = 10.0
+
+# entity_id -> {"offset": setpoint minus the plan's setpoint, "mode": the
+# plan mode it was learned in, "limited": the step stopped at the limit}.
+_ROOM_TRACK_OFFSET_KEY = "room_track_offset"
+
+
+def _plan_number(schedule: dict, key: str) -> float | None:
+    value = schedule.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _offset_limit(schedule: dict) -> float:
+    """How far outside the comfort range a setpoint may go, in °F: the
+    plan's `setpoint_offset_limit_f` (3, or more once the customer turns
+    on the wider offset for the unit), or 3 when the plan carries none."""
+    value = _plan_number(schedule, "setpoint_offset_limit_f")
+    if value is None:
+        return DEFAULT_SETPOINT_OFFSET_LIMIT_F
+    return max(0.0, min(value, _MAX_SETPOINT_OFFSET_LIMIT_F))
+
+
+def _setpoint_margins(schedule: dict) -> tuple[float, float]:
+    """What a stored sensor difference allows with no live evidence:
+    `(below_low, above_high)` in °F, from the plan's
+    `setpoint_below_low_f` / `setpoint_above_high_f`, never more than the
+    offset limit. `(0, 0)` when the plan carries neither. This is for a
+    unit that reports no activity to judge by; one that does is read live
+    (`_offset_evidence`)."""
+    limit = _offset_limit(schedule)
+
+    def one(key: str) -> float:
+        value = _plan_number(schedule, key)
+        return 0.0 if value is None else max(0.0, min(value, limit))
+
+    return one("setpoint_below_low_f"), one("setpoint_above_high_f")
+
+
+def _command_limits(schedule: dict, slot: int) -> tuple[float | None, float | None]:
+    """The lowest and highest setpoint this slot may ever be sent: the
+    comfort range widened by the offset limit on both sides. Where inside
+    that a setpoint may actually go is the tracking step's and the comfort
+    check's business. A missing edge stays None."""
+    limit = _offset_limit(schedule)
+    low = _band_edge(schedule, "low_temps", slot)
+    high = _band_edge(schedule, "high_temps", slot)
+    return (
+        low - limit if low is not None else None,
+        high + limit if high is not None else None,
+    )
+
+
+def _learned_offset(hass: HomeAssistant, entity_id: str, schedule: dict) -> float:
+    """How far from the plan's setpoint the tracking step has found this
+    unit needs to be set (setpoint minus plan), or 0. Kept across
+    half-hour slots so each slot starts where the last one settled, and
+    dropped when the plan's mode changes: an offset learned cooling says
+    nothing about heating."""
+    entry = (_domain_data(hass).get(_ROOM_TRACK_OFFSET_KEY) or {}).get(entity_id)
+    if not isinstance(entry, dict):
+        return 0.0
+    if entry.get("mode") != str(schedule.get("mode") or "").strip().lower():
+        return 0.0
+    limit = _offset_limit(schedule)
+    try:
+        return max(-limit, min(float(entry.get("offset") or 0.0), limit))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def get_setpoint_offset(hass: HomeAssistant, entity_id: str) -> dict[str, Any] | None:
+    """What the tracking step is holding for `entity_id`, for the readings
+    upload: `{"offset": setpoint minus the plan's, "limited": bool}`, or
+    None when it has learned nothing for this unit."""
+    entry = (_domain_data(hass).get(_ROOM_TRACK_OFFSET_KEY) or {}).get(entity_id)
+    if not isinstance(entry, dict):
+        return None
+    try:
+        offset = float(entry.get("offset") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    limit = _MAX_SETPOINT_OFFSET_LIMIT_F
+    return {
+        "offset": round(max(-limit, min(offset, limit)), 2),
+        "limited": bool(entry.get("limited")),
+    }
+
+
+def _offset_evidence(hass: HomeAssistant, entity_id: str, step: float) -> bool | None:
+    """Whether the unit's own activity shows its sensor disagrees with
+    the room's, for a step that wants the room cooler (`step < 0`) or
+    warmer (`step > 0`). None when the unit reports nothing to judge by.
+
+    Wanting the room cooler, the evidence is a cooling unit sitting idle
+    (its own sensor is satisfied, the room's is not) or a heating unit
+    still heating (its own sensor is not satisfied, the room's is past).
+    Wanting it warmer is the mirror. A unit already doing what the room
+    needs gains nothing from a setpoint further outside the range."""
+    conditioning = _conditioning(hass, entity_id)
+    if conditioning is None:
+        return None
+    state = hass.states.get(entity_id) if hass.states else None
+    mode = str(getattr(state, "state", "") or "").strip().lower()
+    if step < 0:
+        return (
+            conditioning == comfort.HEATING
+            or (conditioning == comfort.IDLE and mode == "cool")
+        )
+    return (
+        conditioning == comfort.COOLING
+        or (conditioning == comfort.IDLE and mode == "heat")
+    )
+
+
 def _arm_resume_timers(
     hass: HomeAssistant, entry: ConfigEntry, cache: dict[str, Any]
 ) -> None:
@@ -967,6 +1108,7 @@ def _release_control_on_pause(
     (data.get(_LAST_COMMANDED_KEY) or {}).pop(entity_id, None)
     (data.get(_COMFORT_LATCH_KEY) or {}).pop(entity_id, None)
     (data.get(_GUARD_HISTORY_KEY) or {}).pop(entity_id, None)
+    (data.get(_ROOM_TRACK_OFFSET_KEY) or {}).pop(entity_id, None)
     _LOGGER.info(
         "Hungry Machines released %s: plan paused until %s",
         entity_id, paused_until or "indefinitely",
@@ -1097,6 +1239,37 @@ def _resolve_unit_setpoint(
     return _resolve_setpoint(schedule, slot)
 
 
+def _guard_offset(hass: HomeAssistant, entity_id: str, schedule: dict) -> float:
+    """The setpoint offset the comfort check starts from: what the
+    tracking step has learned, else what a stored difference allows a
+    cooling unit that reports no activity."""
+    learned = _learned_offset(hass, entity_id, schedule)
+    if learned:
+        return learned
+    if str(schedule.get("mode") or "").strip().lower() == "cool":
+        return -_setpoint_margins(schedule)[0]
+    return 0.0
+
+
+def _log_offset_limited(
+    hass: HomeAssistant, entity_id: str, indoor: float, target: float, limit: float,
+) -> None:
+    """One WARNING when a unit's setpoint reaches the offset limit with
+    the room still off its target, and none again until it comes back."""
+    seen = _domain_data(hass).setdefault("offset_limited_logged", set())
+    if entity_id in seen:
+        return
+    seen.add(entity_id)
+    _LOGGER.warning(
+        "Hungry Machines: %s is set %.0f°F outside its comfort range and the "
+        "room is still %.1f°F against a %.1f°F target. Its own sensor seems to "
+        "read more than %.0f°F from your room sensor. In the unit's comfort "
+        "settings you can allow a wider setpoint offset, map a different "
+        "temperature sensor, or widen the range.",
+        entity_id, limit, indoor, target, limit,
+    )
+
+
 def _track_room_target(
     hass: HomeAssistant,
     entity_id: str,
@@ -1179,19 +1352,44 @@ def _track_room_target(
         return None
 
     commanded = unit_setpoint + step
-    high = _band_edge(schedule, "high_temps", slot)
     low = _band_edge(schedule, "low_temps", slot)
-    if low is not None and high is not None and low <= high:
-        commanded = max(low, min(commanded, high))
-    elif low is not None:
-        commanded = max(low, commanded)
-    elif high is not None:
-        commanded = min(high, commanded)
+    high = _band_edge(schedule, "high_temps", slot)
+    # Inside the range the step is free. Past an edge it needs a reason:
+    # live evidence that the unit's own sensor disagrees with the room's,
+    # or, for a unit that reports no activity, what the plan allows from a
+    # stored difference. A setpoint already outside is never pulled back
+    # for want of evidence: the unit may only be running because of it.
+    limit = _offset_limit(schedule)
+    evidence = _offset_evidence(hass, entity_id, step)
+    below, above = (limit, limit) if evidence else (0.0, 0.0)
+    if evidence is None:
+        below, above = _setpoint_margins(schedule)
+    limited = False
+    if step < 0 and low is not None:
+        floor = min(low - below, unit_setpoint)
+        limited = bool(evidence) and commanded < low - limit
+        commanded = max(commanded, floor, low - limit)
+    elif step > 0 and high is not None:
+        ceiling = max(high + above, unit_setpoint)
+        limited = bool(evidence) and commanded > high + limit
+        commanded = min(commanded, ceiling, high + limit)
+
+    planned = _resolve_setpoint(schedule, slot)
+    if planned is not None:
+        _domain_data(hass).setdefault(_ROOM_TRACK_OFFSET_KEY, {})[entity_id] = {
+            "offset": commanded - planned,
+            "mode": sched_mode if sched_mode != "auto" else str(schedule.get("mode") or "").strip().lower(),
+            "limited": limited,
+        }
+    if limited:
+        _log_offset_limited(hass, entity_id, indoor, target, limit)
+    else:
+        _domain_data(hass).setdefault("offset_limited_logged", set()).discard(entity_id)
 
     _domain_data(hass).setdefault(_ROOM_TRACK_LAST_KEY, {})[entity_id] = now
     _LOGGER.info(
         "Hungry Machines room-target step slot=%d: %s room %.1f°F vs target "
-        "%.1f°F — moving the setpoint %.1f°F → %.1f°F (band [%s, %s]°F)",
+        "%.1f°F — moving the setpoint %.1f°F → %.1f°F (range [%s, %s]°F)",
         slot, entity_id, indoor, target, unit_setpoint, commanded, low, high,
     )
     return commanded
@@ -1346,6 +1544,8 @@ def _comfort_band_override(
         overshoot_f=overshoot_f,
         conditioning=_conditioning(hass, entity_id),
         last_correction=history.get(entity_id),
+        offset_f=_guard_offset(hass, entity_id, schedule),
+        limit_f=_offset_limit(schedule),
     )
     _persist(new_latch)
 
@@ -1835,30 +2035,49 @@ async def _apply_hvac(
             )
             return
     elif setpoint is not None:
-        # Defense-in-depth band clamp: the backend already clamps
-        # setpoint_temps into [low_temps[slot], high_temps[slot]] at
-        # nightly derivation (nightly.py _derive_setpoints_from_pattern),
-        # so this should never actually change the value — a calibration
-        # blob's COOL/OFF-phase setpoints sit exactly on an edge and pass
-        # through unchanged. A fire here signals a backend bug or a band
-        # that was edited locally after the nightly run already ran, so
-        # we clamp anyway (the clamped value becomes the commanded
-        # truth) and log loudly rather than send the raw value through.
-        high = _band_edge(schedule, "high_temps", slot)
-        low = _band_edge(schedule, "low_temps", slot)
-        if high is not None and low is not None and low <= high:
-            band = (low, high)
-            clamped = max(low, min(setpoint, high))
-            if clamped != setpoint:
-                _LOGGER.warning(
-                    "Hungry Machines HVAC slot=%d: %s setpoint %.1f°F is "
-                    "outside the comfort band [%.1f, %.1f]°F — clamping to "
-                    "%.1f°F (should never fire; the backend clamps at "
-                    "nightly derivation, so this signals a backend bug or "
-                    "a band edited after the nightly run)",
-                    slot, entity_id, setpoint, low, high, clamped,
-                )
-                setpoint = clamped
+        if setpoint_override is None:
+            # Defense-in-depth band clamp: the plan's setpoints are already
+            # inside [low_temps[slot], high_temps[slot]] when the plan is made,
+            # so this should never actually change the value — a calibration
+            # blob's COOL/OFF-phase setpoints sit exactly on an edge and pass
+            # through unchanged. A fire here signals a backend bug or a band
+            # that was edited locally after the nightly run already ran, so
+            # we clamp anyway (the clamped value becomes the commanded
+            # truth) and log loudly rather than send the raw value through.
+            high = _band_edge(schedule, "high_temps", slot)
+            low = _band_edge(schedule, "low_temps", slot)
+            if high is not None and low is not None and low <= high:
+                band = (low, high)
+                clamped = max(low, min(setpoint, high))
+                if clamped != setpoint:
+                    _LOGGER.warning(
+                        "Hungry Machines HVAC slot=%d: %s setpoint %.1f°F is "
+                        "outside the comfort band [%.1f, %.1f]°F — clamping to "
+                        "%.1f°F (should never fire; the backend clamps at "
+                        "nightly derivation, so this signals a backend bug or "
+                        "a band edited after the nightly run)",
+                        slot, entity_id, setpoint, low, high, clamped,
+                    )
+                    setpoint = clamped
+            # The plan's setpoint is the room temperature it wants. A unit
+            # whose own sensor disagrees with the room's needs to be set some
+            # way off it, which the tracking step learns from the room sensor
+            # and this carries from one slot to the next. Not on a warm-up
+            # day: those setpoints are the experiment.
+            if not schedule.get("calibration"):
+                setpoint = setpoint + _learned_offset(hass, entity_id, schedule)
+        # A stepped setpoint from the tracking step arrives here as it is.
+        # Either way the result stays inside the range widened by the
+        # offset limit, and the rounding below may use that much room.
+        low_limit, high_limit = _command_limits(schedule, slot)
+        if low_limit is not None:
+            setpoint = max(low_limit, setpoint)
+        if high_limit is not None:
+            setpoint = min(high_limit, setpoint)
+        if band is None and low_limit is not None and high_limit is not None:
+            band = (low_limit, high_limit)
+        elif band is not None:
+            band = (min(band[0], setpoint), max(band[1], setpoint))
 
     mode_canonical, setpoint = _heat_floor_instead_of_off(
         hass, entity_id, schedule, slot, mode_canonical, setpoint,

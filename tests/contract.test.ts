@@ -56,11 +56,11 @@ type _ApplianceScheduleCompat = ApplianceSchedule extends paths['/api/v1/applian
   : false;
 const _checkApplianceSchedule: _ApplianceScheduleCompat = true;
 
-// The API always returns the three flags (server defaults); the hand type keeps
+// The API always returns the four flags (server defaults); the hand type keeps
 // them optional for callers that build partial fixtures, so assert on the
 // response-shaped view.
 type _AppliancePreferencesCompat = AppliancePreferences &
-  Required<Pick<AppliancePreferences, 'optimize_hvac_fan' | 'optimize_hvac_mode' | 'optimization_enabled'>> extends paths['/api/v1/appliances/{appliance_id}/preferences']['get']['responses']['200']['content']['application/json']
+  Required<Pick<AppliancePreferences, 'optimize_hvac_fan' | 'optimize_hvac_mode' | 'optimization_enabled' | 'wide_setpoint_offset'>> extends paths['/api/v1/appliances/{appliance_id}/preferences']['get']['responses']['200']['content']['application/json']
   ? true
   : false;
 const _checkAppliancePreferences: _AppliancePreferencesCompat = true;

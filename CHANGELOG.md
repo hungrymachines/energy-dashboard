@@ -48,8 +48,8 @@ Add a hot tub with a ready temperature, an eco temperature, and up to four soak 
 - The savings card lists each appliance with its own estimate and its next scheduled run.
 - Pausing from the panel now takes effect within seconds.
 - The freeze floor is designed to return the thermostat to its earlier setpoint as well as its mode, including after a Home Assistant restart.
-- The hourly comfort table points out hours that are narrower than a unit can hold, once the difference between the unit's own sensor and your room sensor has been measured, and says how wide they need to be. It is advice and does not block saving.
-- Diagnostics lists those hours for each unit, and names any unit whose readings have stopped or are not changing.
+- **Units whose own sensor disagrees with your room sensor.** Hungry Machines now moves such a unit's setpoint until your room sensor reads the planned temperature, in heating and cooling, and the setpoint may sit up to 3 °F outside your comfort range to do it. A unit that reaches that limit is flagged, with a per-unit **Wider setpoint offset** option (up to 6 °F) in its comfort settings.
+- Diagnostics names any unit whose readings have stopped or are not changing, and lists the sensor differences the service has measured.
 
 ## 3.11 — A comfort range for each day, and timed pauses
 

@@ -180,6 +180,44 @@ def _first_step(breached: float, far: Optional[float], sign: float) -> float:
     return min(stepped, mid) if sign > 0 else max(stepped, mid)
 
 
+def _far_limit(
+    far: Optional[float], sign: float, conditioning: Optional[str],
+    offset_f: float, limit_f: float,
+) -> Optional[float]:
+    """The furthest setpoint a correction may reach. `sign` is -1 for a
+    COOL correction stepping down toward ``low``, +1 for a HEAT one
+    stepping up toward ``high``; `far` is that far edge.
+
+    The comfort range is the room's. A unit whose own sensor disagrees
+    with the room's has to be set past the far edge to bring the room
+    back, so the limit is the far edge moved by `offset_f` (what the
+    tracking step has already learned the unit needs), and, while the
+    unit sits IDLE with the room still past the breached edge, the far
+    edge moved the full `limit_f` in the correction's direction: idle
+    means its own sensor is satisfied and the room's is not. Never
+    further than `limit_f` past the far edge either way."""
+    if far is None:
+        return None
+    furthest = far + sign * limit_f
+    if conditioning == IDLE:
+        return furthest
+    shifted = far + offset_f
+    return max(furthest, shifted) if sign < 0 else min(furthest, shifted)
+
+
+def _next_step(command_f: float, limit: Optional[float], sign: float) -> float:
+    """The setpoint after one more hold with the room still past the
+    breached edge: another `GUARD_STEP_F` toward `limit` and no further.
+    A command already past the limit is kept, not pulled back: that
+    would stop a unit that only runs because it was set that far."""
+    stepped = command_f + sign * GUARD_STEP_F
+    if limit is None:
+        return stepped
+    if sign > 0:
+        return max(command_f, min(limit, stepped))
+    return min(command_f, max(limit, stepped))
+
+
 def _locked_out(
     direction: str, last: LastCorrection, now: datetime, depth_f: float,
 ) -> bool:
@@ -207,6 +245,8 @@ def decide(
     overshoot_f: float = 0.0,
     conditioning: Optional[str] = None,
     last_correction: LastCorrection = None,
+    offset_f: float = 0.0,
+    limit_f: float = 0.0,
 ) -> Tuple[Override, Latch]:
     """Pure hysteresis step. Returns ``(override, new_latch)``.
 
@@ -238,6 +278,17 @@ def decide(
     ``last_correction`` — the guard's last finished COOL/HEAT correction
                      (see ``LastCorrection``), for the Auto cross-direction
                      lockout. None means no recent one.
+    ``offset_f``   — how far from a room temperature this unit has to be
+                     set to produce it (setpoint minus room target), as
+                     the tracking step has learned it. Negative for a unit
+                     whose own sensor reads cooler than the room's while
+                     cooling. Added to every COOL and HEAT setpoint.
+    ``limit_f``    — how far past the far edge of the range a COOL or HEAT
+                     setpoint may go. Reached in full only while the unit
+                     is IDLE with the room still past the breached edge
+                     (see ``_far_limit``). The room is always judged
+                     against ``high``/``low`` themselves. With both at 0
+                     every setpoint stays inside the range.
 
     The caller decides eligibility up front (e.g. pause flags); every slot
     is otherwise a candidate. ``new_latch`` is what the caller must persist
@@ -267,11 +318,11 @@ def decide(
         # the commanded setpoint steps toward the far edge.
         command_f = latch.get("command_f")
         if command_f is None:
-            command_f = _first_step(high, low, -1.0)
+            command_f = _first_step(high, low, -1.0) + offset_f
         if indoor > high and held_long_enough:
-            command_f = command_f - GUARD_STEP_F
-            if low is not None:
-                command_f = max(low, command_f)
+            command_f = _next_step(
+                command_f, _far_limit(low, -1.0, conditioning, offset_f, limit_f), -1.0,
+            )
             return ("COOL", command_f), {
                 "active": True, "direction": "cool", "since": now,
                 "command_f": command_f,
@@ -285,11 +336,11 @@ def decide(
             return None, None
         command_f = latch.get("command_f")
         if command_f is None:
-            command_f = _first_step(low, high, 1.0)
+            command_f = _first_step(low, high, 1.0) + offset_f
         if indoor < low and held_long_enough:
-            command_f = command_f + GUARD_STEP_F
-            if high is not None:
-                command_f = min(high, command_f)
+            command_f = _next_step(
+                command_f, _far_limit(high, 1.0, conditioning, offset_f, limit_f), 1.0,
+            )
             return ("HEAT", command_f), {
                 "active": True, "direction": "heat", "since": now,
                 "command_f": command_f,
@@ -337,14 +388,14 @@ def decide(
     )
 
     if high_breach and cool_ok:
-        command_f = _first_step(high, low, -1.0)
+        command_f = _first_step(high, low, -1.0) + offset_f
         return ("COOL", command_f), {
             "active": True, "direction": "cool", "since": now,
             "command_f": command_f,
         }
 
     if low_breach and heat_ok:
-        command_f = _first_step(low, high, 1.0)
+        command_f = _first_step(low, high, 1.0) + offset_f
         return ("HEAT", command_f), {
             "active": True, "direction": "heat", "since": now,
             "command_f": command_f,

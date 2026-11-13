@@ -629,6 +629,11 @@ export interface components {
             optimization_enabled: boolean;
             /** Paused Until */
             paused_until?: string | null;
+            /**
+             * Wide Setpoint Offset
+             * @default false
+             */
+            wide_setpoint_offset: boolean;
         };
         /** AppliancePreferencesUpdate */
         AppliancePreferencesUpdate: {
@@ -658,6 +663,8 @@ export interface components {
             optimize_hvac_mode?: boolean | null;
             /** Optimization Enabled */
             optimization_enabled?: boolean | null;
+            /** Wide Setpoint Offset */
+            wide_setpoint_offset?: boolean | null;
         };
         /** ApplianceReading */
         ApplianceReading: {
@@ -1141,6 +1148,10 @@ export interface components {
             room_target?: number | null;
             /** Setpoint Step F */
             setpoint_step_f?: number | null;
+            /** Setpoint Offset F */
+            setpoint_offset_f?: number | null;
+            /** Setpoint Offset Limited */
+            setpoint_offset_limited?: boolean | null;
         };
         /** SignupRequest */
         SignupRequest: {

@@ -3034,6 +3034,194 @@ async def test_tracking_step_clamps_at_the_band_floor() -> None:
     assert temp_calls and temp_calls[0].args[2]["temperature"] == 72.0
 
 
+# ---------------------------------------------------------------------------
+# Setpoints outside the comfort range, for a unit whose own sensor
+# disagrees with the room sensor
+# ---------------------------------------------------------------------------
+
+def _offset_setup(
+    room: float,
+    unit_setpoint: float,
+    *,
+    action: str | None,
+    mode: str = "cool",
+    room_target: float = 71.0,
+    plan: dict | None = None,
+):
+    """Band [70, 74]. A unit in `mode` reporting `action`, set to
+    `unit_setpoint`, with the room sensor at `room`."""
+    state = _climate_state(mode, supports_range=False, hvac_modes=["off", "cool", "heat"])
+    state.attributes["current_temperature"] = room
+    state.attributes["temperature"] = unit_setpoint
+    if action is not None:
+        state.attributes["hvac_action"] = action
+    hass = _hass(state)
+    hass.data[DOMAIN] = _track_cache(room_target=room_target, sched_mode=mode, setpoint=room_target)
+    hass.data[DOMAIN]["schedule"]["hvac-1"]["schedule"].update(plan or {})
+    scheduler._record_last_commanded(
+        hass, "climate.living_room", hvac_mode=mode.upper(), fan_mode=None,
+        setpoint=unit_setpoint,
+    )
+    return hass
+
+
+async def _watchdog_temps(hass) -> list[float]:
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.comfort_watchdog(hass, _entry())
+    return [
+        c.args[2]["temperature"] for c in hass.services.async_call.await_args_list
+        if c.args[1] == "set_temperature"
+    ]
+
+
+def _offset_entry(hass) -> dict:
+    return hass.data[DOMAIN][scheduler._ROOM_TRACK_OFFSET_KEY]["climate.living_room"]
+
+
+@pytest.mark.asyncio
+async def test_idle_cooling_unit_with_a_warm_room_is_set_below_the_range() -> None:
+    """Set to 70°F (the low limit), idle, and the room sensor still reads
+    72.5°F against a 71°F target: the unit's own sensor is satisfied and
+    the room's is not. The step goes to 69°F, and what it learned is kept."""
+    hass = _offset_setup(72.5, 70.0, action="idle")
+    assert await _watchdog_temps(hass) == [69.0]
+    entry = _offset_entry(hass)
+    assert entry["offset"] == -2.0 and entry["mode"] == "cool" and entry["limited"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_unit_already_cooling_gains_nothing_from_leaving_the_range() -> None:
+    """Same room, but the unit is running: it is doing what the room needs,
+    so the setpoint stays at the low limit."""
+    hass = _offset_setup(72.5, 70.0, action="cooling")
+    assert all(t >= 70.0 for t in await _watchdog_temps(hass))
+
+
+@pytest.mark.asyncio
+async def test_a_setpoint_below_the_range_is_not_pulled_back_once_the_unit_runs() -> None:
+    """At 68°F the unit finally runs. The room is still above target, and
+    the unit running is no reason to send it back to 70°F, where it stopped."""
+    hass = _offset_setup(72.5, 68.0, action="cooling")
+    temps = await _watchdog_temps(hass)
+    assert temps == [] or temps == [68.0]
+    assert scheduler.get_last_commanded(hass, "climate.living_room")["setpoint"] == 68.0
+
+
+@pytest.mark.asyncio
+async def test_the_setpoint_walks_back_when_the_room_overshoots() -> None:
+    """Room 70°F against a 71°F target with the unit at 68°F: step up to 69°F."""
+    hass = _offset_setup(70.0, 68.0, action="cooling")
+    assert await _watchdog_temps(hass) == [69.0]
+    assert _offset_entry(hass)["offset"] == -2.0
+
+
+@pytest.mark.asyncio
+async def test_the_offset_stops_three_degrees_outside_the_range_and_says_so(caplog) -> None:
+    import logging
+    caplog.set_level(logging.WARNING, logger="custom_components.hungry_machines.scheduler")
+
+    hass = _offset_setup(72.5, 67.0, action="idle")
+    temps = await _watchdog_temps(hass)
+    assert all(t == 67.0 for t in temps)
+    assert _offset_entry(hass)["limited"] is True
+    assert any("allow a wider setpoint offset" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_plan_with_the_wider_offset_lets_it_go_further() -> None:
+    hass = _offset_setup(72.5, 67.0, action="idle", plan={"setpoint_offset_limit_f": 6.0})
+    assert await _watchdog_temps(hass) == [66.0]
+    assert _offset_entry(hass)["limited"] is False
+
+
+@pytest.mark.asyncio
+async def test_heating_mirrors_it_above_the_range() -> None:
+    """An idle heating unit set to the high limit with the room still under
+    its target is set above the range."""
+    hass = _offset_setup(71.5, 74.0, action="idle", mode="heat", room_target=73.0)
+    assert await _watchdog_temps(hass) == [75.0]
+    assert _offset_entry(hass)["mode"] == "heat"
+
+
+@pytest.mark.asyncio
+async def test_a_unit_that_overcools_is_set_above_the_range() -> None:
+    """Cooling, running, and the room is already under its target: the
+    unit's own sensor reads warm. The setpoint may go above the high limit."""
+    hass = _offset_setup(71.0, 74.0, action="cooling", room_target=73.0)
+    assert await _watchdog_temps(hass) == [75.0]
+
+
+@pytest.mark.asyncio
+async def test_no_activity_signal_stays_in_the_range_unless_the_plan_allows_it() -> None:
+    """A unit that reports nothing about what it is doing gives no live
+    evidence. It leaves the range only as far as the plan allows from a
+    stored sensor difference."""
+    hass = _offset_setup(72.5, 70.0, action=None)
+    assert all(t >= 70.0 for t in await _watchdog_temps(hass))
+
+    hass = _offset_setup(72.5, 70.0, action=None, plan={"setpoint_below_low_f": 2.0})
+    assert await _watchdog_temps(hass) == [69.0]
+    hass = _offset_setup(72.5, 68.0, action=None, plan={"setpoint_below_low_f": 2.0})
+    assert all(t >= 68.0 for t in await _watchdog_temps(hass))
+
+
+@pytest.mark.asyncio
+async def test_the_learned_offset_carries_into_the_next_slot() -> None:
+    """The plan's setpoint is the room temperature it wants. A slot starts
+    from that plus what the last slot learned, not from scratch."""
+    hass = _hass(_climate_state("cool", supports_range=False))
+    hass.data[DOMAIN] = _hvac_cache(setpoint=71.5)
+    hass.data[DOMAIN]["schedule"]["hvac-1"]["schedule"]["mode"] = "cool"
+    hass.data[DOMAIN][scheduler._ROOM_TRACK_OFFSET_KEY] = {
+        "climate.living_room": {"offset": -2.0, "mode": "cool", "limited": False},
+    }
+    with patch.object(scheduler, "_current_slot", return_value=28):
+        await scheduler.apply_current_slot(hass, _entry())
+    assert hass.services.async_call.await_args.args[2]["temperature"] == 69.5
+
+
+@pytest.mark.asyncio
+async def test_an_offset_learned_in_another_mode_or_on_a_warm_up_day_is_not_used() -> None:
+    for mode, extra in (("heat", {}), ("cool", {"calibration": {"kind": "fan"}})):
+        hass = _hass(_climate_state("cool", supports_range=False))
+        hass.data[DOMAIN] = _hvac_cache(setpoint=71.5)
+        schedule = hass.data[DOMAIN]["schedule"]["hvac-1"]["schedule"]
+        schedule["mode"] = "cool"
+        schedule.update(extra)
+        hass.data[DOMAIN][scheduler._ROOM_TRACK_OFFSET_KEY] = {
+            "climate.living_room": {"offset": -2.0, "mode": mode, "limited": False},
+        }
+        with patch.object(scheduler, "_current_slot", return_value=28):
+            await scheduler.apply_current_slot(hass, _entry())
+        assert hass.services.async_call.await_args.args[2]["temperature"] == 71.5
+
+
+def test_offset_limit_and_margins_read_the_plan_and_ignore_bad_values() -> None:
+    assert scheduler._offset_limit({}) == 3.0
+    assert scheduler._offset_limit({"setpoint_offset_limit_f": 6}) == 6.0
+    assert scheduler._offset_limit({"setpoint_offset_limit_f": "6"}) == 3.0
+    assert scheduler._offset_limit({"setpoint_offset_limit_f": True}) == 3.0
+    assert scheduler._offset_limit({"setpoint_offset_limit_f": 40}) == 10.0
+    assert scheduler._setpoint_margins({}) == (0.0, 0.0)
+    assert scheduler._setpoint_margins({"setpoint_below_low_f": 2.5}) == (2.5, 0.0)
+    # Never more than the offset limit.
+    assert scheduler._setpoint_margins({"setpoint_below_low_f": 5}) == (3.0, 0.0)
+    assert scheduler._setpoint_margins({"setpoint_below_low_f": -4}) == (0.0, 0.0)
+
+
+def test_the_schedule_sensor_publishes_the_learned_offset() -> None:
+    hass = _hass(_climate_state("cool", supports_range=False))
+    hass.data[DOMAIN] = _hvac_cache(setpoint=71.5)
+    hass.data[DOMAIN][scheduler._ROOM_TRACK_OFFSET_KEY] = {
+        "climate.living_room": {"offset": -3.0, "mode": "cool", "limited": True},
+    }
+    scheduler._publish_schedule_states(hass, hass.data[DOMAIN]["schedule"])
+    attrs = hass.states.async_set.call_args.args[2]
+    assert attrs["setpoint_offset_f"] == -3.0
+    assert attrs["setpoint_offset_limited"] is True
+    assert attrs["setpoint_offset_limit_f"] == 3.0
+
+
 @pytest.mark.asyncio
 async def test_tracking_step_holds_inside_the_deadband() -> None:
     """Room 73.4°F vs a 73.0°F target is inside the 0.5°F deadband — no
