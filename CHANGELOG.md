@@ -4,6 +4,41 @@ What's new in the Hungry Machines integration for Home Assistant. Update from HA
 
 <!-- Each release has a `summary` comment under its date: a few plain lines for announcements. It does not show on GitHub. -->
 
+## 3.13 — Setpoints that follow your room sensor, a quick comfort preset, and rebuilt cards
+
+*November 13, 2026*
+
+<!-- summary
+- A unit whose own sensor reads differently from your room sensor is now set as far from the plan as it takes for your room sensor to read the planned temperature, up to 3 °F outside your comfort range.
+- Quick preset fills the hourly comfort table from a base temperature, the times you leave and return, and a Tight, Default or Wide range.
+- The thermostat card needs no setup, and the savings card lists each appliance with its own estimate and next run.
+- Pausing from the panel takes effect within seconds.
+-->
+
+### Units that read the room differently from your sensor
+
+A window unit or mini-split reads the room from its own built-in sensor, which can sit a degree or more from the room sensor you mapped to it. Set to 69 °F, such a unit stops at 69 °F on its own sensor while your room sensor still reads 71 °F. Your comfort range is about the room, so Hungry Machines now moves the unit's setpoint until your room sensor reads the planned temperature, in heating and cooling.
+
+- The setpoint can sit up to 3 °F outside your comfort range. It leaves the range only while the unit's own behaviour shows the disagreement: idle while the room is short of its target, or still running while the room is past it.
+- A unit that reaches that limit is flagged in its comfort settings. **Wider setpoint offset** raises the limit to 6 °F for that unit. You can also map a different temperature sensor, or widen the range.
+- The comfort table marks any hours too narrow for a unit to hold and says how wide they need to be. It is advice and does not block saving.
+
+### Quick preset
+
+The HVAC editor fills the hourly comfort table in one step. Set a base temperature, the times you leave and return, and a Tight (±2 °F), Default (±5 °F) or Wide (±10 °F) range for the hours you are away. Every hour stays editable.
+
+### Rebuilt dashboard cards
+
+- **Thermostat card.** Shows the room temperature and what the thermostat is set to with no setup, draws today's comfort range, and says when a unit is paused, on an idle day or on a warm-up test.
+- **Savings card.** Lists each appliance with its own estimate and its next scheduled run, and shows a sensor problem on the unit's row.
+- Both reload the plan about every five minutes and link to the panel.
+
+### Also in this release
+
+- Pausing from the panel takes effect within seconds.
+- The freeze floor is designed to return the thermostat to its earlier setpoint as well as its mode, including after a Home Assistant restart.
+- Diagnostics names any unit whose readings have stopped or are not changing, and lists the sensor differences measured for each unit.
+
 ## 3.12 — Pools, hot tubs, and a form that finds your devices
 
 *November 11, 2026*
@@ -40,16 +75,6 @@ Add a hot tub with a ready temperature, an eco temperature, and up to four soak 
 - **Run warm-up** button on each HVAC card schedules the one-time warm-up for the next suitable day.
 - On heating days, an idle thermostat now stays in heat at the bottom of your comfort range instead of switching off, so the thermostat holds that temperature on its own if Home Assistant stops.
 - Smoother comfort protection in narrow comfort ranges and in Auto mode.
-
-### 3.12.1 (unreleased)
-
-- **Quick preset** in the HVAC editor fills the hourly comfort table in one step. Set a base temperature, the times you leave and return, and a Tight, Default or Wide range for the hours you are away. Every hour stays editable.
-- The thermostat card shows the room temperature and what the thermostat is set to with no setup, and says when a unit is paused, on an idle day or on a warm-up test.
-- The savings card lists each appliance with its own estimate and its next scheduled run.
-- Pausing from the panel now takes effect within seconds.
-- The freeze floor is designed to return the thermostat to its earlier setpoint as well as its mode, including after a Home Assistant restart.
-- **Units whose own sensor disagrees with your room sensor.** Hungry Machines now moves such a unit's setpoint until your room sensor reads the planned temperature, in heating and cooling, and the setpoint may sit up to 3 °F outside your comfort range to do it. A unit that reaches that limit is flagged, with a per-unit **Wider setpoint offset** option (up to 6 °F) in its comfort settings.
-- Diagnostics names any unit whose readings have stopped or are not changing, and lists the sensor differences the service has measured.
 
 ## 3.11 — A comfort range for each day, and timed pauses
 
