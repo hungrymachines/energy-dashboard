@@ -569,6 +569,30 @@
         ]
       }
     },
+    "/api/v1/integration/appliances/health": {
+      "get": {
+        "tags": [
+          "schedules"
+        ],
+        "summary": "Get Integration Appliances Health",
+        "operationId": "get_integration_appliances_health_api_v1_integration_appliances_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/integration/health": {
       "get": {
         "tags": [
@@ -1894,6 +1918,196 @@
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/me/metrics/summary": {
+      "get": {
+        "tags": [
+          "customer-metrics"
+        ],
+        "summary": "Me Metrics Summary",
+        "operationId": "me_metrics_summary_api_v1_me_metrics_summary_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 30,
+              "title": "Window"
+            },
+            "description": "Trailing days to aggregate. Max 90; wider requests 400."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/metrics/daily": {
+      "get": {
+        "tags": [
+          "customer-metrics"
+        ],
+        "summary": "Me Metrics Daily",
+        "operationId": "me_metrics_daily_api_v1_me_metrics_daily_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start"
+            },
+            "description": "ISO date (YYYY-MM-DD). Default: end - 30 days."
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            },
+            "description": "ISO date (YYYY-MM-DD). Default: today (user-local)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/rankings": {
+      "get": {
+        "tags": [
+          "customer-metrics"
+        ],
+        "summary": "Me Rankings",
+        "operationId": "me_rankings_api_v1_me_rankings_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 30,
+              "title": "Window"
+            },
+            "description": "Trailing days the ranking window spans. Max 90; wider 400."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/home": {
+      "get": {
+        "tags": [
+          "customer-metrics"
+        ],
+        "summary": "Me Home",
+        "operationId": "me_home_api_v1_me_home_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           }
