@@ -1867,3 +1867,97 @@ async def test_reading_after_pause_release_omits_commanded_and_override() -> Non
     assert "commanded_hvac_mode" not in posted
     assert "commanded_setpoint" not in posted
     assert posted["override_active"] is False
+
+
+# --- power and raw state on non-HVAC machines -------------------------------
+
+
+async def _capture_one(appliance: dict, states: dict) -> dict:
+    hass = _hass(states)
+    with patch.object(
+        readings.api, "get_appliances", AsyncMock(return_value=[appliance])
+    ):
+        n = await readings.capture_readings(hass, _entry())
+    assert n == 1
+    return hass.data[DOMAIN]["readings_buffer"][appliance["id"]][0]
+
+
+_POWER_TYPES = [
+    ("ev_charger", "switch.m", "sensor.soc", "65"),
+    ("home_battery", "switch.m", "sensor.soc", "65"),
+    ("robot", "vacuum.m", "sensor.soc", "65"),
+    ("water_heater", "switch.m", "sensor.temp", "130"),
+    ("pool_pump", "switch.m", None, None),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("atype,control,sensor,sval", _POWER_TYPES)
+async def test_capture_reports_power_and_raw_state(atype, control, sensor, sval) -> None:
+    config = {"entity_id": control, "power_sensor_entity_id": "sensor.w"}
+    states = {control: _state("on"), "sensor.w": _state("1500", {"unit_of_measurement": "W"})}
+    if sensor:
+        key = "soc_entity_id" if "soc" in sensor else "temp_entity_id"
+        config[key] = sensor
+        states[sensor] = _state(sval)
+    r = await _capture_one({"id": "a", "appliance_type": atype, "config": config}, states)
+    assert r["power_watts"] == 1500.0
+    assert r["metadata"]["raw_state"] == "on"
+    if sensor:
+        assert r["metadata"]["sensor_read"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("atype,control,sensor,sval", _POWER_TYPES)
+async def test_capture_omits_power_without_sensor_and_keeps_unavailable(
+    atype, control, sensor, sval
+) -> None:
+    config = {"entity_id": control}
+    states = {control: _state("unavailable")}
+    r = await _capture_one({"id": "a", "appliance_type": atype, "config": config}, states)
+    assert "power_watts" not in r
+    assert r["metadata"]["raw_state"] == "unavailable"
+    assert r["state"] == "OFF"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("atype,sensor_key,placeholder", [
+    ("ev_charger", "soc_entity_id", 0.0),
+    ("home_battery", "soc_entity_id", 0.0),
+    ("robot", "soc_entity_id", 0.0),
+    ("water_heater", "temp_entity_id", 120.0),
+])
+async def test_capture_sensor_read_false_when_placeholder_used(
+    atype, sensor_key, placeholder
+) -> None:
+    for config_extra, states_extra in (
+        ({}, {}),  # no sensor mapped
+        ({sensor_key: "sensor.s"}, {"sensor.s": _state("unavailable")}),
+    ):
+        config = {"entity_id": "switch.m", **config_extra}
+        r = await _capture_one(
+            {"id": "a", "appliance_type": atype, "config": config},
+            {"switch.m": _state("off"), **states_extra},
+        )
+        assert r["metadata"]["sensor_read"] is False
+        assert r["value"] == placeholder
+
+
+@pytest.mark.asyncio
+async def test_capture_hot_tub_reading_carries_power_and_sensor_read() -> None:
+    config = {"entity_id": "climate.tub", "power_sensor_entity_id": "sensor.w"}
+    states = {
+        "climate.tub": _state("heat", {"current_temperature": 100, "hvac_action": "heating"}),
+        "sensor.w": _state("3", {"unit_of_measurement": "kW"}),
+    }
+    r = await _capture_one({"id": "a", "appliance_type": "hot_tub", "config": config}, states)
+    assert r["power_watts"] == 3000.0
+    assert r["metadata"] == {"sensor_read": True, "raw_state": "heat"}
+
+
+@pytest.mark.asyncio
+async def test_capture_hot_tub_without_temperature_still_skipped() -> None:
+    hass = _hass({"climate.tub": _state("heat", {})})
+    appliance = {"id": "a", "appliance_type": "hot_tub", "config": {"entity_id": "climate.tub"}}
+    with patch.object(readings.api, "get_appliances", AsyncMock(return_value=[appliance])):
+        assert await readings.capture_readings(hass, _entry()) == 0

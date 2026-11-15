@@ -768,12 +768,14 @@ def _build_charge_reading(
         soc_state = _read_state(hass, soc_entity_id)
         if soc_state is not None:
             soc = _coerce_float(soc_state.state)
+    sensor_read = soc is not None
     if soc is None:
         soc = 0.0
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "state": _on_off_state(control_state.state),
         "value": max(0.0, min(100.0, soc)),
+        "metadata": {"sensor_read": sensor_read},
     }
 
 
@@ -785,12 +787,14 @@ def _build_water_heater_reading(
         temp_state = _read_state(hass, temp_entity_id)
         if temp_state is not None:
             tank_temp = units.sensor_state_f(hass, temp_state)
+    sensor_read = tank_temp is not None
     if tank_temp is None:
         tank_temp = 120.0
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "state": _on_off_state(control_state.state),
         "value": max(60.0, min(180.0, tank_temp)),
+        "metadata": {"sensor_read": sensor_read},
     }
 
 
@@ -819,7 +823,26 @@ def _build_tub_reading(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "state": "ON" if hvac_action == "heating" else "OFF",
         "value": max(32.0, min(120.0, value)),
+        "metadata": {"sensor_read": True},
     }
+
+
+def _annotate_reading(
+    hass: HomeAssistant, reading: dict, control_state: Any, config: Any
+) -> dict:
+    """Add the measured power and the control entity's raw state.
+
+    `raw_state` keeps what Home Assistant reported (for example
+    'unavailable'), which the mapped `state` label would otherwise hide.
+    """
+    power_entity = config.get("power_sensor_entity_id") if isinstance(config, dict) else None
+    watts = _read_power_watts(hass, power_entity)
+    if watts is not None:
+        reading["power_watts"] = watts
+    metadata = dict(reading.get("metadata") or {})
+    metadata["raw_state"] = str(getattr(control_state, "state", "") or "").lower()
+    reading["metadata"] = metadata
+    return reading
 
 
 def _buffer(hass: HomeAssistant) -> dict[str, list[dict]]:
@@ -965,6 +988,7 @@ async def capture_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
             )
             if reading is None:
                 continue
+            _annotate_reading(hass, reading, control_state, config)
             _append(hass, aid, reading)
             captured += 1
         elif atype == "water_heater":
@@ -973,10 +997,13 @@ async def capture_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
             )
             if reading is None:
                 continue
+            _annotate_reading(hass, reading, control_state, config)
             _append(hass, aid, reading)
             captured += 1
         elif atype == "pool_pump":
-            reading = _build_pump_reading(control_state)
+            reading = _annotate_reading(
+                hass, _build_pump_reading(control_state), control_state, config
+            )
             _append(hass, aid, reading)
             captured += 1
         elif atype == "hot_tub":
@@ -986,6 +1013,7 @@ async def capture_readings(hass: HomeAssistant, entry: ConfigEntry) -> int:
             )
             if reading is None:
                 continue
+            _annotate_reading(hass, reading, control_state, config)
             _append(hass, aid, reading)
             captured += 1
         elif atype == "dehumidifier":
