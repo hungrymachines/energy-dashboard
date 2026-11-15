@@ -1,3 +1,4 @@
+import { ALL_TYPES } from '../utils/appliance-types.js';
 import { liveOffsetFor, type BandCheck } from '../utils/band-check.js';
 import { LitElement, html, css, type TemplateResult } from 'lit';
 import { live } from 'lit/directives/live.js';
@@ -897,12 +898,6 @@ export class HungryMachinesPanel extends LitElement {
     .banner-dismiss:hover {
       color: var(--hm-text, #0F172A);
       background: rgba(100, 116, 139, 0.12);
-    }
-    .diagnostics-section {
-      margin-bottom: 16px;
-    }
-    .diagnostics-section:empty {
-      display: none;
     }
     .cards {
       display: grid;
@@ -3056,7 +3051,7 @@ export class HungryMachinesPanel extends LitElement {
       case 'dashboard':
         return this._renderDashboard();
       case 'health':
-        return html`<div class="health-placeholder" data-view="health"></div>`;
+        return html`<hm-connection-health data-view="health"></hm-connection-health>`;
       case 'building':
         return html`<div class="building-placeholder" data-view="building"></div>`;
       default:
@@ -3195,10 +3190,6 @@ export class HungryMachinesPanel extends LitElement {
     // user can see what their dashboard would look like with that
     // device added, without us hiding the option from them.
     const registeredTypes = new Set(appliances.map((a) => a.appliance_type));
-    const ALL_TYPES: ReadonlyArray<ApplianceType> = [
-      'hvac', 'ev_charger', 'home_battery', 'water_heater', 'solar', 'robot',
-      'pool_pump', 'hot_tub',
-    ];
     const missingTypes = ALL_TYPES.filter((t) => !registeredTypes.has(t));
 
     return html`
@@ -3208,9 +3199,6 @@ export class HungryMachinesPanel extends LitElement {
         ${this._renderChartSizeToggle()}
       </div>
       <div class="calibration-section">${this._renderPausedBanner()}${this._renderCalibrationBanners()}</div>
-      <div class="diagnostics-section">
-        <hm-diagnostics-panel></hm-diagnostics-panel>
-      </div>
       <div class="cards">
         ${appliances.map((a) => this._renderApplianceCard(a, rates))}
         ${missingTypes.map((t) => this._renderExampleApplianceCard(t, rates))}

@@ -7,7 +7,7 @@ import { HmScheduleChart } from './ui/schedule-chart.js';
 import { HmConstraintEditor } from './ui/constraint-editor.js';
 import { HmApplianceForm } from './ui/appliance-form.js';
 import { HmOptimizationChart } from './ui/optimization-chart.js';
-import { HmDiagnosticsPanel } from './ui/diagnostics-panel.js';
+import { HmConnectionHealth } from './ui/connection-health.js';
 import { HmExportRateChart } from './ui/export-rate-chart.js';
 
 declare global {
@@ -47,8 +47,8 @@ if (!customElements.get('hm-appliance-form')) {
 if (!customElements.get('hm-optimization-chart')) {
   customElements.define('hm-optimization-chart', HmOptimizationChart);
 }
-if (!customElements.get('hm-diagnostics-panel')) {
-  customElements.define('hm-diagnostics-panel', HmDiagnosticsPanel);
+if (!customElements.get('hm-connection-health')) {
+  customElements.define('hm-connection-health', HmConnectionHealth);
 }
 
 window.customCards = window.customCards || [];
@@ -77,5 +77,5 @@ export {
   HmConstraintEditor,
   HmApplianceForm,
   HmOptimizationChart,
-  HmDiagnosticsPanel,
+  HmConnectionHealth,
 };
