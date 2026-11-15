@@ -3103,7 +3103,7 @@ export class HungryMachinesPanel extends LitElement {
       case 'health':
         return html`<hm-connection-health data-view="health"></hm-connection-health>`;
       case 'building':
-        return html`<div class="building-placeholder" data-view="building"></div>`;
+        return html`<hm-building-info data-view="building"></hm-building-info>`;
       default:
         return this._renderSettings();
     }
