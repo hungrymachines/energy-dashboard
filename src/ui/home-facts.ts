@@ -11,6 +11,8 @@ const REFERENCE_GAP_F = 20;
 const DRIFT_F = 3;
 
 const LEARNING = 'Still learning this unit from its readings';
+const NOTHING_YET =
+  'Facts appear here for heating and cooling, water heaters and solar once each has enough readings.';
 
 const perHour = (f: number, unit: TempUnit): string => `${formatDelta(f, unit)} an hour`;
 
@@ -141,13 +143,17 @@ export class HmHomeFacts extends LitElement {
     this._loading = false;
   }
 
-  private _renderMachine(m: HomeMachine): TemplateResult {
-    const lines = m.learning
+  private _lines(m: HomeMachine): string[] {
+    return m.learning
       ? []
       : m.facts.map((f) => factSentence(f, this._unit)).filter((s): s is string => s !== null);
+  }
+
+  private _renderMachine(m: HomeMachine): TemplateResult {
+    const lines = this._lines(m);
     return html`<div class="card" data-appliance=${m.appliance_id}>
       <h3>${m.name ?? m.appliance_type}</h3>
-      ${m.learning || lines.length === 0
+      ${m.learning
         ? html`<p class="learning">${LEARNING}</p>`
         : html`<ul>${lines.map((s) => html`<li>${s}</li>`)}</ul>`}
     </div>`;
@@ -163,12 +169,14 @@ export class HmHomeFacts extends LitElement {
     if (this._loading || !this._facts) {
       return html`<div class="banner">Loading your home…</div>`;
     }
-    const machines = this._facts.appliances;
+    // A machine with nothing to learn (a pool pump, a charger) comes back
+    // not learning and with no facts; it is left out, not called learning.
+    const machines = this._facts.appliances.filter((m) => m.learning || this._lines(m).length > 0);
     return html`<div>
       <h2>Your home</h2>
       <p class="intro">Learned from your readings. These are approximate and change as the seasons do.</p>
       ${machines.length === 0
-        ? html`<p class="learning">${LEARNING}</p>`
+        ? html`<p class="learning">${NOTHING_YET}</p>`
         : machines.map((m) => this._renderMachine(m))}
     </div>`;
   }

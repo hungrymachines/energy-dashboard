@@ -18,7 +18,7 @@ Questions: [info@hungrymachines.io](mailto:info@hungrymachines.io).
 
 ## What you get
 
-- **`hungry-machines-panel`** — full-page sidebar entry. Sign in, then **add the appliances you want optimized** (one or more HVACs, plus an EV charger, home battery, water heater, hot tub, pool pump, home robot, or solar array, and a dehumidifier if you want its readings recorded), map each one to its Home Assistant entities, edit the comfort and charge constraints the optimizer respects, choose your pricing, and review a diagnostics view that flags sensor and command problems.
+- **`hungry-machines-panel`** — full-page sidebar entry. Sign in, then **add the appliances you want optimized** (one or more HVACs, plus an EV charger, home battery, water heater, hot tub, pool pump, home robot, or solar array, and a dehumidifier if you want its readings recorded), map each one to its Home Assistant entities, edit the comfort and charge constraints the optimizer respects, and choose your pricing. Its **Connection Health** tab checks each machine's readings, commands and sensors, and its **Building Info** tab shows your savings, rankings, badges and what Hungry Machines has learned about your home.
 - **`hm-thermostat-card`** — Lovelace card for one HVAC: the room temperature now, what the thermostat is set to, today's estimated savings, the timed-pause buttons, and the optimization chart (your comfort limits and the planned setpoints over the day's prices). Pin it to one HVAC with `appliance_id` when you run more than one.
 - **`hm-savings-card`** — Lovelace card that lists each appliance with today's estimated savings and when it is next scheduled to run, plus your home's power draw if you name a sensor. Scope it to a single appliance with `appliance_id`.
 
@@ -76,6 +76,7 @@ Click the **Hungry Machines** entry in the sidebar and enter the same hungrymach
 - For a hot tub, choose its `climate.*` or `water_heater.*` entity and enter the volume and heater wattage. For a pool pump, choose its `switch.*` entity and enter the pump's wattage.
 - For a home robot, choose its `vacuum.*` or `lawn_mower.*` entity and, optionally, a battery sensor, then enter its battery capacity and dock charge rate.
 - For a dehumidifier, choose its `humidifier.*` entity and a room temperature sensor. It is recorded, not scheduled.
+- Every machine except solar can also take an optional **power sensor**: a `sensor.*` in W or kW that measures that machine alone. With one, Connection Health can check that the machine drew power when it was told to run and none when it was told to stop. When the form recognizes your device it suggests one.
 - For solar, enter your system size, tilt, and azimuth, and optionally pick a **production sensor** — a `sensor.*` reporting your inverter's or plug's instantaneous output in W or kW (not an energy `kWh` sensor). Solar has no switch to control; the sensor is what lets Hungry Machines learn your array's real output and shading instead of estimating from the nameplate rating.
 
 Each appliance card then shows today's optimized schedule, an **Edit constraints** button, and a per-appliance pause toggle. HVAC cards also carry **Pause 2 h**, **Pause 4 h** and **Pause 6 h** buttons, which hand that one unit to you for a while and let the plan take it back when the time is up (see [Pausing a unit](#pausing-a-unit)). You can edit or delete an appliance at any time.
@@ -111,6 +112,15 @@ Each figure on the savings card is an estimate for that one appliance: a share o
 Sign-in is shared with the panel — once you've signed in, the cards light up immediately.
 
 ---
+
+## The panel's tabs
+
+The panel has four tabs. The one you are on is kept in the page address, so reloading the page or opening a bookmark returns to it.
+
+- **Dashboard** — a card for each appliance with today's plan, its constraints and its pause toggle. Machine types you have not added are shown greyed out. A strip at the top appears only when a machine has clearly stopped working (see [Checking that it's working](#checking-that-its-working)).
+- **Connection Health** — one row per machine with its readings, command, sensor and power checks, and an **About these checks** section that explains each one.
+- **Building Info** — your numbers for the last 30 days: modeled and measured savings, the machine types you have connected, idle hours at peak prices, off-peak share, the comfort range you gave the optimizer, savings per day and the hours you adjust the plan. Below them, how you rank against similar Hungry Machines homes (nothing about those homes is shown), your savings streak and badges, and **Your home**: facts learned from your readings, such as how fast a room drifts with the system off, how fast a unit heats or cools at full output, how far a unit's own sensor reads from your room sensor, a water heater's standby loss, and how much of its rating your solar array produces. A unit without enough readings says it is still learning. The facts are approximate and change with the seasons.
+- **Settings** — described next.
 
 ## Configuration
 
@@ -158,7 +168,16 @@ If you don't use HACS:
 
 ## Checking that it's working
 
-Open **Settings → System → Logs** in Home Assistant and search for `Hungry Machines`. Problems appear there as warnings or errors. Ongoing upload, plan and weather problems are logged when they start and once a day while they last; a failed request to the service is logged each time. Good news is in the full log, under **Load full logs**: when an upload, a solar production sensor, today's plan, the weather push, or a thermostat mode starts working or recovers, plus one line each hour listing what was uploaded.
+Open the panel's **Connection Health** tab. Each machine you added gets a row with a badge (**OK**, **Needs attention** or **Nothing to check**) and these checks:
+
+- **Readings** — a machine is flagged when its newest reading is more than 90 minutes old, or its values have not changed for 6 hours.
+- **Command** — for heating and cooling, how often the thermostat was in the mode it was sent and held the setpoint it was sent (within 2 °F), over the last 24 hours. A unit is flagged when it held the setpoint on fewer than 70 % of readings, or was in the mode it was sent on fewer than half. EV chargers, home batteries, pool pumps, and water heaters run through a switch are compared with their plan, on or off. Robots, hot tubs and water heaters run through a climate entity have no such check.
+- **Sensors** — how often each extra sensor carried a value over the last 6 hours: 80 % or more is healthy, below that intermittent, and under 5 % it needs attention.
+- **Power** — for a machine with its own power sensor, how many readings carried power and how often its draw matched the commands. Power never raises an alert on its own.
+
+The Dashboard shows an alert strip only for clear failures: readings that stopped or froze, a thermostat that did not hold its setpoints, a switched machine that did not follow its plan or kept reporting as unavailable, or a sensor that almost never reports. A thermostat in a different mode that still holds the temperature, an intermittent sensor, comfort-range advice and solar at night do not raise it.
+
+For more detail, open **Settings → System → Logs** in Home Assistant and search for `Hungry Machines`. Problems appear there as warnings or errors. Ongoing upload, plan and weather problems are logged when they start and once a day while they last; a failed request to the service is logged each time. Good news is in the full log, under **Load full logs**: when an upload, a solar production sensor, today's plan, the weather push, or a thermostat mode starts working or recovers, plus one line each hour listing what was uploaded.
 
 The integration reads your devices every 5 minutes and uploads once an hour, at 2 minutes past. If an upload fails, the readings wait in memory and go up at the next hourly upload. A Home Assistant restart clears any readings still waiting.
 

@@ -1,8 +1,8 @@
-// Pure badge + streak logic for the gamification section (US-MET-027).
+// Pure badge + streak logic for the badges and streaks section.
 //
-// Side-effect-free and DOM-free so it unit-tests without a render harness. The
-// brand forbids hype (design plan §8): this is "instrumentation that happens to
-// be competitive", closer to a power meter than a mobile game. Every badge is a
+// Side-effect-free and DOM-free so it unit-tests without a render harness. No
+// hype: this is "instrumentation that happens to be competitive", closer to a
+// power meter than a mobile game. Every badge is a
 // verifiable fact with a one-line "how this was measured", and every metric is
 // derived from data the EXISTING summary / rankings / daily routes already
 // return — no new endpoint.
@@ -11,21 +11,21 @@
 //  - A badge is only ever awarded when the data proves it. Missing inputs mean
 //    "not earned" (conservative), never a fabricated award.
 //  - Streaks are stated factually and bounded to a rolling window, never
-//    all-time (which would permanently lock out new customers — plan §8/§10).
+//    all-time (which would permanently lock out new customers).
 
 import type { MetricsSummary } from '../api/me-metrics.js';
 import type { DailyEntry } from '../api/me-metrics.js';
 
 /** A day idles clean through the three priciest hours when all 6 of those slots
- *  are idle: 6 slots × 0.5 h = 3.0 h. Mirrors the backend TOP_PEAK_SLOTS cut. */
+ *  are idle: 6 slots × 0.5 h = 3.0 h, the service's three-priciest-hours cut. */
 export const MAX_TOP_PEAK_IDLE_HOURS_PER_DAY = 3.0;
 /** Peak Dodger looks at the last three days — recent behaviour, not a month-long
  *  record a new customer can't touch and a long-timer can't lose. */
 export const PEAK_DODGER_DAYS = 3;
 /** Top half = at or above the 50th percentile of comparable homes. */
 export const ABOVE_MEDIAN_PERCENTILE = 50;
-/** Full House universe — every machine type a home can connect (mirrors the
- *  MetricsTab coverage ladder). Full House = every one of these reporting. */
+/** Full House universe — the five core machine types (pool pumps, hot tubs and
+ *  robots are extras). Full House = every one of these reporting. */
 export const MACHINE_TYPES = [
   'hvac',
   'water_heater',
@@ -180,8 +180,8 @@ export interface SavingsStreak {
 }
 
 /**
- * Savings-above-median streak, stated factually (design plan §8: "14
- * consecutive days with savings above your 30-day median").
+ * Savings-above-median streak, stated factually ("14 consecutive days with
+ * savings above your 30-day median").
  *
  * The reference is the median savings_pct across every day in the window that
  * carries a figure. The streak is the run of the MOST RECENT calendar days

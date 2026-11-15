@@ -680,6 +680,18 @@ export class HungryMachinesPanel extends LitElement {
       border-bottom-color: var(--hm-primary, #1E3A8A);
       font-weight: 600;
     }
+    /* After the base button rule, so the narrow padding wins. */
+    @media (max-width: 600px) {
+      nav.tabs {
+        gap: 0;
+        padding: 0 8px;
+      }
+      nav.tabs button {
+        padding: 10px 8px;
+        flex: 1 1 0;
+        min-width: 0;
+      }
+    }
     section.content {
       padding: 24px;
       min-height: 200px;

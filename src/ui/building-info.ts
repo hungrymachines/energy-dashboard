@@ -2,6 +2,9 @@ import { LitElement, html, css } from 'lit';
 import type { TemplateResult } from 'lit';
 import { getDailyMetrics, getMetricsSummary } from '../api/me-metrics.js';
 import type { DailyResponse, MetricsSummary } from '../api/me-metrics.js';
+import { ALL_TYPES, TYPE_NAMES } from '../utils/appliance-types.js';
+import { formatDelta, temperatureUnitStore } from '../utils/temperature.js';
+import type { TempUnit } from '../utils/temperature.js';
 
 /** A missing metric shows a dash, never a made-up zero. */
 const EM_DASH = '—';
@@ -9,18 +12,16 @@ const WINDOW_DAYS = 30;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 /** The machine types the coverage list reports against (dehumidifier is data-only). */
-const MACHINE_TYPES: ReadonlyArray<{ key: string; label: string }> = [
-  { key: 'hvac', label: 'HVAC' },
-  { key: 'water_heater', label: 'Water heater' },
-  { key: 'ev_charger', label: 'EV charger' },
-  { key: 'home_battery', label: 'Home battery' },
-  { key: 'solar', label: 'Solar' },
-];
+const MACHINE_TYPES: ReadonlyArray<{ key: string; label: string }> = ALL_TYPES.map((t) => ({
+  key: t,
+  label: TYPE_NAMES[t] ?? t,
+}));
 
 const money = (n: number | null): string => (n === null ? EM_DASH : `$${n.toFixed(2)}`);
 const percent = (n: number | null): string => (n === null ? EM_DASH : `${n.toFixed(1)}%`);
 const hours = (n: number | null): string => (n === null ? EM_DASH : `${n.toFixed(1)} h`);
-const degreeHours = (n: number | null): string => (n === null ? EM_DASH : `${Math.round(n)} °F·h`);
+const degreeHours = (n: number | null, unit: TempUnit): string =>
+  n === null ? EM_DASH : `${formatDelta(n, unit, 0)}·h`;
 
 /** "6 PM", "12 AM", "12 PM". */
 export function formatHour(h: number): string {
@@ -76,6 +77,7 @@ export class HmBuildingInfo extends LitElement {
     _daily: { state: true },
     _loading: { state: true },
     _error: { state: true },
+    _unit: { state: true },
     refreshKey: { type: Number, attribute: 'refresh-key', reflect: true },
   };
 
@@ -83,13 +85,25 @@ export class HmBuildingInfo extends LitElement {
   _daily: DailyResponse | null = null;
   _loading = false;
   _error: string | null = null;
+  _unit: TempUnit = temperatureUnitStore.state.unit;
   refreshKey = 0;
 
   private _lastRefreshKey = -1;
+  private _unsubscribe: (() => void) | null = null;
 
   override async connectedCallback(): Promise<void> {
     super.connectedCallback();
+    this._unit = temperatureUnitStore.state.unit;
+    this._unsubscribe = temperatureUnitStore.subscribe((s) => {
+      this._unit = s.unit;
+    });
     await this._load();
+  }
+
+  override disconnectedCallback(): void {
+    this._unsubscribe?.();
+    this._unsubscribe = null;
+    super.disconnectedCallback();
   }
 
   override willUpdate(changed: Map<string, unknown>): void {
@@ -149,7 +163,7 @@ export class HmBuildingInfo extends LitElement {
           'Time your machines sat idle during the priciest hours of the day.')}
         ${this._simpleTile('offpeak', 'Off-peak share', percent(s.peaks.off_peak_kwh_share_pct),
           'Share of your energy used in the cheapest hours.')}
-        ${this._simpleTile('flexibility', 'Flexibility offered', degreeHours(s.flexibility.degree_hours),
+        ${this._simpleTile('flexibility', 'Flexibility offered', degreeHours(s.flexibility.degree_hours, this._unit),
           'How much comfort range you gave the optimizer to work with.')}
       </div>
       <div class="panel" data-testid="daily-chart">

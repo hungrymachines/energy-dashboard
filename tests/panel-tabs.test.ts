@@ -59,6 +59,17 @@ describe('panel tabs and URL hash', () => {
     expect(viewFromHash('#nope')).toBe('dashboard');
   });
 
+  it('fits four tabs on a phone: the narrow rule follows the base button rule', () => {
+    const css = (HungryMachinesPanel.styles as { cssText: string }).cssText;
+    const base = css.indexOf('nav.tabs button {');
+    const narrow = css.indexOf('@media (max-width: 600px)');
+    expect(base).toBeGreaterThan(-1);
+    expect(narrow).toBeGreaterThan(base);
+    expect(css.slice(narrow, narrow + 300)).toContain('min-width: 0');
+    // Not a scroll box: the buttons' -1px margin would give it a 1px scroll.
+    expect(css).not.toMatch(/nav\.tabs \{[^}]*overflow/);
+  });
+
   it('renders four tabs in order', async () => {
     const el = await mount();
     expect(tabs(el).map((b) => b.textContent!.trim())).toEqual([

@@ -96,6 +96,28 @@ describe('<hm-home-facts>', () => {
     expect(text).not.toContain('Midday sun');
   });
 
+  it('leaves out a machine with nothing to learn instead of calling it learning', async () => {
+    const el = await mount({
+      appliances: [
+        { appliance_id: 'a1', name: 'Main AC', appliance_type: 'hvac', learning: false, facts: [fact('sun', 1.2)] },
+        { appliance_id: 'p1', name: 'Pool Pump', appliance_type: 'pool_pump', learning: false, facts: [] },
+      ],
+    });
+    const text = el.shadowRoot!.textContent!;
+    expect(text).toContain('Main AC');
+    expect(text).not.toContain('Pool Pump');
+    expect(text).not.toContain('Still learning');
+  });
+
+  it('a home with only machines that have nothing to learn says when facts appear', async () => {
+    const el = await mount({
+      appliances: [{ appliance_id: 'p1', name: 'Pool Pump', appliance_type: 'pool_pump', learning: false, facts: [] }],
+    });
+    const text = el.shadowRoot!.textContent!;
+    expect(text).not.toContain('Pool Pump');
+    expect(text).toContain('Facts appear here for heating and cooling');
+  });
+
   it('formats in Celsius when the unit store says so, and re-renders on change', async () => {
     const el = await mount({
       appliances: [{ appliance_id: 'a1', name: 'AC', appliance_type: 'hvac', learning: false, facts: [fact('sun', 1.8)] }],

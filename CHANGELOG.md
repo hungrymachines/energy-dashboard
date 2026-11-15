@@ -6,11 +6,48 @@ What's new in the Hungry Machines integration for Home Assistant. Update from HA
 
 ## 3.14 — Connection Health and Building Info (unreleased)
 
-Draft notes, finished at release:
+<!-- summary
+- The panel has four tabs: Dashboard, Connection Health, Building Info and Settings. The tab you are on stays in the address, so a reload or a bookmark opens it again.
+- Connection Health checks every machine you added, not only heating and cooling: whether its readings arrive, whether it followed its plan, and whether its sensors report.
+- The Dashboard shows an alert only when a machine has clearly stopped working.
+- Building Info shows your savings, how you compare with similar homes, your badges, and what Hungry Machines has learned about your home.
+- Every machine can now have its own power sensor.
+-->
 
-- The command check in Diagnostics has one line per heating or cooling unit, shows only the comparisons each unit has data for, and groups the ones that come from a power sensor under their own heading.
-- Diagnostics ends with an **About these checks** section that explains each check: what it compares, when it flags a unit, and what to do.
-- A thermostat in heat or cool mode that sits idle between cycles now counts as matching the mode it was sent.
+### Four tabs
+
+The panel opens on **Dashboard**, with **Connection Health**, **Building Info** and **Settings** beside it. The tab you choose is kept in the page address, so reloading the page, the back button, or a bookmark brings you back to it. On a phone the four tabs share the width of the screen.
+
+### Connection Health
+
+Connection Health replaces the Diagnostics section. It lists every machine you added, one row each, with a badge that reads **OK**, **Needs attention** or **Nothing to check**:
+
+- **Readings.** Whether the machine's readings arrive and change. Readings are taken about every 5 minutes and uploaded about once an hour, so a machine is flagged when its newest reading is more than 90 minutes old, or when its values have not changed for 6 hours.
+- **Command.** For heating and cooling, how often the thermostat was in the mode it was sent and held the setpoint it was sent, the average and largest setpoint gap, and fan speed where the thermostat reports it. Only the comparisons a unit has data for are shown. A thermostat in heat or cool mode that sits idle between cycles counts as matching the mode it was sent. EV chargers, home batteries, pool pumps, and water heaters run through a switch are compared with their plan: how often each reading was on or off when the plan said so, and how many readings came back unavailable.
+- **Sensors.** How often each extra sensor you mapped carried a value over the last 6 hours.
+- **Power.** For a machine with its own power sensor, how many readings carried power and how often its draw matched the commands. Power readings inform the check and never raise an alert on their own.
+
+Machine types you have not added appear below, greyed out. **About these checks**, at the bottom, explains what each check compares, when it flags a machine, and what to do. The version numbers at the foot of the old Diagnostics section are gone.
+
+### Alerts on the Dashboard only for clear failures
+
+The Dashboard shows a strip above your cards only when a machine has clearly stopped working: its readings stopped or froze, a thermostat did not hold the setpoints it was sent, a switched machine did not follow its plan or kept reporting as unavailable, or a sensor you mapped almost never reports. The strip names each machine and links to Connection Health. A sensor that reports some of the time, a thermostat set to a different mode that still holds the temperature, advice about your comfort range, and solar that reads zero at night do not raise it.
+
+### Building Info
+
+- **Your metrics** for the last 30 days: modeled and measured savings, the machine types you have connected, hours your machines sat idle at the priciest times, the share of your energy used in the cheapest hours, and the comfort range you gave the optimizer. A chart shows savings per day, and another shows the hours of the day when you adjust the plan.
+- **How you compare**, ranked against similar Hungry Machines homes, without showing anything about them.
+- **Badges and streaks**: your savings streak, and the Peak Dodger, Full House and Room to Move badges.
+- **Your home**: plain facts learned from your readings, such as how fast each room drifts with the system off, how much the midday sun adds, how fast a unit heats or cools at full output, how far a unit's own sensor reads from your room sensor, how much heat a water heater's tank loses when idle, and how much of its rating a solar array produces in full sun. A unit without enough readings says it is still learning. The facts are approximate and change with the seasons.
+
+Temperatures on every tab follow your chosen unit, °F or °C.
+
+### A power sensor for every machine
+
+The form for an EV charger, home battery, water heater, home robot, pool pump or hot tub has an optional **Power sensor**: a `sensor.*` that measures that machine alone, in W or kW. When the form recognizes your device it can fill this in for you. The integration then uploads the machine's power draw and its device state with every reading, so Connection Health can tell an unavailable device from one that is off.
+
+### Also in this release
+
 - The panel and cards keep you signed in between visits, and through a short outage of the service or your internet.
 - The integration waits out a short outage instead of asking for your password again.
 

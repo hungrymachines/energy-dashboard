@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { HmBuildingInfo, formatHour } from '../src/ui/building-info.js';
 import { setApiBase, setTokens } from '../src/api/client.js';
+import { temperatureUnitStore } from '../src/utils/temperature.js';
 
 if (!customElements.get('hm-building-info')) {
   customElements.define('hm-building-info', HmBuildingInfo);
@@ -65,10 +66,12 @@ describe('hm-building-info', () => {
   beforeEach(() => {
     setApiBase('https://api.test');
     setTokens({ access: 'a', refresh: 'r' });
+    temperatureUnitStore.setPreference('F');
   });
   afterEach(() => {
     document.body.innerHTML = '';
     vi.unstubAllGlobals();
+    temperatureUnitStore.setPreference(null);
   });
 
   it('formats hours', () => {
@@ -101,7 +104,28 @@ describe('hm-building-info', () => {
     expect(text(el, '[data-testid="tile-peaks-idle"]')).toContain('3.5 h');
     expect(text(el, '[data-testid="tile-offpeak"]')).toContain('61.2%');
     expect(text(el, '[data-testid="tile-flexibility"]')).toContain('140 °F·h');
-    expect(text(el, '[data-testid="tile-machines"]')).toContain('2 of 5 machine types');
+    expect(text(el, '[data-testid="tile-machines"]')).toContain('2 of 8 machine types');
+  });
+
+  it('shows flexibility in Celsius and follows a unit change', async () => {
+    stub(summary());
+    temperatureUnitStore.setPreference('C');
+    const el = await mount();
+    const t = text(el, '[data-testid="tile-flexibility"]');
+    expect(t).toContain('78 °C·h');
+    expect(t).not.toContain('°F');
+    temperatureUnitStore.setPreference('F');
+    await flush(el);
+    expect(text(el, '[data-testid="tile-flexibility"]')).toContain('140 °F·h');
+  });
+
+  it('counts a pool pump, hot tub or robot as a connected machine type', async () => {
+    stub(summary({ machines: { active: 3, by_type: { hvac: 1, pool_pump: 1, solar: 1 } } }));
+    const el = await mount();
+    const t = text(el, '[data-testid="tile-machines"]');
+    expect(t).toContain('3 of 8 machine types');
+    expect(t).toMatch(/Pool pump ?✓ connected/);
+    expect(t).toMatch(/Hot tub ?— not connected/);
   });
 
   it('draws the daily chart and override histogram as SVG', async () => {
