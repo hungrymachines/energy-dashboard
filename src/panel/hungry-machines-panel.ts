@@ -1,4 +1,5 @@
 import { ALL_TYPES } from '../utils/appliance-types.js';
+import { getAppliancesHealth } from '../api/appliance-health.js';
 import { liveOffsetFor, type BandCheck } from '../utils/band-check.js';
 import { LitElement, html, css, type TemplateResult } from 'lit';
 import { live } from 'lit/directives/live.js';
@@ -787,6 +788,24 @@ export class HungryMachinesPanel extends LitElement {
     }
     .pause-row .pause-error {
       color: #B91C1C;
+    }
+    .health-alert {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      background: rgba(185, 28, 28, 0.08);
+      border: 1px solid rgba(185, 28, 28, 0.4);
+      border-radius: 10px;
+      padding: 12px 16px;
+      margin-bottom: 16px;
+      color: var(--hm-text, #0F172A);
+      font-size: 14px;
+    }
+    .health-alert ul {
+      margin: 0;
+      padding-left: 18px;
     }
     .paused-banner {
       background: rgba(245, 158, 11, 0.12);
@@ -1642,6 +1661,7 @@ export class HungryMachinesPanel extends LitElement {
     hass: { attribute: false },
     _auth: { state: true },
     _view: { state: true },
+    _healthAlerts: { state: true },
     _schedulesLoading: { state: true },
     _schedulesError: { state: true },
     _schedules: { state: true },
@@ -1726,6 +1746,7 @@ export class HungryMachinesPanel extends LitElement {
   }
   _auth: AuthState = authStore.state;
   _view: View = 'dashboard';
+  _healthAlerts: { name: string; message: string }[] = [];
   _schedulesLoading = false;
   _schedulesError: string | null = null;
   _schedules: SchedulesResponse | null = null;
@@ -1965,6 +1986,7 @@ export class HungryMachinesPanel extends LitElement {
         // and any change saved elsewhere. Schedules only change nightly, so
         // they stay cached.
         void this._refreshRates();
+        void this._refreshHealthAlerts();
       } else {
         void this._loadSchedulesIfNeeded();
       }
@@ -2050,6 +2072,7 @@ export class HungryMachinesPanel extends LitElement {
       // schedule row (or the persisted cache from a prior session).
       void this._refreshAppliancePrefs();
       void this._refreshSolarActuals();
+      void this._refreshHealthAlerts();
     } catch (err) {
       this._schedulesError =
         err instanceof Error && err.message
@@ -2059,6 +2082,33 @@ export class HungryMachinesPanel extends LitElement {
     } finally {
       this._schedulesLoading = false;
     }
+  }
+
+  // Best-effort: a failed call leaves the strip hidden, never an error.
+  private async _refreshHealthAlerts(): Promise<void> {
+    try {
+      const health = await getAppliancesHealth();
+      this._healthAlerts = health.appliances
+        .filter((a) => a.alert != null)
+        .map((a) => ({
+          name: a.name || a.appliance_type,
+          message: a.alert?.message ?? '',
+        }));
+    } catch {
+      this._healthAlerts = [];
+    }
+  }
+
+  private _renderHealthAlerts(): TemplateResult {
+    if (this._healthAlerts.length === 0) return html``;
+    return html`<div class="health-alert" role="alert">
+      <ul>
+        ${this._healthAlerts.map((a) => html`<li>${a.name}: ${a.message}</li>`)}
+      </ul>
+      <button type="button" @click=${() => this._selectView('health')}>
+        Open Connection Health
+      </button>
+    </div>`;
   }
 
   private async _refreshCalibrationStatuses(): Promise<void> {
@@ -3198,7 +3248,7 @@ export class HungryMachinesPanel extends LitElement {
         ${this._renderOptimizationToggle()}
         ${this._renderChartSizeToggle()}
       </div>
-      <div class="calibration-section">${this._renderPausedBanner()}${this._renderCalibrationBanners()}</div>
+      <div class="calibration-section">${this._renderHealthAlerts()}${this._renderPausedBanner()}${this._renderCalibrationBanners()}</div>
       <div class="cards">
         ${appliances.map((a) => this._renderApplianceCard(a, rates))}
         ${missingTypes.map((t) => this._renderExampleApplianceCard(t, rates))}
