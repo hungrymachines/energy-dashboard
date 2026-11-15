@@ -168,4 +168,52 @@ describe('authStore', () => {
     expect(getAccessToken()).toBeNull();
     expect(getRefreshToken()).toBeNull();
   });
+
+  it('keeps the stored sign-in when the service cannot be reached on load', async () => {
+    localStorage.setItem('hm_access_token', 'ACCESS-1');
+    localStorage.setItem('hm_refresh_token', 'REFRESH-1');
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('Failed to fetch');
+    }));
+
+    await authStore.hydrate();
+
+    expect(authStore.state.status).toBe('unauthed');
+    expect(authStore.state.error).toContain('still signed in');
+    expect(localStorage.getItem('hm_access_token')).toBe('ACCESS-1');
+    expect(localStorage.getItem('hm_refresh_token')).toBe('REFRESH-1');
+  });
+
+  it('signs out on load when the service refuses the refresh token', async () => {
+    localStorage.setItem('hm_access_token', 'ACCESS-1');
+    localStorage.setItem('hm_refresh_token', 'REFRESH-1');
+    vi.stubGlobal('fetch', vi.fn(async (input: string) =>
+      input.endsWith('/auth/refresh')
+        ? jsonResponse(400, { detail: 'Invalid Refresh Token: Already Used' })
+        : jsonResponse(401, {}),
+    ));
+
+    await authStore.hydrate();
+
+    expect(authStore.state.status).toBe('unauthed');
+    expect(localStorage.getItem('hm_refresh_token')).toBeNull();
+  });
+
+  it('saves the refreshed pair so the next load signs in without a password', async () => {
+    localStorage.setItem('hm_access_token', 'EXPIRED');
+    localStorage.setItem('hm_refresh_token', 'REFRESH-1');
+    vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
+      if (input.endsWith('/auth/refresh')) {
+        return jsonResponse(200, { access_token: 'ACCESS-2', refresh_token: 'REFRESH-2' });
+      }
+      const auth = new Headers(init?.headers ?? undefined).get('Authorization');
+      return auth === 'Bearer ACCESS-2' ? jsonResponse(200, SAMPLE_ME) : jsonResponse(401, {});
+    }));
+
+    await authStore.hydrate();
+
+    expect(authStore.state.status).toBe('authed');
+    expect(localStorage.getItem('hm_access_token')).toBe('ACCESS-2');
+    expect(localStorage.getItem('hm_refresh_token')).toBe('REFRESH-2');
+  });
 });

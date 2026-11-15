@@ -7,6 +7,7 @@ persisted in the config entry; the password is never stored.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -30,6 +31,16 @@ _LOGGER = logging.getLogger(__name__)
 _DEFAULT_EXPIRES_IN = 3600
 _EXPIRY_SAFETY_MARGIN = 60
 _REFRESH_AHEAD_SECONDS = 30
+
+# One refresh at a time per config entry. Each refresh token works once, so
+# two callers refreshing together would spend the same token twice.
+_REFRESH_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+class RefreshUnavailable(Exception):
+    """The service could not be reached or failed while refreshing. The
+    session may be fine, so callers retry later instead of asking the user
+    to sign in again."""
 
 
 def _shape(data: dict[str, Any], fallback_email: str = "") -> dict[str, Any]:
@@ -74,13 +85,24 @@ async def login(
 async def refresh(
     hass: HomeAssistant, refresh_token: str
 ) -> dict[str, Any] | None:
-    """Trade a refresh_token for a fresh access_token."""
+    """Trade a refresh_token for a fresh access_token.
+
+    Returns None when the service refuses the token (the session is over).
+    Raises RefreshUnavailable when it can't be reached or answers 5xx.
+    """
     session = aiohttp_client.async_get_clientsession(hass)
     try:
         async with session.post(
             f"{API_BASE_URL}/auth/refresh",
             json={"refresh_token": refresh_token},
         ) as resp:
+            if resp.status >= 500:
+                _LOGGER.warning(
+                    "Hungry Machines token refresh unavailable (status=%s); "
+                    "will retry",
+                    resp.status,
+                )
+                raise RefreshUnavailable
             if resp.status >= 400:
                 _LOGGER.warning(
                     "Hungry Machines token refresh failed (status=%s)",
@@ -88,9 +110,12 @@ async def refresh(
                 )
                 return None
             data = await resp.json()
-    except aiohttp.ClientError as err:
-        _LOGGER.warning("Hungry Machines token refresh network error: %s", err)
-        return None
+    except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+        _LOGGER.warning(
+            "Hungry Machines token refresh network error (%s); will retry",
+            type(err).__name__,
+        )
+        raise RefreshUnavailable from err
 
     if not data.get("access_token") or not data.get("refresh_token"):
         _LOGGER.warning("Hungry Machines refresh response missing tokens")
@@ -102,11 +127,27 @@ async def refresh(
 async def current_token(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> str | None:
-    """Return a still-valid access_token, refreshing if necessary."""
+    """Return a still-valid access_token, refreshing if necessary.
+
+    None means the session is over. Raises RefreshUnavailable when the
+    service can't be reached to refresh it.
+    """
     expires_at = entry.data.get(CONF_EXPIRES_AT, 0) or 0
     if expires_at > time.time() + _REFRESH_AHEAD_SECONDS:
         return entry.data.get(CONF_ACCESS_TOKEN)
 
+    lock = _REFRESH_LOCKS.setdefault(entry.entry_id, asyncio.Lock())
+    async with lock:
+        # Another caller may have refreshed while this one waited.
+        expires_at = entry.data.get(CONF_EXPIRES_AT, 0) or 0
+        if expires_at > time.time() + _REFRESH_AHEAD_SECONDS:
+            return entry.data.get(CONF_ACCESS_TOKEN)
+        return await _refresh_into_entry(hass, entry)
+
+
+async def _refresh_into_entry(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> str | None:
     refresh_token = entry.data.get(CONF_REFRESH_TOKEN)
     if not refresh_token:
         return None

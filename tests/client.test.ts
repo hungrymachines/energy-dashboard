@@ -119,4 +119,61 @@ describe('apiFetch', () => {
     expect(getAccessToken()).toBe('AAA');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('shares one refresh between requests that hit 401 together', async () => {
+    setTokens({ access: 'OLD', refresh: 'R1' });
+    let refreshes = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
+      if (input.endsWith('/auth/refresh')) {
+        refreshes++;
+        return jsonResponse(200, { access_token: 'NEW', refresh_token: 'R2' });
+      }
+      const auth = new Headers(init?.headers ?? undefined).get('Authorization');
+      return auth === 'Bearer NEW' ? jsonResponse(200, { ok: true }) : jsonResponse(401, {});
+    }));
+
+    await Promise.all([apiFetch('/a'), apiFetch('/b'), apiFetch('/c')]);
+
+    expect(refreshes).toBe(1);
+    expect(getRefreshToken()).toBe('R2');
+  });
+
+  it('hands the new pair to the persister after a refresh', async () => {
+    const { setTokenPersister } = await import('../src/api/client.js');
+    const saved: Array<[string, string]> = [];
+    setTokenPersister((a, r) => saved.push([a, r]));
+    try {
+      setTokens({ access: 'OLD', refresh: 'R1' });
+      let first = true;
+      vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+        if (input.endsWith('/auth/refresh')) {
+          return jsonResponse(200, { access_token: 'NEW', refresh_token: 'R2' });
+        }
+        if (first) { first = false; return jsonResponse(401, {}); }
+        return jsonResponse(200, {});
+      }));
+      await apiFetch('/ping');
+      expect(saved).toEqual([['NEW', 'R2']]);
+    } finally {
+      setTokenPersister(null);
+    }
+  });
+
+  it('keeps the session when the refresh cannot reach the service', async () => {
+    for (const failure of ['network', '503'] as const) {
+      setTokens({ access: 'OLD', refresh: 'R1' });
+      vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+        if (input.endsWith('/auth/refresh')) {
+          if (failure === 'network') throw new TypeError('Failed to fetch');
+          return jsonResponse(503, {});
+        }
+        return jsonResponse(401, {});
+      }));
+      const err = await apiFetch('/ping').catch((e) => e);
+      expect(err).toBeInstanceOf(ApiError);
+      expect((err as ApiError).status).toBe(503);
+      expect(getRefreshToken()).toBe('R1');
+      expect(getAccessToken()).toBe('OLD');
+    }
+  });
 });

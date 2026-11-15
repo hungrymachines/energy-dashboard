@@ -4,6 +4,16 @@ What's new in the Hungry Machines integration for Home Assistant. Update from HA
 
 <!-- Each release has a `summary` comment under its date: a few plain lines for announcements. It does not show on GitHub. -->
 
+## 3.14 — Connection Health and Building Info (unreleased)
+
+Draft notes, finished at release:
+
+- The command check in Diagnostics has one line per heating or cooling unit, shows only the comparisons each unit has data for, and groups the ones that come from a power sensor under their own heading.
+- Diagnostics ends with an **About these checks** section that explains each check: what it compares, when it flags a unit, and what to do.
+- A thermostat in heat or cool mode that sits idle between cycles now counts as matching the mode it was sent.
+- The panel and cards keep you signed in between visits, and through a short outage of the service or your internet.
+- The integration waits out a short outage instead of asking for your password again.
+
 ## 3.13 — Setpoints that follow your room sensor, a quick comfort preset, and rebuilt cards
 
 *November 13, 2026*

@@ -3,8 +3,10 @@
 Centralises the auth-token + JSON-POST/GET pattern that scheduler.py,
 readings.py, and weather.py all need. Each function:
 
-* Looks up a fresh access token via `auth.current_token`. On miss, returns
-  None and triggers reauth (the integration's standard recovery path).
+* Looks up a fresh access token via `auth.current_token`. When the session
+  is over, returns None and triggers reauth (the integration's standard
+  recovery path). When the service can't be reached to refresh it, returns
+  None and tries again next time, without asking the user to sign in.
 * Makes the request via `aiohttp_client.async_get_clientsession`, capped at
   a 20s total timeout so a wedged API can't hang the integration forever.
 * Treats 401 as another reauth trigger; logs other 4xx/5xx as warnings.
@@ -47,7 +49,14 @@ async def _authenticated_request(
     *,
     json: Any | None = None,
 ) -> Any | None:
-    token = await auth.current_token(hass, entry)
+    try:
+        token = await auth.current_token(hass, entry)
+    except auth.RefreshUnavailable:
+        _LOGGER.warning(
+            "Hungry Machines could not refresh its sign-in; will retry (path=%s)",
+            path,
+        )
+        return None
     if token is None:
         _LOGGER.warning(
             "Hungry Machines token unavailable; triggering reauth (path=%s)",

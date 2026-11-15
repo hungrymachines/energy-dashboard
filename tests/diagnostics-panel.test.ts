@@ -164,7 +164,7 @@ describe('hm-diagnostics-panel', () => {
 
     const badge = el.shadowRoot!.querySelector('.check-details summary .summary-badge');
     expect(badge!.classList.contains('intermittent')).toBe(true);
-    expect(badge!.textContent).toContain('Entity unreliable');
+    expect(badge!.textContent).toContain('Mode differs');
   });
 
   it('renders the thermostat_ignoring badge as bad, still collapsed', async () => {
@@ -227,7 +227,7 @@ describe('hm-diagnostics-panel', () => {
     expect(el.shadowRoot!.querySelector('.banner')).toBeNull();
     const badge = el.shadowRoot!.querySelector('.check-details summary .summary-badge');
     expect(badge!.classList.contains('intermittent')).toBe(true);
-    const msg = el.shadowRoot!.querySelector('.check-details .check-msg');
+    const msg = el.shadowRoot!.querySelector('.check-details .sensor-msg');
     expect(msg!.textContent).toContain('Upgrade');
   });
 
@@ -268,6 +268,130 @@ describe('hm-diagnostics-panel', () => {
     expect(el._report!.commanded_coverage_pct).toBe(100);
     expect(el._report!.setpoint_offset_avg_f).toBe(5.2);
     expect(el._report!.verdict).toBe('entity_unreliable');
+  });
+
+  it('renders one line per unit, named, under the worst unit\'s badge', async () => {
+    const unit = (over: Record<string, unknown>) => ({
+      lookback_hours: 24,
+      sample_count: 288,
+      commanded_coverage_pct: 100,
+      power_coverage_pct: 0,
+      entity_coverage_pct: 100,
+      commanded_vs_entity_mode_agreement_pct: 100,
+      commanded_vs_power_mode_agreement_pct: null,
+      entity_vs_power_mode_agreement_pct: null,
+      setpoint_offset_avg_f: 0.3,
+      setpoint_offset_max_f: 1.0,
+      setpoint_hold_fail_pct: 0,
+      fan_match_pct: null,
+      power_obeyed_pct: null,
+      verdict: 'healthy',
+      human_readable: 'The thermostat held the mode and temperature it was sent over the last 24 h.',
+      ...over,
+    });
+    const attic = unit({
+      appliance_id: 'a-2', name: 'Attic HVAC', verdict: 'thermostat_ignoring_commands',
+      setpoint_hold_fail_pct: 60, setpoint_offset_avg_f: 4.0, setpoint_offset_max_f: 8.8,
+      human_readable: 'The thermostat held the temperature it was sent on only 40% of readings in the last 24 h.',
+    });
+    _stubFetch({
+      ...attic,
+      appliances: [unit({ appliance_id: 'a-1', name: 'Main Floor HVAC' }), attic],
+    });
+    const el = mountPanel();
+    await flush(el);
+
+    const check = el.shadowRoot!.querySelector('details.check-details')!;
+    const top = check.querySelector('summary .summary-badge')!;
+    expect(top.textContent).toContain('Setpoint not held');
+    expect(top.classList.contains('bad')).toBe(true);
+    const rows = Array.from(check.querySelector('.sensor-grid')!.querySelectorAll('.sensor-row')).map((r) =>
+      r.textContent!.replace(/\s+/g, ' '),
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toContain('Main Floor HVAC');
+    expect(rows[0]).toContain('OK');
+    expect(rows[0]).toContain('Setpoint held100%');
+    expect(rows[1]).toContain('Attic HVAC');
+    expect(rows[1]).toContain('Setpoint not held');
+    expect(rows[1]).toContain('Setpoint held40%');
+    // Comparisons a unit has no data for are left out, not shown blank.
+    expect(rows[0]).not.toContain('Fan speed matched');
+    expect(rows[0]).not.toContain('—');
+    // No meter: the power group says so instead of listing empty rows.
+    const group = check.querySelector('.sensor-row .power-group')!;
+    expect(group.textContent).toContain('Power sensor');
+    expect((group.querySelector('.group-note') as HTMLElement).hidden).toBe(false);
+    expect((group.querySelector('.details') as HTMLElement).hidden).toBe(true);
+  });
+
+  it('groups the power comparisons after the thermostat ones', async () => {
+    _stubFetch({
+      lookback_hours: 24, sample_count: 288, commanded_coverage_pct: 100, power_coverage_pct: 97,
+      entity_coverage_pct: 100, commanded_vs_entity_mode_agreement_pct: 100,
+      commanded_vs_power_mode_agreement_pct: 94, entity_vs_power_mode_agreement_pct: 95,
+      setpoint_offset_avg_f: 0.2, setpoint_offset_max_f: 1.0, setpoint_hold_fail_pct: 0,
+      fan_match_pct: 90, power_obeyed_pct: 94, verdict: 'healthy', human_readable: 'Held.',
+    });
+    const el = mountPanel();
+    await flush(el);
+
+    const row = el.shadowRoot!.querySelector('.check-details .sensor-row')!;
+    const text = row.textContent!.replace(/\s+/g, ' ');
+    const group = row.querySelector('.power-group')!;
+    expect((group.querySelector('.group-note') as HTMLElement).hidden).toBe(true);
+    const groupText = group.textContent!.replace(/\s+/g, ' ');
+    expect(groupText).toContain('Readings with power97%');
+    expect(groupText).toContain('Power draw matched commands94%');
+    // Thermostat comparisons come first, the meter's last.
+    expect(text.indexOf('Fan speed matched')).toBeLessThan(text.indexOf('Power sensor'));
+    expect(text.indexOf('Setpoint held')).toBeLessThan(text.indexOf('Readings with power'));
+  });
+
+  it('explains every check in one collapsed section', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.includes('/integration/health/divergence')) {
+          return jsonResponse({
+            lookback_hours: 24, sample_count: 0, commanded_coverage_pct: 0, power_coverage_pct: 0,
+            entity_coverage_pct: 0, commanded_vs_entity_mode_agreement_pct: null,
+            commanded_vs_power_mode_agreement_pct: null, entity_vs_power_mode_agreement_pct: null,
+            setpoint_offset_avg_f: null, setpoint_offset_max_f: null, fan_match_pct: null,
+            power_obeyed_pct: null, verdict: 'no_data', human_readable: 'Too few commands.',
+          });
+        }
+        if (url.includes('/integration/sensors')) {
+          return jsonResponse({ sensors: [{
+            appliance_id: 'a-1', appliance_name: 'Front AC', config_key: 'power_sensor_entity_id',
+            label: 'Power', entity_id: 'sensor.ac_power', payload_field: 'power_watts',
+            populated_pct: 100, verdict: 'healthy', message: 'ok',
+          }] });
+        }
+        if (url.endsWith('/integration/health')) {
+          return jsonResponse({ status: 'healthy', message: '', appliances: [{
+            appliance_id: 'a-1', name: 'Front AC', status: 'healthy', message: '',
+            band_check: { sensor_gap_f: 1.0, offset_limit_f: 3, min_width_f: null, narrow: [] },
+          }] });
+        }
+        return jsonResponse({});
+      }),
+    );
+    const el = mountPanel();
+    await flush(el);
+
+    const root = el.shadowRoot!;
+    const badge = root.querySelector('.check-details summary .summary-badge')!;
+    expect(badge.textContent).toContain('Nothing to check');
+    const abouts = root.querySelectorAll('details.about');
+    expect(abouts).toHaveLength(1);
+    const about = abouts[0] as HTMLDetailsElement;
+    expect(about.open).toBe(false);
+    expect(about.querySelector('summary')!.textContent).toContain('About these checks');
+    const headings = Array.from(about.querySelectorAll('h4')).map((h) => h.textContent);
+    expect(headings).toEqual(['Command check', 'Sensor health', 'Readings', 'Comfort ranges']);
+    expect(about.textContent).toContain('90 minutes');
   });
 
   it('does not render details when sample_count is 0', async () => {

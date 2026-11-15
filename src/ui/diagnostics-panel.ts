@@ -1,26 +1,29 @@
 import { LitElement, html, css } from 'lit';
+import type { TemplateResult } from 'lit';
 import * as diagnostics from '../api/diagnostics.js';
 import type {
   ApplianceHealth,
   DivergenceReport,
   ConfiguredSensor,
+  UnitDivergence,
 } from '../api/diagnostics.js';
 import { offsetNote, runLabel } from '../utils/band-check.js';
 import { formatDelta, temperatureUnitStore } from '../utils/temperature.js';
+import type { TempUnit } from '../utils/temperature.js';
 import { getIntegrationVersion } from '../utils/version.js';
 
 /**
  * `<hm-diagnostics-panel>` — three-signal divergence renderer.
  *
  * Renders the verdict from `/api/v1/integration/health/divergence` as
- * a small badge on a collapsed "Command check" row; the one-line
- * explanation and the per-signal coverage / agreement table sit inside
- * it. The verdict is diagnostic, so it never leads the dashboard as a
- * banner — the same treatment the "Sensor health" row gets. The
- * panel embeds it under the integration-health badge so users with
- * misbehaving thermostats (the Tuya / mini-split scenario the
- * reconciler was built for) get a one-line "your thermostat reports
- * unreliable state" explanation without having to mine SQL.
+ * a small badge on a collapsed "Command check" row, with one line per
+ * unit inside it: its verdict, the one-line explanation, and the
+ * comparisons that could be made for it. The verdict is diagnostic, so
+ * it never leads the dashboard as a banner — the same treatment the
+ * "Sensor health" row gets.
+ *
+ * One collapsed "About these checks" section closes the panel: what
+ * each row compares, when it flags a unit and what to do about it.
  *
  * Two more collapsed rows come from `/api/v1/integration/health`, one
  * line per heating or cooling unit: "Readings" (are they arriving, and
@@ -222,6 +225,74 @@ export class HmDiagnosticsPanel extends LitElement {
     .diag-part {
       display: contents;
     }
+    .sensor-row .summary-badge {
+      margin-left: 8px;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 1px 7px;
+      border-radius: 999px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .sensor-row .details {
+      margin-top: 6px;
+      /* One label width for both groups, so their values line up. */
+      grid-template-columns: minmax(0, 15em) auto;
+    }
+    .power-group {
+      margin-top: 8px;
+      padding-top: 6px;
+      border-top: 1px dashed rgba(100, 116, 139, 0.3);
+    }
+    .group-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--hm-muted, #64748B);
+    }
+    .power-group .details {
+      margin-top: 4px;
+    }
+    .group-note {
+      margin-top: 4px;
+      font-size: 13px;
+      line-height: 1.4;
+      color: var(--hm-muted, #64748B);
+    }
+    .about {
+      margin-top: 14px;
+      font-size: 13px;
+      color: var(--hm-muted, #64748B);
+    }
+    .about > summary {
+      margin-top: 0;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .about h4 {
+      margin: 12px 0 0;
+      font-size: 13px;
+      color: var(--hm-text, #0F172A);
+    }
+    .about p {
+      margin: 6px 0 0;
+      line-height: 1.45;
+    }
+    .about dl {
+      margin: 6px 0 0;
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 4px 12px;
+      line-height: 1.4;
+    }
+    .about dt {
+      color: var(--hm-text, #0F172A);
+      font-weight: 600;
+    }
+    .about dd {
+      margin: 0;
+    }
     .versions {
       margin-top: 12px;
       display: flex;
@@ -320,6 +391,7 @@ export class HmDiagnosticsPanel extends LitElement {
     // keeps the parts aligned.
     return html`
       <div class="diag-body">${this._renderBody()}</div>
+      <div class="about-wrap">${_about(temperatureUnitStore.state.unit)}</div>
       <div class="versions">
         <span class="version-line">Integration ${_fmtVersion(getIntegrationVersion())}</span>
         <span class="version-line">API build ${this._apiBuild || '—'}</span>
@@ -351,38 +423,18 @@ export class HmDiagnosticsPanel extends LitElement {
     // two interpolations sharing the parent.
     const tone = _toneFor(r.verdict);
     const badge = _badgeFor(r.verdict);
+    // One line per unit; an older server, or one that can't name the
+    // units, sends a single report, which renders as one unnamed line.
+    const named = Array.isArray(r.appliances) && r.appliances.length > 0;
+    const units: Array<DivergenceReport | UnitDivergence> = named ? r.appliances! : [r];
     return html`
       <details class="check-details">
         <summary>
           Command check
           <span class="summary-badge ${tone}">${badge}</span>
-          <span class="window">${r.sample_count > 0
-            ? `last ${r.lookback_hours} h, ${r.sample_count} readings`
-            : ''}</span>
+          <span class="window">last ${r.lookback_hours} h</span>
         </summary>
-        <p class="check-msg">${r.human_readable}</p>
-        ${r.sample_count > 0
-          ? html`
-              <div class="details">
-                <span class="label">Commanded coverage</span>
-                <span class=${_pctClass(r.commanded_coverage_pct)}>${_fmtPct(r.commanded_coverage_pct)}</span>
-                <span class="label">Power coverage</span>
-                <span class=${_pctClass(r.power_coverage_pct)}>${_fmtPct(r.power_coverage_pct)}</span>
-                <span class="label">Entity coverage</span>
-                <span class=${_pctClass(r.entity_coverage_pct)}>${_fmtPct(r.entity_coverage_pct)}</span>
-                <span class="label">Commanded vs entity (mode)</span>
-                <span class=${_pctClass(r.commanded_vs_entity_mode_agreement_pct, 50)}>${_fmtPct(r.commanded_vs_entity_mode_agreement_pct)}</span>
-                <span class="label">Commanded vs power (mode)</span>
-                <span class=${_pctClass(r.commanded_vs_power_mode_agreement_pct, 70)}>${_fmtPct(r.commanded_vs_power_mode_agreement_pct)}</span>
-                <span class="label">Setpoint offset (avg / max)</span>
-                <span class=${_offsetClass(r.setpoint_offset_avg_f)}>${_fmtOffset(r.setpoint_offset_avg_f)} / ${_fmtOffset(r.setpoint_offset_max_f)}</span>
-                <span class="label">Fan match</span>
-                <span class=${_pctClass(r.fan_match_pct, 50)}>${_fmtPct(r.fan_match_pct)}</span>
-                <span class="label">Power obeyed commands</span>
-                <span class=${_pctClass(r.power_obeyed_pct, 70)}>${_fmtPct(r.power_obeyed_pct)}</span>
-              </div>
-            `
-          : null}
+        <div class="sensor-grid">${units.map((u) => _renderCheckUnit(u, named))}</div>
       </details>
       <div class="diag-part">${this._renderSensorBlock()}</div>
       <div class="diag-part">${this._renderUnitBlocks()}</div>
@@ -572,34 +624,179 @@ function _badgeFor(v: DivergenceReport['verdict']): string {
     case 'healthy':
       return 'OK';
     case 'entity_unreliable':
-      return 'Entity unreliable';
+      return 'Mode differs';
     case 'thermostat_ignoring_commands':
-      return 'AC not responding';
+      return 'Setpoint not held';
     case 'commanded_missing':
       return 'Upgrade integration';
     case 'no_data':
-      return 'No data';
+      return 'Nothing to check';
     default:
       return 'Unknown';
   }
 }
 
-function _fmtPct(v: number | null): string {
-  return v === null ? '—' : `${v.toFixed(0)}%`;
+/** One unit's line in the Command check. The unit's name and badge show
+ * only when the server sent one report per unit. */
+function _renderCheckUnit(u: DivergenceReport | UnitDivergence, named: boolean): TemplateResult {
+  const tone = _toneFor(u.verdict);
+  const glyph = tone === 'healthy' ? '✓' : tone === 'muted' ? '–' : '!';
+  const icon = tone === 'healthy' ? 'ok' : tone === 'bad' ? 'bad' : 'warn';
+  const name = 'name' in u ? u.name : null;
+  const rows = _checkRows(u);
+  const power = _powerRows(u);
+  const hasPower = u.power_coverage_pct > 0;
+  return html`
+    <div class="sensor-row ${tone}">
+      <span class="sensor-icon ${icon}">${glyph}</span>
+      <div class="sensor-body">
+        <span class="sensor-label" ?hidden=${!named}>${name || 'Unit'}</span>
+        <span class="summary-badge ${tone}" ?hidden=${!named}>${_badgeFor(u.verdict)}</span>
+        <div class="sensor-msg">${u.human_readable}</div>
+        <div class="details" ?hidden=${rows.length === 0}>${rows.map(_detailRow)}</div>
+        <div class="power-group" ?hidden=${u.sample_count === 0}>
+          <div class="group-title">Power sensor</div>
+          <div class="details" ?hidden=${!hasPower}>${power.map(_detailRow)}</div>
+          <div class="group-note" ?hidden=${hasPower}>
+            No power readings from this unit. A power sensor that measures this unit alone lets the
+            check confirm it ran when told to run and stopped when told to stop.
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
-function _fmtOffset(v: number | null): string {
-  return v === null ? '—' : formatDelta(v, temperatureUnitStore.state.unit);
+function _detailRow([label, value, cls]: [string, string, string]): TemplateResult {
+  return html`<span class="label">${label}</span><span class=${cls}>${value}</span>`;
 }
 
-function _pctClass(v: number | null, threshold = 50): string {
-  if (v === null) return '';
+/** The comparisons a power sensor makes possible, kept apart from the
+ * thermostat's own so it is plain they all come from the meter. */
+function _powerRows(u: DivergenceReport | UnitDivergence): Array<[string, string, string]> {
+  const rows: Array<[string, string, string]> = [];
+  if (u.sample_count === 0 || !(u.power_coverage_pct > 0)) return rows;
+  rows.push(['Readings with power', _fmtPct(u.power_coverage_pct), _pctClass(u.power_coverage_pct, 80)]);
+  if (u.power_obeyed_pct !== null) {
+    rows.push(['Power draw matched commands', _fmtPct(u.power_obeyed_pct), _pctClass(u.power_obeyed_pct, 70)]);
+  }
+  return rows;
+}
+
+/** The thermostat comparisons that could be made for a unit, as
+ * [label, value, class]. A comparison the unit has no data for is left
+ * out, not shown as a blank. Power comparisons are `_powerRows`. */
+function _checkRows(u: DivergenceReport | UnitDivergence): Array<[string, string, string]> {
+  const unit = temperatureUnitStore.state.unit;
+  const rows: Array<[string, string, string]> = [];
+  if (u.sample_count === 0) return rows;
+  rows.push(['Readings with a command', `${_fmtPct(u.commanded_coverage_pct)} of ${u.sample_count}`, '']);
+  const mode = u.commanded_vs_entity_mode_agreement_pct;
+  if (mode !== null) rows.push(['Mode matched', _fmtPct(mode), _pctClass(mode, 50)]);
+  const fail = u.setpoint_hold_fail_pct;
+  if (typeof fail === 'number') {
+    rows.push(['Setpoint held', _fmtPct(100 - fail), _pctClass(100 - fail, 100 - SETPOINT_FAIL_PCT)]);
+  }
+  if (u.setpoint_offset_avg_f !== null) {
+    const max = u.setpoint_offset_max_f;
+    rows.push([
+      'Setpoint gap (avg / max)',
+      `${formatDelta(u.setpoint_offset_avg_f, unit)}${max !== null ? ` / ${formatDelta(max, unit)}` : ''}`,
+      u.setpoint_offset_avg_f <= SETPOINT_TOLERANCE_F ? 'ok' : 'bad',
+    ]);
+  }
+  if (u.fan_match_pct !== null) rows.push(['Fan speed matched', _fmtPct(u.fan_match_pct), _pctClass(u.fan_match_pct, 50)]);
+  return rows;
+}
+
+/** How far a setpoint may sit from the one sent and still count as held, °F. */
+const SETPOINT_TOLERANCE_F = 2;
+/** Share of readings off by more than that which flags a unit. */
+const SETPOINT_FAIL_PCT = 30;
+
+function _fmtPct(v: number): string {
+  return `${v.toFixed(0)}%`;
+}
+
+function _pctClass(v: number, threshold = 50): string {
   return v >= threshold ? 'ok' : 'bad';
 }
 
-function _offsetClass(v: number | null): string {
-  if (v === null) return '';
-  return v < 1.0 ? 'ok' : 'bad';
+/** The one collapsed "About these checks" section under every row. */
+function _about(unit: TempUnit): TemplateResult {
+  const tol = formatDelta(SETPOINT_TOLERANCE_F, unit, 0);
+  return html`
+    <details class="about">
+      <summary>About these checks</summary>
+      <h4>Command check</h4>
+      <p>
+        Compares what Hungry Machines sent each unit with what its thermostat reports, over the
+        last 24 hours.
+      </p>
+      <dl>
+        <dt>Readings with a command</dt>
+        <dd>How many readings were taken while a command was in force.</dd>
+        <dt>Mode matched</dt>
+        <dd>How often the thermostat was set to the mode it was sent. Heat-cool and auto count for heat or cool.</dd>
+        <dt>Setpoint held</dt>
+        <dd>How often its setpoint was within ${tol} of the one sent.</dd>
+        <dt>Setpoint gap</dt>
+        <dd>The average and the largest difference between the two.</dd>
+        <dt>Fan speed matched</dt>
+        <dd>Shown only for a unit whose thermostat reports its fan speed.</dd>
+      </dl>
+      <p>
+        The <strong>Power sensor</strong> group needs a power sensor that measures this unit alone.
+        Without one it says so, and the rest of the check still runs.
+      </p>
+      <dl>
+        <dt>Readings with power</dt>
+        <dd>How many readings carried a power value.</dd>
+        <dt>Power draw matched commands</dt>
+        <dd>
+          How often the unit drew power when told to heat or cool, and drew none when told to turn
+          off. A unit sitting idle because the room has already reached its setpoint counts as
+          matched.
+        </dd>
+      </dl>
+      <p>
+        A unit is flagged when it held the setpoint on fewer than ${100 - SETPOINT_FAIL_PCT}% of readings
+        (Setpoint not held), or was in the mode it was sent on fewer than half (Mode differs). A
+        flag needs at least an hour of commands. Idle days, pauses and a mode set at the thermostat
+        send none, and show as Nothing to check. If you changed the thermostat yourself, there is
+        nothing to fix. If you didn't, check that no other automation or schedule is setting it, and
+        that the thermostat accepts the setpoint it was sent.
+      </p>
+      <h4>Sensor health</h4>
+      <p>
+        Checks each extra sensor added to a unit (indoor temperature, humidity or power) over the
+        last 6 hours, by how many readings carried a value from it. 80% or more is healthy. Below
+        that it is intermittent, and under 5% it needs attention: Home Assistant could not read a
+        number from it. To fix one, open the entity in Home Assistant and check that it exists and
+        shows a number, then check the entity ID in the unit's settings here.
+      </p>
+      <h4>Readings</h4>
+      <p>
+        Checks that each unit's readings arrive and change, over the last 6 hours. Readings are
+        taken about every 5 minutes and uploaded about once an hour, so a unit is flagged when its
+        newest reading is more than 90 minutes old, or when its temperature, humidity, mode and
+        setpoint have not changed at all for 6 hours. Readings that stop usually mean Home Assistant
+        was offline or restarting. Readings that never change usually mean the thermostat or its
+        sensor stopped updating in Home Assistant.
+      </p>
+      <h4>Comfort ranges</h4>
+      <p>
+        Some units read the room with their own built-in sensor, which can read differently from
+        the room sensor your comfort range is written for. Hungry Machines learns that difference
+        from your readings and moves the unit's setpoint to hold the room in range, by up to
+        ${formatDelta(3, unit, 0)} outside it (${formatDelta(6, unit, 0)} with the wider offset on).
+        A unit is marked when the difference is more than that, or when some hours have a range
+        narrower than the unit can hold. In those hours it can stop while the room is still outside
+        the range. This is advice, not a fault: widen those hours, map a different temperature
+        sensor to the unit, or leave them as they are.
+      </p>
+    </details>
+  `;
 }
 
 if (!customElements.get('hm-diagnostics-panel')) {

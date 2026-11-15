@@ -1,4 +1,4 @@
-import { ApiError, clearTokens, setTokens } from './api/client.js';
+import { ApiError, clearTokens, setTokenPersister, setTokens } from './api/client.js';
 import {
   getMe,
   login as apiLogin,
@@ -73,6 +73,17 @@ class AuthStore {
 
   private readonly listeners = new Set<AuthListener>();
 
+  constructor() {
+    // A refresh hands out a new refresh token and spends the old one, so
+    // the new pair is saved at once; a stale stored pair signs the user
+    // out on the next page load.
+    setTokenPersister((access, refresh) => {
+      safeSet('hm_access_token', access);
+      safeSet('hm_refresh_token', refresh);
+      if (this.state.status !== 'unauthed') this.setState({ access, refresh });
+    });
+  }
+
   subscribe(listener: AuthListener): () => void {
     this.listeners.add(listener);
     return () => {
@@ -122,13 +133,20 @@ class AuthStore {
       const user = await getMe();
       this.setState({ user, status: 'authed', error: null });
     } catch (err) {
-      this.dropTokens();
+      // Only a refused session signs the user out. When the service is
+      // down or the device is offline the stored sign-in is kept, so the
+      // next load works without a password.
+      const refused = err instanceof ApiError && err.status === 401;
+      if (refused) this.dropTokens();
+      else clearTokens();
       this.setState({
         access: null,
         refresh: null,
         user: null,
         status: 'unauthed',
-        error: errorMessage(err, 'Session expired'),
+        error: refused
+          ? errorMessage(err, 'Session expired')
+          : 'Hungry Machines could not be reached. Reload to try again; you are still signed in.',
       });
     }
   }

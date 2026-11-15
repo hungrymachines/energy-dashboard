@@ -83,29 +83,59 @@ interface RefreshResponse {
   refresh_token?: unknown;
 }
 
-async function attemptRefresh(): Promise<boolean> {
-  if (!refreshToken) return false;
-  const currentRefresh = refreshToken;
+/** `ok`: new tokens in hand. `rejected`: the server refused the refresh
+ * token, so the session is over. `unavailable`: the server could not be
+ * reached or failed, so the session may be fine and is kept. */
+type RefreshResult = 'ok' | 'rejected' | 'unavailable';
+
+let refreshInFlight: Promise<RefreshResult> | null = null;
+let tokenPersister: ((access: string, refresh: string) => void) | null = null;
+
+/** Called with the new pair after every successful refresh. Each refresh
+ * token works once, so a pair that is not saved signs the user out on the
+ * next page load. */
+export function setTokenPersister(fn: ((access: string, refresh: string) => void) | null): void {
+  tokenPersister = fn;
+}
+
+/** One refresh at a time: requests that hit 401 together share it, so the
+ * same refresh token is never sent twice. */
+function attemptRefresh(): Promise<RefreshResult> {
+  if (!refreshToken) return Promise.resolve('rejected');
+  if (!refreshInFlight) {
+    refreshInFlight = runRefresh(refreshToken).finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
+}
+
+async function runRefresh(currentRefresh: string): Promise<RefreshResult> {
+  let resp: Response;
   try {
-    const resp = await fetch(`${getApiBase()}/auth/refresh`, {
+    resp = await fetch(`${getApiBase()}/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refresh_token: currentRefresh }),
     });
-    if (!resp.ok) return false;
-    const body = (await parseJson(resp)) as RefreshResponse | null;
-    if (!body || typeof body !== 'object') return false;
-    const newAccess = body.access_token;
-    const newRefresh = body.refresh_token;
-    if (typeof newAccess !== 'string' || !newAccess) return false;
-    accessToken = newAccess;
-    if (typeof newRefresh === 'string' && newRefresh) {
-      refreshToken = newRefresh;
-    }
-    return true;
   } catch {
-    return false;
+    return 'unavailable';
   }
+  if (resp.status >= 500) return 'unavailable';
+  if (!resp.ok) return 'rejected';
+  const body = (await parseJson(resp)) as RefreshResponse | null;
+  if (!body || typeof body !== 'object') return 'unavailable';
+  const newAccess = body.access_token;
+  const newRefresh = body.refresh_token;
+  if (typeof newAccess !== 'string' || !newAccess) return 'unavailable';
+  // Signed out while the refresh was in flight: don't bring the session back.
+  if (refreshToken !== currentRefresh) return refreshToken ? 'ok' : 'rejected';
+  accessToken = newAccess;
+  if (typeof newRefresh === 'string' && newRefresh) {
+    refreshToken = newRefresh;
+  }
+  tokenPersister?.(accessToken, refreshToken ?? currentRefresh);
+  return 'ok';
 }
 
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -126,7 +156,10 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
 
   if (resp.status === 401 && refreshToken) {
     const refreshed = await attemptRefresh();
-    if (!refreshed) {
+    if (refreshed === 'unavailable') {
+      throw new ApiError(503, 'Hungry Machines could not be reached. Try again in a moment.');
+    }
+    if (refreshed === 'rejected') {
       const body = await parseJson(resp);
       clearTokens();
       throw new ApiError(401, pickDetail(body, 'Unauthorized'));

@@ -124,3 +124,23 @@ async def test_post_resume_posts_to_the_appliance_route_and_reports_failure() ->
     req.assert_awaited_once_with(
         hass, entry, "POST", "/api/v1/appliances/hvac-1/resume"
     )
+
+
+@pytest.mark.asyncio
+async def test_unreachable_refresh_retries_later_without_reauth() -> None:
+    """The service being down while a token needs refreshing is not a
+    reason to ask the user for their password."""
+    entry = _entry()
+    with patch.object(auth, "current_token", AsyncMock(side_effect=auth.RefreshUnavailable)):
+        result = await api._authenticated_request(MagicMock(), entry, "GET", "/api/v1/schedules")
+    assert result is None
+    entry.async_start_reauth.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_refused_session_still_triggers_reauth() -> None:
+    entry = _entry()
+    with patch.object(auth, "current_token", AsyncMock(return_value=None)):
+        result = await api._authenticated_request(MagicMock(), entry, "GET", "/api/v1/schedules")
+    assert result is None
+    entry.async_start_reauth.assert_called_once()

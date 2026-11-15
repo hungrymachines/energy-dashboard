@@ -5,13 +5,10 @@ import type { BandCheck } from '../utils/band-check.js';
  * Typed wrappers for `/api/v1/integration/health` and
  * `/api/v1/integration/health/divergence`.
  *
- * The basic integration-health endpoint already powers the existing
- * "Connection: OK / Stale / Frozen" banner. The divergence endpoint
- * is new (Phase 6 of the ground-truth signal layer) — it summarizes
- * how well the three signal sources (commanded / power / entity)
- * agree, so users with misbehaving thermostats (Tuya, mini-splits)
- * see "your AC reports unreliable state" instead of silently bad
- * thermal models.
+ * The basic integration-health endpoint powers the "Readings" row. The
+ * divergence endpoint compares what each unit was sent with what its
+ * thermostat reports (set mode, setpoint, and fan speed or power when
+ * the unit has them), one report per unit.
  */
 
 export type IntegrationHealthStatus =
@@ -62,10 +59,21 @@ export interface DivergenceReport {
   entity_vs_power_mode_agreement_pct: number | null;
   setpoint_offset_avg_f: number | null;
   setpoint_offset_max_f: number | null;
+  /** Share of readings whose setpoint sat more than 2 °F from the one sent. */
+  setpoint_hold_fail_pct?: number | null;
   fan_match_pct: number | null;
   power_obeyed_pct: number | null;
   verdict: DivergenceVerdict;
   human_readable: string;
+  /** One report per heating or cooling unit; the fields above are the
+   * unit that most needs attention. Absent on older servers, and empty
+   * when no unit can be named. */
+  appliances?: UnitDivergence[];
+}
+
+export interface UnitDivergence extends Omit<DivergenceReport, 'appliances'> {
+  appliance_id: string;
+  name: string | null;
 }
 
 export function getIntegrationHealth(): Promise<IntegrationHealth> {

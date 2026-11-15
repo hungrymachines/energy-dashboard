@@ -199,3 +199,58 @@ async def test_current_token_returns_none_when_refresh_fails(
         token = await auth.current_token(hass, entry)
     assert token is None
     hass.config_entries.async_update_entry.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["network", "timeout", "500"])
+async def test_refresh_raises_unavailable_when_service_cannot_answer(
+    hass: MagicMock, failure: str,
+) -> None:
+    if failure == "network":
+        session = _session_with_post_raising(aiohttp.ClientConnectionError("down"))
+    elif failure == "timeout":
+        session = _session_with_post_raising(TimeoutError())
+    else:
+        session = _session_with_post(_mock_response(500, {}))
+    with patch.object(auth.aiohttp_client, "async_get_clientsession", return_value=session):
+        with pytest.raises(auth.RefreshUnavailable):
+            await auth.refresh(hass, "rtok")
+
+
+@pytest.mark.asyncio
+async def test_refresh_returns_none_when_token_refused(hass: MagicMock) -> None:
+    session = _session_with_post(_mock_response(400, {"error": "already used"}))
+    with patch.object(auth.aiohttp_client, "async_get_clientsession", return_value=session):
+        assert await auth.refresh(hass, "rtok") is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_callers_share_one_refresh(hass: MagicMock) -> None:
+    import asyncio
+
+    entry = MagicMock()
+    entry.entry_id = "shared"
+    entry.data = {
+        CONF_ACCESS_TOKEN: "old",
+        CONF_REFRESH_TOKEN: "rtok",
+        CONF_EXPIRES_AT: 0,
+    }
+
+    def _update(_entry, data):
+        entry.data = data
+
+    hass.config_entries.async_update_entry.side_effect = _update
+
+    async def _slow_refresh(_hass, _token):
+        await asyncio.sleep(0.01)
+        return {
+            CONF_ACCESS_TOKEN: "new",
+            CONF_REFRESH_TOKEN: "newr",
+            CONF_EXPIRES_AT: time.time() + 3600,
+        }
+
+    with patch.object(auth, "refresh", AsyncMock(side_effect=_slow_refresh)) as refresh_mock:
+        tokens = await asyncio.gather(*(auth.current_token(hass, entry) for _ in range(3)))
+
+    assert tokens == ["new", "new", "new"]
+    refresh_mock.assert_awaited_once()
