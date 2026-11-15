@@ -72,6 +72,7 @@ describe('hungry-machines-panel', () => {
   });
 
   afterEach(() => {
+    window.location.hash = '';
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     document.body.innerHTML = '';
@@ -108,9 +109,9 @@ describe('hungry-machines-panel', () => {
     expect(header!.textContent).toContain('Hungry Machines');
 
     const tabs = root.querySelectorAll<HTMLButtonElement>('nav.tabs button');
-    expect(tabs.length).toBe(2);
+    expect(tabs.length).toBe(4);
     expect(tabs[0]!.textContent?.trim()).toBe('Dashboard');
-    expect(tabs[1]!.textContent?.trim()).toBe('Settings');
+    expect(tabs[3]!.textContent?.trim()).toBe('Settings');
 
     const footer = root.querySelector('footer.app-footer');
     expect(footer).not.toBeNull();

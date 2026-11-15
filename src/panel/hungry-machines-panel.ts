@@ -79,7 +79,22 @@ type HassLike = {
 // How often the solar card re-reads its production sensor's history.
 const SOLAR_ACTUALS_REFRESH_MS = 5 * 60 * 1000;
 
-type View = 'dashboard' | 'settings';
+type View = 'dashboard' | 'health' | 'building' | 'settings';
+
+const VIEWS: readonly View[] = ['dashboard', 'health', 'building', 'settings'];
+const VIEW_LABELS: Record<View, string> = {
+  dashboard: 'Dashboard',
+  health: 'Connection Health',
+  building: 'Building Info',
+  settings: 'Settings',
+};
+
+// The tab lives in the URL hash so a reload or a shared link lands on it.
+// Anything unknown or empty falls back to the dashboard.
+export function viewFromHash(hash: string): View {
+  const name = hash.replace(/^#/, '');
+  return (VIEWS as readonly string[]).includes(name) ? (name as View) : 'dashboard';
+}
 
 const TYPE_LABELS: Record<ApplianceType, string> = {
   hvac: 'HVAC',
@@ -1836,6 +1851,8 @@ export class HungryMachinesPanel extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
+    this._view = viewFromHash(window.location.hash);
+    window.addEventListener('hashchange', this._onHashChange);
     this._auth = authStore.state;
     this._zoneDraft = this._auth.user?.pricing_location ?? 1;
     this._weatherEntityDraft = this._auth.user?.weather_entity_id ?? '';
@@ -1905,6 +1922,7 @@ export class HungryMachinesPanel extends LitElement {
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    window.removeEventListener('hashchange', this._onHashChange);
     if (this._unsubscribeUnit) {
       this._unsubscribeUnit();
       this._unsubscribeUnit = null;
@@ -1935,8 +1953,16 @@ export class HungryMachinesPanel extends LitElement {
     }
   }
 
-  private _selectView(view: View): void {
+  private _onHashChange = (): void => {
+    const view = viewFromHash(window.location.hash);
+    if (view !== this._view) this._selectView(view, false);
+  };
+
+  private _selectView(view: View, writeHash = true): void {
     this._view = view;
+    if (writeHash && window.location.hash !== `#${view}`) {
+      window.location.hash = view;
+    }
     if (view === 'dashboard') {
       if (this._schedulesFetched) {
         // Revisiting the dashboard — refresh just the rate curve so the
@@ -3025,6 +3051,19 @@ export class HungryMachinesPanel extends LitElement {
     return this._renderAuthed();
   }
 
+  private _renderView(view: View): TemplateResult {
+    switch (view) {
+      case 'dashboard':
+        return this._renderDashboard();
+      case 'health':
+        return html`<div class="health-placeholder" data-view="health"></div>`;
+      case 'building':
+        return html`<div class="building-placeholder" data-view="building"></div>`;
+      default:
+        return this._renderSettings();
+    }
+  }
+
   private _renderAuthed() {
     const email = this._auth.user?.email ?? '';
     const view = this._view;
@@ -3033,25 +3072,21 @@ export class HungryMachinesPanel extends LitElement {
         <h1>Hungry Machines</h1>
       </header>
       <nav class="tabs" role="tablist">
-        <button
-          type="button"
-          role="tab"
-          aria-selected=${view === 'dashboard' ? 'true' : 'false'}
-          @click=${() => this._selectView('dashboard')}
-        >
-          Dashboard
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected=${view === 'settings' ? 'true' : 'false'}
-          @click=${() => this._selectView('settings')}
-        >
-          Settings
-        </button>
+        ${VIEWS.map(
+          (v) => html`
+            <button
+              type="button"
+              role="tab"
+              aria-selected=${view === v ? 'true' : 'false'}
+              @click=${() => this._selectView(v)}
+            >
+              ${VIEW_LABELS[v]}
+            </button>
+          `,
+        )}
       </nav>
       <section class="content">
-        ${view === 'dashboard' ? this._renderDashboard() : this._renderSettings()}
+        ${this._renderView(view)}
       </section>
       <footer class="app-footer">
         <span class="email">${email}</span>
