@@ -10,6 +10,7 @@ import { HmOptimizationChart } from './ui/optimization-chart.js';
 import { HmConnectionHealth } from './ui/connection-health.js';
 import { HmBuildingInfo } from './ui/building-info.js';
 import { HmRankingsBadges } from './ui/rankings-badges.js';
+import { HmHomeFacts } from './ui/home-facts.js';
 import { HmExportRateChart } from './ui/export-rate-chart.js';
 
 declare global {
@@ -51,6 +52,9 @@ if (!customElements.get('hm-optimization-chart')) {
 }
 if (!customElements.get('hm-rankings-badges')) {
   customElements.define('hm-rankings-badges', HmRankingsBadges);
+}
+if (!customElements.get('hm-home-facts')) {
+  customElements.define('hm-home-facts', HmHomeFacts);
 }
 if (!customElements.get('hm-building-info')) {
   customElements.define('hm-building-info', HmBuildingInfo);

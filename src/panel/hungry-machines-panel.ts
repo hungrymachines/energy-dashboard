@@ -3106,6 +3106,7 @@ export class HungryMachinesPanel extends LitElement {
         return html`<div data-view="building">
           <hm-building-info></hm-building-info>
           <hm-rankings-badges></hm-rankings-badges>
+          <hm-home-facts></hm-home-facts>
         </div>`;
       default:
         return this._renderSettings();
