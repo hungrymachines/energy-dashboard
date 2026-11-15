@@ -119,6 +119,25 @@ const HVAC_INDOOR_HUMIDITY_FIELD = {
   domain: 'sensor',
 } as const;
 
+// Every machine except HVAC, dehumidifier and solar can map an optional
+// power sensor. It sits with the other optional sensors in the entity
+// section, so it shows for every type that has a control entity.
+const MACHINE_POWER_TYPES: ReadonlyArray<ApplianceType> = [
+  'ev_charger',
+  'home_battery',
+  'water_heater',
+  'robot',
+  'pool_pump',
+  'hot_tub',
+];
+
+const MACHINE_POWER_FIELD = {
+  name: 'power_sensor_entity_id',
+  label: 'Power sensor (optional)',
+  help: 'Optional. sensor.* exposing this machine\'s power draw in W or kW (built-in meter or smart plug). Must measure this machine alone: if the meter also covers other equipment, leave this blank.',
+  domain: 'sensor',
+} as const;
+
 // Dehumidifier aux sensors. Unlike HVAC (which reads temp off the climate
 // entity), a `humidifier.*` entity has no thermistor, so the room-temp
 // sensor is REQUIRED — it's the only temp source and every sensor reading
@@ -169,6 +188,7 @@ function auxFieldNamesFor(t: ApplianceType): string[] {
   if (aux) names.push(aux.name);
   if (t === 'hvac') names.push(HVAC_POWER_FIELD.name);
   if (t === 'dehumidifier') names.push(DEHU_POWER_FIELD.name);
+  if (MACHINE_POWER_TYPES.includes(t)) names.push(MACHINE_POWER_FIELD.name);
   return names;
 }
 
@@ -536,6 +556,7 @@ export class HmApplianceForm extends LitElement {
           efficiency: '0.9',
           entity_id: '',
           soc_entity_id: '',
+          power_sensor_entity_id: '',
         };
       case 'home_battery':
         return {
@@ -545,6 +566,7 @@ export class HmApplianceForm extends LitElement {
           max_discharge_rate_kw: '',
           entity_id: '',
           soc_entity_id: '',
+          power_sensor_entity_id: '',
         };
       case 'water_heater':
         return {
@@ -554,6 +576,7 @@ export class HmApplianceForm extends LitElement {
           insulation_factor: '0.03',
           entity_id: '',
           temp_entity_id: '',
+          power_sensor_entity_id: '',
         };
       case 'solar':
         // Forecast-only appliance — no entity_id, no readings. Defaults
@@ -586,12 +609,14 @@ export class HmApplianceForm extends LitElement {
           max_charge_rate_kw: '0.05',
           entity_id: '',
           soc_entity_id: '',
+          power_sensor_entity_id: '',
         };
       case 'pool_pump':
         return {
           name: '',
           pump_watts: '1500',
           entity_id: '',
+          power_sensor_entity_id: '',
         };
       case 'hot_tub':
         // Soak times and ready/eco temps are set from the constraint
@@ -603,6 +628,7 @@ export class HmApplianceForm extends LitElement {
           heater_watts: '4000',
           entity_id: '',
           temp_entity_id: '',
+          power_sensor_entity_id: '',
         };
     }
   }
@@ -847,6 +873,8 @@ export class HmApplianceForm extends LitElement {
     const entityId = (v['entity_id'] ?? '').trim();
     const aux = AUX_FIELDS[this._pickedType as ApplianceType];
     const auxValue = aux ? (v[aux.name] ?? '').trim() : '';
+    const machinePower = (v[MACHINE_POWER_FIELD.name] ?? '').trim();
+    const machinePowerCfg = machinePower ? { power_sensor_entity_id: machinePower } : {};
     switch (this._pickedType) {
       case 'hvac': {
         const powerValue = (v[HVAC_POWER_FIELD.name] ?? '').trim();
@@ -867,6 +895,7 @@ export class HmApplianceForm extends LitElement {
           efficiency: Number(v['efficiency']),
           entity_id: entityId,
           ...(auxValue ? { soc_entity_id: auxValue } : {}),
+          ...machinePowerCfg,
         };
       case 'home_battery':
         return {
@@ -875,6 +904,7 @@ export class HmApplianceForm extends LitElement {
           max_discharge_rate_kw: Number(v['max_discharge_rate_kw']),
           entity_id: entityId,
           ...(auxValue ? { soc_entity_id: auxValue } : {}),
+          ...machinePowerCfg,
         };
       case 'water_heater':
         return {
@@ -883,6 +913,7 @@ export class HmApplianceForm extends LitElement {
           insulation_factor: Number(v['insulation_factor']),
           entity_id: entityId,
           ...(auxValue ? { temp_entity_id: auxValue } : {}),
+          ...machinePowerCfg,
         };
       case 'solar': {
         const productionValue = (v[SOLAR_PRODUCTION_FIELD.name] ?? '').trim();
@@ -911,11 +942,13 @@ export class HmApplianceForm extends LitElement {
           max_charge_rate_kw: Number(v['max_charge_rate_kw']),
           entity_id: entityId,
           ...(auxValue ? { soc_entity_id: auxValue } : {}),
+          ...machinePowerCfg,
         };
       case 'pool_pump':
         return {
           pump_watts: Number(v['pump_watts']),
           entity_id: entityId,
+          ...machinePowerCfg,
         };
       case 'hot_tub':
         return {
@@ -923,6 +956,7 @@ export class HmApplianceForm extends LitElement {
           heater_watts: Number(v['heater_watts']),
           entity_id: entityId,
           ...(auxValue ? { temp_entity_id: auxValue } : {}),
+          ...machinePowerCfg,
         };
       default:
         return {};
@@ -1551,6 +1585,25 @@ export class HmApplianceForm extends LitElement {
                       </select>
                       <small class="hint">${HVAC_POWER_FIELD.help}</small>
                       ${this._autoFillNote(HVAC_POWER_FIELD.name)}
+                    </label>
+                  `
+                : null}
+              ${MACHINE_POWER_TYPES.includes(t)
+                ? html`
+                    <label>
+                      <span class="label-text">${MACHINE_POWER_FIELD.label}</span>
+                      <select
+                        name=${MACHINE_POWER_FIELD.name}
+                        .value=${v[MACHINE_POWER_FIELD.name] ?? ''}
+                        @change=${onSelect(MACHINE_POWER_FIELD.name)}
+                      >
+                        <option value="" ?selected=${(v[MACHINE_POWER_FIELD.name] ?? '') === ''}>— none —</option>
+                        ${this._entityList([MACHINE_POWER_FIELD.domain]).map(
+                          (id) => html`<option value=${id} ?selected=${id === v[MACHINE_POWER_FIELD.name]}>${id}</option>`,
+                        )}
+                      </select>
+                      <small class="hint">${MACHINE_POWER_FIELD.help}</small>
+                      ${this._autoFillNote(MACHINE_POWER_FIELD.name)}
                     </label>
                   `
                 : null}

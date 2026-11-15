@@ -975,6 +975,91 @@ describe('hm-appliance-form', () => {
     expect(saveBtn!.disabled).toBe(false);
   });
 
+  describe('machine power sensor', () => {
+    const POWER_HASS: DiscoveryHass = {
+      states: {
+        'switch.pool_pump': {},
+        'climate.spa': {},
+        'sensor.pool_pump_power': { attributes: { device_class: 'power' } },
+        'sensor.spa_power': { attributes: { device_class: 'power' } },
+      },
+      entities: {
+        'switch.pool_pump': { device_id: 'pump-dev' },
+        'sensor.pool_pump_power': { device_id: 'pump-dev' },
+      },
+      devices: {},
+    };
+
+    it('switch type: picker lists sensors, suggests the device sibling and posts the choice', async () => {
+      const calls: Array<{ url: string; init?: RequestInit }> = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+          calls.push({ url: typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url, init });
+          return jsonResponse({ appliance_id: 'app-pump' });
+        }),
+      );
+      const el = mountForm(POWER_HASS);
+      await flush(el);
+      buttonByDataType(el.shadowRoot!, 'pool_pump')!.click();
+      await flush(el);
+
+      const root = el.shadowRoot!;
+      const sel = selectByName(root, 'power_sensor_entity_id');
+      expect(Array.from(sel.options).map((o) => o.value)).toContain('sensor.spa_power');
+      expect(root.textContent).toContain('measure this machine alone');
+
+      inputByName(root, 'name').value = 'Pool';
+      inputByName(root, 'name').dispatchEvent(new Event('input', { bubbles: true }));
+      pickEntity(root, 'switch.pool_pump');
+      await flush(el);
+      expect(selectByName(root, 'power_sensor_entity_id').value).toBe('sensor.pool_pump_power');
+
+      buttonByText(root, 'Add')!.click();
+      await flush(el);
+      const post = calls.find((c) => c.url.endsWith('/api/v1/appliances') && c.init?.method === 'POST');
+      expect(JSON.parse(String(post!.init!.body)).config.power_sensor_entity_id).toBe('sensor.pool_pump_power');
+    });
+
+    it('climate type: editing pre-fills the saved sensor and keeps it on save', async () => {
+      const calls: Array<{ url: string; init?: RequestInit }> = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+          calls.push({ url: typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url, init });
+          return jsonResponse({ id: 'tub-1' });
+        }),
+      );
+      const el = mountForm(POWER_HASS);
+      const existing = {
+        id: 'tub-1',
+        user_id: 'user-1',
+        appliance_type: 'hot_tub' as const,
+        name: 'Tub',
+        config: {
+          entity_id: 'climate.spa',
+          volume_gallons: 400,
+          heater_watts: 4000,
+          power_sensor_entity_id: 'sensor.spa_power',
+        },
+        is_active: true,
+        created_at: new Date().toISOString(),
+      };
+      el.existingAppliances = [existing];
+      el.editing = existing;
+      await flush(el);
+
+      const root = el.shadowRoot!;
+      // happy-dom keeps a stale .value when options render after it is set; the selected option is the reliable signal
+      expect(selectByName(root, 'power_sensor_entity_id').querySelector('option[selected]')?.getAttribute('value')).toBe('sensor.spa_power');
+      buttonByText(root, 'Save')!.click();
+      await flush(el);
+      const put = calls.find((c) => c.init?.method === 'PUT' || c.init?.method === 'PATCH');
+      expect(put).toBeDefined();
+      expect(JSON.parse(String(put!.init!.body)).config.power_sensor_entity_id).toBe('sensor.spa_power');
+    });
+  });
+
   it('solar: out-of-range tilt is rejected', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
     const el = mountForm();
