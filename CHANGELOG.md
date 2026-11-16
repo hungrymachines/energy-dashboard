@@ -4,7 +4,9 @@ What's new in the Hungry Machines integration for Home Assistant. Update from HA
 
 <!-- Each release has a `summary` comment under its date: a few plain lines for announcements. It does not show on GitHub. -->
 
-## 3.14 — Connection Health and Building Info (unreleased)
+## 3.14 — Connection Health and Building Info
+
+*November 15, 2026*
 
 <!-- summary
 - The panel has four tabs: Dashboard, Connection Health, Building Info and Settings. The tab you are on stays in the address, so a reload or a bookmark opens it again.
