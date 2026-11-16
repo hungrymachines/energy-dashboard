@@ -47,9 +47,9 @@ describe('factSentence', () => {
   it('Celsius converts deltas, not offsets', () => {
     expect(factSentence(fact('sun', 1.8), 'C')).toBe('Midday sun adds up to about 1.0 °C an hour.');
     const s = factSentence(fact('holds_temperature', 3.6, 'delta_f', 6), 'C')!;
-    expect(s).toContain('11 °C');
+    expect(s).toContain('11.1 °C');
     expect(s).toContain('about 2.0 °C an hour');
-    expect(s).toContain('within 2 °C');
+    expect(s).toContain('within 1.7 °C');
   });
   it('an unknown key is skipped', () => {
     expect(factSentence(fact('mystery', 3), 'F')).toBeNull();

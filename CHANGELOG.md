@@ -31,7 +31,7 @@ Machine types you have not added appear below, greyed out. **About these checks*
 
 ### Alerts on the Dashboard only for clear failures
 
-The Dashboard shows a strip above your cards only when a machine has clearly stopped working: its readings stopped or froze, a thermostat did not hold the setpoints it was sent, a switched machine did not follow its plan or kept reporting as unavailable, or a sensor you mapped almost never reports. The strip names each machine and links to Connection Health. A sensor that reports some of the time, a thermostat set to a different mode that still holds the temperature, advice about your comfort range, and solar that reads zero at night do not raise it.
+The Dashboard shows a strip above your cards only when a machine has clearly stopped working: its readings stopped or froze, a thermostat did not hold the setpoints it was sent, or a sensor you mapped almost never reports. The strip names each machine and links to Connection Health. A sensor that reports some of the time, a thermostat set to a different mode that still holds the temperature, advice about your comfort range, and solar that reads zero at night do not raise it.
 
 ### Building Info
 

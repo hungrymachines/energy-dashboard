@@ -255,7 +255,7 @@ function _cls(v: number, threshold: number): string {
 
 /** The one collapsed "About these checks" section at the bottom. */
 function _about(unit: TempUnit): TemplateResult {
-  const tol = formatDelta(SETPOINT_TOLERANCE_F, unit, 0);
+  const tol = formatDelta(SETPOINT_TOLERANCE_F, unit, unit === 'C' ? 1 : 0);
   return html`
     <details class="about">
       <summary>About these checks</summary>
@@ -297,8 +297,9 @@ function _about(unit: TempUnit): TemplateResult {
       <p>
         EV chargers, home batteries, pool pumps and water heaters switched through a switch are
         compared with their plan: whether each reading was on or off when the plan said so. A
-        machine is flagged when it matched on too few readings, or reported as unavailable for a
-        stretch. Robots, hot tubs and water heaters run through a climate entity get no such check,
+        machine is marked as needing attention here when it matched on too few readings, or
+        reported as unavailable for a stretch; for now this does not raise an alert on the
+        Dashboard. Robots, hot tubs and water heaters run through a climate entity get no such check,
         because the software does not switch them on and off on a plan the readings could confirm.
       </p>
       <h4>Power</h4>

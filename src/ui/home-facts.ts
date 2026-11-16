@@ -27,9 +27,10 @@ export function factSentence(fact: HomeFact, unit: TempUnit): string | null {
   switch (fact.key) {
     case 'holds_temperature': {
       if (v === null) return null;
-      const gap = formatDelta(REFERENCE_GAP_F, unit, 0);
+      const gap = formatDelta(REFERENCE_GAP_F, unit, unit === 'C' ? 1 : 0);
       const hours = typeof fact.detail === 'number' ? Math.round(fact.detail) : null;
-      const drift = formatDelta(DRIFT_F, unit, 0);
+      // Whole degrees in °F; one decimal in °C, where 3 °F is 1.7 °C, not 2.
+      const drift = formatDelta(DRIFT_F, unit, unit === 'C' ? 1 : 0);
       const base = `With the system off and about ${gap} between inside and outside, this room moves about ${perHour(v, unit)}, learned from your readings.`;
       return hours !== null && hours > 0
         ? `${base} It holds within ${drift} for about ${hours} ${hours === 1 ? 'hour' : 'hours'}.`
